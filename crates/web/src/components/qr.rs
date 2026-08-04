@@ -38,12 +38,14 @@ export function clearQr(elId) {
 
 export function scheduleRenderQr(elId, text) {
   // Retry while host mounts and/or vendor script finishes loading.
+  // Also re-check window.QRCode — a relative script src on /cars/:id can 404
+  // as SPA HTML; absolute /qrcode.min.js is required in index.html.
   let attempts = 0;
   function tick() {
     attempts += 1;
     const status = renderQr(elId, text);
     if (status === 'ok' || status === 'error') return;
-    if (attempts >= 40) {
+    if (attempts >= 60) {
       const el = document.getElementById(elId);
       if (!el) return;
       if (status === 'missing-lib') {

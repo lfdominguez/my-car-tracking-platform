@@ -13,7 +13,8 @@
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
-  <script src="qrcode.min.js"></script>
+  <!-- Absolute path: relative src breaks on client routes like /cars/:id (SPA deep links). -->
+  <script src="/qrcode.min.js"></script>
 </head>
 <body></body>
 </html>

@@ -19,7 +19,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
 WORKDIR /app/crates/web
-RUN trunk build --release
+RUN trunk build --release \
+ && test -f dist/qrcode.min.js \
+ && grep -q 'src="/qrcode.min.js"' dist/index.html
 
 # -----------------------------------------------------------------------------
 # Stage 2: build Axum server binary
