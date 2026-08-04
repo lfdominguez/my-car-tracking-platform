@@ -16,3 +16,6 @@ worktrees/
 docs/
 docs/plans/
 *.md.bak
+
+# Agent/local noise
+.output.txt
