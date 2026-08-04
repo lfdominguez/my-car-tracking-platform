@@ -1,0 +1,36 @@
+[package]
+name = "web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+leptos_router = { version = "0.8" }
+console_error_panic_hook = "0.1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true, features = ["wasmbind"] }
+uuid = { workspace = true, features = ["js"] }
+gloo-net = { version = "0.6", features = ["http"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlCanvasElement",
+    "HtmlSelectElement",
+    "Location",
+    "Navigator",
+    "console",
+    "RequestCredentials",
+] }
+shared = { workspace = true }
+
+[features]
+default = []

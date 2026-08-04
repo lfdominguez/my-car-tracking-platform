@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/server",
+    "crates/web",
+    "crates/shared",
+]
+default-members = ["crates/server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+shared = { path = "crates/shared" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+thiserror = "2"
+tracing = "0.1"
