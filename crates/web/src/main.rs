@@ -10,6 +10,7 @@ use crate::components::layout::AppLayout;
 use crate::pages::cars::{CarDetailPage, CarsPage};
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::login::LoginPage;
+use crate::pages::not_found::NotFoundPage;
 use crate::pages::trips::{TripDetailPage, TripsPage};
 
 fn main() {
@@ -17,7 +18,7 @@ fn main() {
     mount_to_body(|| {
         view! {
             <Router>
-                <Routes fallback=|| view! { <p class="muted">"Not found"</p> }>
+                <Routes fallback=|| view! { <NotFoundPage/> }>
                     <Route path=path!("/login") view=LoginPage/>
                     // Keep the shell mounted across authenticated pages so the Google
                     // avatar is not re-requested on every navigation (can trigger 429).

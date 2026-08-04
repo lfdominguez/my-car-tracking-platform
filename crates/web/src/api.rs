@@ -12,6 +12,11 @@ pub struct Me {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PublicConfig {
+    pub allow_dev_login: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Car {
     pub id: String,
     pub owner_user_id: String,
@@ -153,6 +158,10 @@ fn with_creds(builder: RequestBuilder) -> RequestBuilder {
 
 pub async fn get_me() -> Result<Me, ApiError> {
     send_json(Request::get("/api/me")).await
+}
+
+pub async fn get_public_config() -> Result<PublicConfig, ApiError> {
+    send_json(Request::get("/api/public-config")).await
 }
 
 pub async fn get_dashboard() -> Result<DashboardSummary, ApiError> {

@@ -8,6 +8,7 @@ pub use extractors::{AuthUser, OptionalAuthUser};
 pub use google::google_auth_router;
 pub use session::{create_session, destroy_session};
 
+use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
@@ -19,6 +20,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/me", get(me))
+        .route("/api/public-config", get(public_config))
         .route("/auth/logout", get(logout))
         .merge(google_auth_router())
 }
@@ -29,6 +31,17 @@ pub struct MeResponse {
     pub email: String,
     pub name: String,
     pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicConfigResponse {
+    pub allow_dev_login: bool,
+}
+
+async fn public_config(State(state): State<AppState>) -> Json<PublicConfigResponse> {
+    Json(PublicConfigResponse {
+        allow_dev_login: state.config.allow_dev_login,
+    })
 }
 
 async fn me(user: AuthUser) -> Json<MeResponse> {
