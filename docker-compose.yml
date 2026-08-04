@@ -6,8 +6,36 @@ services:
       POSTGRES_DB: car_tracking
     ports:
       - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 3s
       timeout: 5s
       retries: 10
+
+  app:
+    build: .
+    image: car-tracking-platform:local
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # Override host-oriented defaults from .env for in-compose networking.
+      DATABASE_URL: postgres://postgres:postgres@db:5432/car_tracking
+      LISTEN_ADDR: 0.0.0.0:8080
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:8080/auth/google/callback}
+      UPLOAD_DIR: /app/data/uploads
+      WEB_DIST: /app/web/dist
+    volumes:
+      - app-data:/app/data/uploads
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  app-data:

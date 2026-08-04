@@ -1,0 +1,27 @@
+# Build artifacts
+target/
+crates/web/dist/
+crates/web/pkg/
+
+# Local / private
+.git/
+.github/
+.junie/
+docs/
+data/
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+**/*.rs.bk
+*.md.bak
+.worktrees/
+worktrees/
+
+# Misc
+**/*~
+**/*.swp
