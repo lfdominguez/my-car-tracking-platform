@@ -113,7 +113,9 @@ async fn revoke_device(
     Path((car_id, device_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<Json<serde_json::Value>> {
     can_edit_car(&state.pool, user.id, car_id).await?;
-    let res = sqlx::query(
+
+    // Idempotent: already-revoked devices still return ok so the UI can refresh cleanly.
+    let updated = sqlx::query(
         r#"
         UPDATE devices
         SET revoked_at = NOW()
@@ -124,10 +126,28 @@ async fn revoke_device(
     .bind(car_id)
     .execute(&state.pool)
     .await?;
-    if res.rows_affected() == 0 {
-        return Err(AppError::NotFound);
+
+    if updated.rows_affected() > 0 {
+        return Ok(Json(serde_json::json!({ "ok": true, "already_revoked": false })));
     }
-    Ok(Json(serde_json::json!({ "ok": true })))
+
+    let exists: Option<(Uuid,)> = sqlx::query_as(
+        r#"
+        SELECT id
+        FROM devices
+        WHERE id = $1 AND car_id = $2
+        "#,
+    )
+    .bind(device_id)
+    .bind(car_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if exists.is_some() {
+        Ok(Json(serde_json::json!({ "ok": true, "already_revoked": true })))
+    } else {
+        Err(AppError::NotFound)
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]

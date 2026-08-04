@@ -234,6 +234,59 @@ pub async fn provisioning(
     send_json(Request::get(&url)).await
 }
 
+pub async fn revoke_device(car_id: &str, device_id: &str) -> Result<(), ApiError> {
+    if car_id.is_empty() || device_id.is_empty() {
+        return Err(ApiError::Message(
+            "Cannot revoke device: missing car or device id".into(),
+        ));
+    }
+    let url = format!("/api/cars/{car_id}/devices/{device_id}");
+    let resp = with_creds(Request::delete(&url))
+        .send()
+        .await
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    if resp.status() == 401 {
+        return Err(ApiError::Unauthorized);
+    }
+    if resp.status() == 404 {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ApiError::Message(format!(
+            "Device not found or already removed ({text})"
+        )));
+    }
+    if !resp.ok() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+    }
+    Ok(())
+}
+
+/// Build Android QR JSON from the one-time plaintext token + car profile.
+/// Uses the browser origin so the phone hits the same host the user is on.
+pub fn provisioning_payload_json(token: &str, car: &Car) -> Result<String, ApiError> {
+    let origin = web_sys::window()
+        .ok_or_else(|| ApiError::Message("window unavailable".into()))?
+        .location()
+        .origin()
+        .map_err(|_| ApiError::Message("origin unavailable".into()))?;
+    let base = origin.trim_end_matches('/');
+    let payload = ProvisioningPayload {
+        api_token: token.to_string(),
+        start_url: format!("{base}/api/track/start"),
+        stop_url: format!("{base}/api/track/stop"),
+        sample_url: format!("{base}/api/track/sample"),
+        samples_url: format!("{base}/api/track/samples"),
+        fuel_type: car.fuel_type.clone(),
+        fuel_stoich_afr: car.stoich_afr,
+        fuel_density_gl: car.density_gl,
+        engine_displacement_l: car.displacement_l,
+        engine_ve: car.ve,
+        car_id: car.id.clone(),
+        car_name: car.name.clone(),
+    };
+    serde_json::to_string(&payload).map_err(|e| ApiError::Message(e.to_string()))
+}
+
 pub async fn list_shares(car_id: &str) -> Result<Vec<Share>, ApiError> {
     send_json(Request::get(&format!("/api/cars/{car_id}/shares"))).await
 }

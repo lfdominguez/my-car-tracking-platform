@@ -4,7 +4,8 @@ use leptos_router::hooks::use_params_map;
 
 use crate::api::{
     create_car, create_device, create_share, get_car, list_cars, list_devices, list_shares,
-    provisioning, update_car, Car, CreateDeviceResponse, Device, Share,
+    provisioning, provisioning_payload_json, revoke_device, update_car, Car, CreateDeviceResponse,
+    Device, Share,
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
@@ -275,20 +276,38 @@ pub fn CarDetailPage() -> impl IntoView {
                 </h2>
                 <button class="btn primary" on:click=move |_| {
                     let id = params.with(|p| p.get("id").unwrap_or_default());
+                    let car_snapshot = car.get();
+                    error.set(None);
                     leptos::task::spawn_local(async move {
                         match create_device(&id, "Android phone").await {
                             Ok(resp) => {
                                 let token = resp.token.clone();
                                 let device_id = resp.device.id.clone();
                                 last_token.set(Some(resp.clone()));
-                                match provisioning(&id, &device_id, &token).await {
-                                    Ok(payload) => {
-                                        if let Ok(text) = serde_json::to_string(&payload) {
-                                            qr_payload.set(Some(text));
+
+                                // Prefer client-side QR JSON (token is only available once).
+                                let qr_text = if let Some(ref c) = car_snapshot {
+                                    provisioning_payload_json(&token, c)
+                                } else {
+                                    Err(crate::api::ApiError::Message("car not loaded".into()))
+                                };
+
+                                match qr_text {
+                                    Ok(text) => qr_payload.set(Some(text)),
+                                    Err(_) => {
+                                        // Fallback: server rebuilds URLs + fuel fields with ?token=
+                                        match provisioning(&id, &device_id, &token).await {
+                                            Ok(payload) => {
+                                                match serde_json::to_string(&payload) {
+                                                    Ok(text) => qr_payload.set(Some(text)),
+                                                    Err(e) => error.set(Some(e.to_string())),
+                                                }
+                                            }
+                                            Err(e) => error.set(Some(e.to_string())),
                                         }
                                     }
-                                    Err(e) => error.set(Some(e.to_string())),
                                 }
+
                                 match list_devices(&id).await {
                                     Ok(d) => devices.set(d),
                                     Err(e) => error.set(Some(e.to_string())),
@@ -303,31 +322,107 @@ pub fn CarDetailPage() -> impl IntoView {
                 </button>
 
                 <Show when=move || last_token.get().is_some()>
-                    <div class="success">
-                        "Token (copy now): "
-                        <code>{move || last_token.get().map(|t| t.token).unwrap_or_default()}</code>
+                    <div class="success stack" style="gap:0.5rem">
+                        <div>
+                            "Token (copy now — shown once): "
+                            <code>{move || last_token.get().map(|t| t.token).unwrap_or_default()}</code>
+                        </div>
+                        <p class="muted" style="margin:0;font-size:0.85rem">
+                            "Scan the QR below in the Android app Settings to load URLs, token, and fuel profile."
+                        </p>
                     </div>
                 </Show>
 
-                <QrCode payload=qr_payload.into()/>
+                <QrCode payload=qr_payload/>
 
                 <table class="table">
-                    <thead><tr><th>"Name"</th><th>"Prefix"</th><th>"Status"</th></tr></thead>
+                    <thead><tr><th>"Name"</th><th>"Prefix"</th><th>"Status"</th><th></th></tr></thead>
                     <tbody>
                         <For
                             each=move || devices.get()
-                            key=|d| d.id.clone()
-                            children=move |d| view! {
-                                <tr>
-                                    <td>
-                                        <span class="icon-label">
-                                            <Icon name="device-mobile" size=IconSize::Sm color=IconColor::Device />
-                                            {d.name.clone()}
-                                        </span>
-                                    </td>
-                                    <td><code>{d.token_prefix.clone()}</code></td>
-                                    <td>{if d.revoked_at.is_some() { "revoked" } else { "active" }}</td>
-                                </tr>
+                            // Include revoked_at so status changes remount the row.
+                            // For only reuses children when the key is unchanged.
+                            key=|d| {
+                                format!(
+                                    "{}:{}",
+                                    d.id,
+                                    d.revoked_at.as_deref().unwrap_or("")
+                                )
+                            }
+                            children=move |d| {
+                                let device_id = d.id.clone();
+                                // Prefer the route car id (always present on this page) over the
+                                // row payload, so revoke cannot 404 from a missing/empty car_id.
+                                let car_id_row = {
+                                    let from_route = params.with(|p| p.get("id").unwrap_or_default());
+                                    if from_route.is_empty() {
+                                        d.car_id.clone()
+                                    } else {
+                                        from_route
+                                    }
+                                };
+                                let is_revoked = d
+                                    .revoked_at
+                                    .as_ref()
+                                    .map(|s| !s.is_empty())
+                                    .unwrap_or(false);
+                                let revoke_btn = (!is_revoked).then(|| {
+                                    let did = device_id.clone();
+                                    let cid = car_id_row.clone();
+                                    view! {
+                                        <button
+                                            class="btn"
+                                            type="button"
+                                            on:click=move |_| {
+                                                let did = did.clone();
+                                                let cid = cid.clone();
+                                                error.set(None);
+                                                leptos::task::spawn_local(async move {
+                                                    match revoke_device(&cid, &did).await {
+                                                        Ok(()) => {
+                                                            // Optimistic UI: mark revoked immediately so
+                                                            // the row updates before the list refetch.
+                                                            devices.update(|list| {
+                                                                if let Some(dev) = list.iter_mut().find(|x| x.id == did) {
+                                                                    if dev.revoked_at.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                                                                        dev.revoked_at = Some("revoked".into());
+                                                                    }
+                                                                }
+                                                            });
+                                                            if let Some(tok) = last_token.get_untracked() {
+                                                                if tok.device.id == did {
+                                                                    last_token.set(None);
+                                                                    qr_payload.set(None);
+                                                                }
+                                                            }
+                                                            match list_devices(&cid).await {
+                                                                Ok(list) => devices.set(list),
+                                                                Err(e) => error.set(Some(e.to_string())),
+                                                            }
+                                                        }
+                                                        Err(e) => error.set(Some(e.to_string())),
+                                                    }
+                                                });
+                                            }
+                                        >
+                                            <Icon name="trash" size=IconSize::Sm color=IconColor::Danger />
+                                            "Revoke"
+                                        </button>
+                                    }
+                                });
+                                view! {
+                                    <tr>
+                                        <td>
+                                            <span class="icon-label">
+                                                <Icon name="device-mobile" size=IconSize::Sm color=IconColor::Device />
+                                                {d.name.clone()}
+                                            </span>
+                                        </td>
+                                        <td><code>{d.token_prefix.clone()}</code></td>
+                                        <td>{if is_revoked { "revoked" } else { "active" }}</td>
+                                        <td>{revoke_btn}</td>
+                                    </tr>
+                                }
                             }
                         />
                     </tbody>
