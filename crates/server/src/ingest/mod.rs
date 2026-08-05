@@ -188,9 +188,9 @@ async fn track_stop(
     .await
     {
         let pool = state.pool.clone();
-        let secrets = state.config.secrets_key.clone();
+        let keyring = state.keyring.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::route_opt::process_finished_track(&pool, &secrets, track_id).await
+            if let Err(e) = crate::route_opt::process_finished_track(&pool, &keyring, track_id).await
             {
                 tracing::warn!(%track_id, error = %e, "route optimization job failed");
             }

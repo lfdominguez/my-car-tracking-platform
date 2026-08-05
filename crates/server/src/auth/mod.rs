@@ -170,7 +170,8 @@ async fn update_me(
                 UPDATE users
                 SET openrouter_api_key_enc = NULL,
                     openrouter_api_key_nonce = NULL,
-                    openrouter_key_hint = NULL
+                    openrouter_key_hint = NULL,
+                    openrouter_key_version = 1
                 WHERE id = $1
                 "#,
             )
@@ -178,15 +179,17 @@ async fn update_me(
             .execute(&state.pool)
             .await?;
         } else {
-            let (nonce, ct) = crate::crypto::encrypt_secret(key.as_bytes(), &state.config.secrets_key)
-                .map_err(|_| AppError::internal("Failed to encrypt API key"))?;
+            let (nonce, ct, version) =
+                crate::crypto::encrypt_secret_versioned(key.as_bytes(), &state.keyring)
+                    .map_err(|_| AppError::internal("Failed to encrypt API key"))?;
             let hint = crate::crypto::key_hint(key);
             sqlx::query(
                 r#"
                 UPDATE users
                 SET openrouter_api_key_enc = $2,
                     openrouter_api_key_nonce = $3,
-                    openrouter_key_hint = $4
+                    openrouter_key_hint = $4,
+                    openrouter_key_version = $5
                 WHERE id = $1
                 "#,
             )
@@ -194,6 +197,7 @@ async fn update_me(
             .bind(&ct)
             .bind(&nonce)
             .bind(&hint)
+            .bind(version)
             .execute(&state.pool)
             .await?;
         }
@@ -207,7 +211,8 @@ async fn update_me(
                 UPDATE users
                 SET ors_api_key_enc = NULL,
                     ors_api_key_nonce = NULL,
-                    ors_key_hint = NULL
+                    ors_key_hint = NULL,
+                    ors_key_version = 1
                 WHERE id = $1
                 "#,
             )
@@ -215,15 +220,17 @@ async fn update_me(
             .execute(&state.pool)
             .await?;
         } else {
-            let (nonce, ct) = crate::crypto::encrypt_secret(key.as_bytes(), &state.config.secrets_key)
-                .map_err(|_| AppError::internal("Failed to encrypt ORS API key"))?;
+            let (nonce, ct, version) =
+                crate::crypto::encrypt_secret_versioned(key.as_bytes(), &state.keyring)
+                    .map_err(|_| AppError::internal("Failed to encrypt ORS API key"))?;
             let hint = crate::crypto::key_hint(key);
             sqlx::query(
                 r#"
                 UPDATE users
                 SET ors_api_key_enc = $2,
                     ors_api_key_nonce = $3,
-                    ors_key_hint = $4
+                    ors_key_hint = $4,
+                    ors_key_version = $5
                 WHERE id = $1
                 "#,
             )
@@ -231,6 +238,7 @@ async fn update_me(
             .bind(&ct)
             .bind(&nonce)
             .bind(&hint)
+            .bind(version)
             .execute(&state.pool)
             .await?;
         }

@@ -1,4 +1,5 @@
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -9,16 +10,18 @@ use oauth2::{
     TokenResponse, TokenUrl,
 };
 use serde::Deserialize;
+use std::net::SocketAddr;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::auth::create_session;
 use crate::auth::ensure_dev_user;
 use crate::auth::session::{
-    clear_oauth_state_cookie, oauth_state_from_jar, set_oauth_state_cookie,
+    clear_oauth_state_cookie, oauth_state_from_jar, set_oauth_state_cookie, NewSessionMeta,
 };
 use crate::error::{AppError, AppResult};
 use crate::http_client::outbound_client;
+use crate::middleware::client_ip;
 use crate::state::AppState;
 
 pub fn google_auth_router() -> Router<AppState> {
@@ -54,7 +57,9 @@ struct CallbackQuery {
 
 async fn google_callback(
     State(state): State<AppState>,
+    connect_info: ConnectInfo<SocketAddr>,
     jar: CookieJar,
+    headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
 ) -> AppResult<Response> {
     let cookie_state = oauth_state_from_jar(&jar);
@@ -82,7 +87,23 @@ async fn google_callback(
     }
     let user_id = upsert_google_user(&state, &profile).await?;
     let jar = clear_oauth_state_cookie(jar);
-    let (jar, _) = create_session(&state, jar, user_id).await?;
+
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+
+    let meta = NewSessionMeta {
+        ip: Some(&ip_str),
+        user_agent,
+    };
+
+    let (jar, _) = create_session(&state, jar, user_id, meta).await?;
     Ok((jar, Redirect::temporary("/app")).into_response())
 }
 
@@ -104,7 +125,9 @@ struct DevLoginRequest {
 
 async fn dev_login(
     State(state): State<AppState>,
+    connect_info: ConnectInfo<SocketAddr>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<DevLoginRequest>,
 ) -> AppResult<Response> {
     if !state.config.allow_dev_login {
@@ -112,7 +135,23 @@ async fn dev_login(
     }
     let name = body.name.unwrap_or_else(|| body.email.clone());
     let user_id = ensure_dev_user(&state.pool, &body.email, &name).await?;
-    let (jar, _) = create_session(&state, jar, user_id).await?;
+
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+
+    let meta = NewSessionMeta {
+        ip: Some(&ip_str),
+        user_agent,
+    };
+
+    let (jar, _) = create_session(&state, jar, user_id, meta).await?;
     Ok((
         jar,
         Json(serde_json::json!({ "ok": true, "user_id": user_id })),
