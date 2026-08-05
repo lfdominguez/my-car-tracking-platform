@@ -1,108 +1,146 @@
-# Car Tracking Platform
+<div align="center">
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Docker Image](https://img.shields.io/badge/ghcr.io-my--car--tracking--platform-blue)](https://github.com/lfdominguez/my-car-tracking-platform/pkgs/container/my-car-tracking-platform)
+# 🚗 Car Tracking Platform
 
-Rust modular-monolith API (Axum + PostgreSQL/PostGIS) and Leptos CSR SPA for personal multi-user car tracking.
+### Personal multi-user telemetry · maps · AI · route intelligence
 
-The Android app (`GPSCarTracking`) keeps uploading with the same wire protocol:
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge)](LICENSE)
+[![Docker](https://img.shields.io/badge/ghcr.io-container-2496ED.svg?style=for-the-badge&logo=docker&logoColor=white)](https://github.com/lfdominguez/my-car-tracking-platform/pkgs/container/my-car-tracking-platform)
+[![Rust](https://img.shields.io/badge/Rust-1.88+-CE422B.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostGIS-enabled-336791.svg?style=for-the-badge&logo=postgresql&logoColor=white)](https://postgis.net/)
+[![Leptos](https://img.shields.io/badge/Leptos-CSR-EF3939.svg?style=for-the-badge)](https://leptos.dev/)
 
-- `POST /api/track/start|stop|sample|samples`
-- `Authorization: Basic <device_token>`
-- `GET|HEAD /health` (public)
+**One Rust binary. One dark dashboard. Your cars, trips, and phone ingest — wired end-to-end.**
 
-## Workspace
+📱 Android keeps the same Basic-auth track API · 🌐 Google sign-in SPA · 🗺️ speed-colored routes · 🤖 optional AI coach
 
+<br/>
+
+| 🛰️ **Ingest** | 📊 **Analytics** | 🧠 **Intelligence** | 🔐 **Sharing** |
+|:---:|:---:|:---:|:---:|
+| Wire-compatible Android uploads | Full OBD charts & KPIs | AI trip reports + corridor tips | Cars, devices, QR provision |
+
+</div>
+
+---
+
+## ✨ Features
+
+| | |
+|---|---|
+| 🏎️ **Car garage** | Profiles, photos, fuel/engine settings, per-car device tokens |
+| 📡 **Phone ingest** | `start` / `sample(s)` / `stop` with `Authorization: Basic <token>` — no Android contract break |
+| 🗺️ **Trip cockpit** | Liberty basemap, speed gradient polyline, chevrons, stop circles, chart ↔ map sync |
+| 📈 **Telemetry suite** | Drive · engine · fuel · thermal/electrical — all stored OBD fields when present |
+| 🧭 **Routes Optimization** | Cluster similar OD corridors, path variants, OpenRouteService alts + elevation (**no LLM**) |
+| 🤖 **AI route analysis** | Owner OpenRouter key · Rig agent · structured findings + downloadable markdown |
+| 👥 **Sharing** | Direct Owner / Editor / Viewer roles across friends & family |
+| 📱 **QR bootstrap** | One-time device token + absolute URLs + fuel math for the phone |
+| 🌍 **Units** | Metric or Imperial — converted on the API; DB stays SI/raw |
+| 🐳 **Ship it** | Multi-stage Docker image on GHCR; compose with PostGIS |
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart TD
+    Phone[Android GPSCarTracking] -->|Basic device token| Ingest[Ingest API]
+    Browser[Leptos SPA] -->|Session cookie| Platform[Platform API]
+    Browser -->|OAuth| Google[Google]
+    Ingest --> Tracks[(PostGIS tracks)]
+    Platform --> Tracks
+    Platform --> AI[AI analysis]
+    Platform --> Routes[Routes optimization]
+    AI --> OpenRouter[OpenRouter]
+    Routes --> ORS[OpenRouteService]
+    Server[Axum binary] -->|static SPA| Browser
 ```
-crates/server   # Axum API + static SPA hosting
-crates/web      # Leptos CSR dashboard
-crates/shared   # thin shared DTOs
-migrations/     # SQLx SQL migrations
+
+```text
+car-tracking-platform/
+├── crates/server   # 🦀 Axum API · sessions · ingest · analytics · AI jobs · routes opt
+├── crates/web      # ✨ Leptos CSR dashboard (Trunk)
+├── crates/ai       # 🧠 Rig agent · OpenRouter · math tools
+├── crates/shared   # 📦 thin shared DTOs
+└── migrations/     # 🗄️ SQLx + PostGIS
 ```
 
-## Requirements
+---
 
-- Rust 1.88+ (edition 2024)
-- Docker (for PostGIS) or a local PostgreSQL + PostGIS
-- [trunk](https://trunkrs.dev/) to build the SPA (prefer `nix run nixpkgs#trunk -- <args>`; see below)
-- Google OAuth Web client (or `ALLOW_DEV_LOGIN=1` for local API testing)
+## 🚀 Quick start
 
-## Quick start
-
-### 1. Database
+### 1️⃣ Database
 
 ```bash
 docker compose up -d db
-# or:
+```
+
+<details>
+<summary>📦 Or a standalone PostGIS container</summary>
+
+```bash
 docker run --name ctp-postgis -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=car_tracking -p 5432:5432 -d postgis/postgis:16-3.4
 ```
 
-### 2. Configure
+</details>
+
+### 2️⃣ Configure
 
 ```bash
 cp .env.example .env
-# edit GOOGLE_* and secrets as needed
+# set SESSION_SECRET, DEVICE_TOKEN_PEPPER, GOOGLE_*, PUBLIC_BASE_URL, …
 ```
 
-### 3. Run API
+### 3️⃣ Run the API
 
 ```bash
 cargo run -p server
 ```
 
-Migrations run automatically on startup. Health check: `http://localhost:8080/health`
+Migrations apply on startup. Probe: [`http://localhost:8080/health`](http://localhost:8080/health) ✅
 
-### 4. Build SPA (optional for UI)
+### 4️⃣ Build the SPA
 
 ```bash
 rustup target add wasm32-unknown-unknown
 cd crates/web
-# Prefer Nix (this environment); avoid relying on a global trunk install:
-nix run nixpkgs#trunk -- build --release
+nix run nixpkgs#trunk -- build --release   # preferred
 ```
 
-Equivalent without Nix: install [trunk](https://trunkrs.dev/) (`cargo install trunk`) and run `trunk build --release` from `crates/web`.
+<details>
+<summary>🔧 Without Nix</summary>
 
-Serve the built assets by running the server from the repo root (`WEB_DIST` defaults to `crates/web/dist`).
+```bash
+cargo install trunk
+cd crates/web && trunk build --release
+```
 
-## Docker deploy
+</details>
 
-CI builds and publishes a multi-stage image to GitHub Container Registry on every push to `main` (and on version tags `v*`):
+Serve assets via the API (`WEB_DIST` defaults to `crates/web/dist`).
+
+---
+
+## 🐳 Docker
+
+CI publishes on every push to `main` (and tags `v*`):
 
 ```text
 ghcr.io/lfdominguez/my-car-tracking-platform:latest
 ```
 
-The image contains the Axum server binary plus a release-built Leptos SPA (`WEB_DIST=/app/web/dist`).
+| Action | Command |
+|--------|---------|
+| 🏗️ Local build | `docker build -t car-tracking-platform:local .` |
+| ▶️ Compose stack | `cp .env.example .env && docker compose up -d --build` |
+| 📥 Pull GHCR | `docker pull ghcr.io/lfdominguez/my-car-tracking-platform:latest` |
 
-### Build locally
+App listens on **`:8080`**. Uploads persist on the `app-data` volume.
 
-```bash
-docker build -t car-tracking-platform:local .
-```
-
-### Run with Compose (API + PostGIS)
-
-```bash
-cp .env.example .env
-# set SESSION_SECRET, DEVICE_TOKEN_PEPPER, GOOGLE_*, PUBLIC_BASE_URL, etc.
-
-docker compose up -d --build
-```
-
-The `app` service listens on `http://localhost:8080`. Persist uploads with the `app-data` volume.
-
-### Pull published image
-
-Packages may be private by default on a new GHCR repo. After the first CI run, make the package public (GitHub → Packages → package settings) or authenticate:
-
-```bash
-echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
-docker pull ghcr.io/lfdominguez/my-car-tracking-platform:latest
-```
-
-Minimal run (external Postgres/PostGIS):
+<details>
+<summary>🔑 Minimal <code>docker run</code> (external Postgres)</summary>
 
 ```bash
 docker run --rm -p 8080:8080 \
@@ -117,66 +155,124 @@ docker run --rm -p 8080:8080 \
   ghcr.io/lfdominguez/my-car-tracking-platform:latest
 ```
 
-Required runtime env: `DATABASE_URL`, `SESSION_SECRET`, `DEVICE_TOKEN_PEPPER`. Set real Google OAuth values for production (`ALLOW_DEV_LOGIN` should stay off).
+Required: `DATABASE_URL`, `SESSION_SECRET`, `DEVICE_TOKEN_PEPPER`. Keep `ALLOW_DEV_LOGIN` off in production.
 
-## Auth
+Packages may start private on GHCR — mark public in GitHub → Packages, or `docker login ghcr.io`.
 
-- **Web:** Google OAuth at `/auth/google` → session cookie `ctp_session`
-- **Dev:** `POST /auth/dev-login` `{"email":"you@example.com","name":"You"}` when `ALLOW_DEV_LOGIN=1`
-- **Android:** create a device on a car in the SPA; use the one-time token as `Authorization: Basic <token>`
+</details>
 
-## Main platform APIs
+---
+
+## 🔐 Auth at a glance
+
+| Who | How |
+|-----|-----|
+| 🌐 **Web** | Google OAuth → `/auth/google` → `HttpOnly` session `ctp_session` |
+| 🧪 **Dev** | `POST /auth/dev-login` when `ALLOW_DEV_LOGIN=1` |
+| 📱 **Android** | SPA device token → `Authorization: Basic <token>` (shown once) |
+
+---
+
+## 🧭 Product surfaces
+
+| Path | What you get |
+|------|----------------|
+| 🏠 **Dashboard** | Per-car odometer, fuel %, tracked distance |
+| 🚘 **Cars** | CRUD, photo, shares, devices, QR provisioning |
+| 🛣️ **Trips** | Analytics cockpit · map · AI analyze / re-analyze |
+| 🔀 **Routes** | Corridors, variants vs ORS, time-of-day insights |
+| ⚙️ **Settings** | Metric / Imperial · OpenRouter · OpenRouteService keys |
+
+---
+
+## 📚 Going further
+
+<details>
+<summary>📡 Android ingest contract</summary>
+
+| Method | Path |
+|--------|------|
+| `POST` | `/api/track/start` |
+| `POST` | `/api/track/sample` |
+| `POST` | `/api/track/samples` |
+| `POST` | `/api/track/stop` |
+| `GET` / `HEAD` | `/health` *(public)* |
+
+Header: `Authorization: Basic <device_token>`. External track id = Android start timestamp (`legacy_key`), unique per car.
+
+</details>
+
+<details>
+<summary>🧩 Platform HTTP (SPA)</summary>
 
 | Method | Path | Notes |
 |--------|------|--------|
-| GET | `/api/me` | current user |
-| GET/POST | `/api/cars` | list/create |
-| GET/PATCH/DELETE | `/api/cars/{id}` | car CRUD |
-| POST | `/api/cars/{id}/photo` | multipart photo |
-| GET/POST | `/api/cars/{id}/devices` | device tokens |
-| GET | `/api/cars/{id}/devices/{id}/provisioning?token=` | QR JSON payload |
-| GET/POST | `/api/cars/{id}/shares` | direct sharing |
-| GET | `/api/trips` | trip list |
-| GET | `/api/trips/{id}/map` | GeoJSON LineString |
-| GET | `/api/dashboard/summary` | aggregates |
+| `GET` / `PATCH` | `/api/me` | profile, units, API key flags |
+| `GET` / `POST` | `/api/cars` | list / create |
+| `GET` / `PATCH` / `DELETE` | `/api/cars/{id}` | car CRUD |
+| `POST` | `/api/cars/{id}/photo` | multipart photo |
+| `GET` / `POST` | `/api/cars/{id}/devices` | device tokens |
+| `GET` | `/api/cars/{id}/devices/{id}/provisioning?token=` | QR JSON |
+| `GET` / `POST` | `/api/cars/{id}/shares` | sharing |
+| `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` | trips |
+| `POST` / `GET` | `/api/trips/{id}/analyze` · `…/analysis` | AI (owner) |
+| `GET` | `/api/dashboard/summary` | globals + per-car cards |
+| `GET` / `POST` | `/api/route-optimization/…` | corridors, map, recompute |
 
-## QR provisioning payload
+QR payload keys align with Android `AppSettings` (`apiToken`, absolute track URLs, fuel/engine fields, `carId`, `carName`).
 
-Matches Android `AppSettings` keys (`apiToken`, absolute track URLs, fuel/engine fields, `carId`, `carName`).
+</details>
 
-## Tests
+<details>
+<summary>🤖 AI route analysis</summary>
+
+- Owner saves **OpenRouter** key + model under **Settings**
+- **Analyze route** / **Re-analyze** on trip detail (background job)
+- Rig crate (`crates/ai`) · structured report + **Download markdown**
+- Keys encrypted at rest (`SECRETS_KEY` or `SESSION_SECRET`)
+- Usage bills to the user’s OpenRouter account
+
+</details>
+
+<details>
+<summary>🔀 Routes Optimization</summary>
+
+- Clusters finished trips into **corridors** & **path variants** (incl. circular garage loops via split/via)
+- Time-of-day / weekday stats; **OpenRouteService** alts + elevation with owner ORS key
+- Job after `track/stop`; **Routes → Recompute** to backfill
+- Only trips **> 2 km**; **no LLM**
+
+</details>
+
+<details>
+<summary>🧪 Tests & notes</summary>
 
 ```bash
 cargo test -p shared
 cargo test -p server --lib
+cargo test -p ai --lib
 ```
 
-Integration tests that hit Postgres expect `DATABASE_URL` and PostGIS.
+Integration tests need `DATABASE_URL` + PostGIS.
 
-## Notes
+- Device tokens: blake3 + pepper; plaintext once at creation  
+- Health is intentionally public  
+- Ingest / OBD stored metric-raw forever; display units convert on read  
 
-- Device tokens are hashed at rest (blake3 + pepper); plaintext is shown once at creation.
-- Track external id remains the Android start timestamp (`legacy_key`), unique per car.
-- Health is intentionally public (unlike the old Python app-wide auth dependency).
+</details>
 
-## License
+---
 
-This project is licensed under the [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
+<div align="center">
 
-## AI route analysis
+## 📜 License
 
-Car owners can save an **OpenRouter API key** and model under **Settings**, then run **Analyze route** on a trip detail page.
+**[GNU Affero General Public License v3.0](LICENSE)** · `AGPL-3.0-only`
 
-- Analysis runs in the background using the Rig agent crate (`crates/ai`) and the owner’s key.
-- Reports are stored on the track (`analysis_status`, JSON report). Re-analyze is supported when idle.
-- Encrypt keys at rest with `SECRETS_KEY` (falls back to `SESSION_SECRET`).
-- Only the car owner can start analysis; shared users can read completed reports.
-- You pay OpenRouter directly for model usage.
+<br/>
 
-## Routes Optimization
+**Built with Rust · PostGIS · Leptos · ❤️ for real cars on real roads**
 
-- Cluster finished trips into **corridors** (similar origin→destination) and **path variants**.
-- Compare variants by time-of-day / weekday; fetch **OpenRouteService** alternate routes + elevation when the car owner has an ORS API key in **Settings**.
-- After `track/stop`, a background job assigns the trip. Use **Routes → Recompute** to backfill.
-- No LLM is used for this feature.
+`⭐` If this helps your garage — star the repo
 
+</div>
