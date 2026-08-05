@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod analytics;
+pub mod audit;
 pub mod auth;
 pub mod cars;
 pub mod config;
