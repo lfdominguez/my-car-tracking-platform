@@ -93,10 +93,52 @@ pub async fn destroy_session(
         .execute(&state.pool)
         .await?;
 
+    Ok(clear_session_cookie(jar.clone()))
+}
+
+/// Clear the session cookie without touching the database.
+pub fn clear_session_cookie(jar: CookieJar) -> CookieJar {
     let mut cookie = Cookie::new(SESSION_COOKIE, "");
     cookie.set_path("/");
     cookie.make_removal();
-    Ok(jar.clone().add(cookie))
+    jar.add(cookie)
+}
+
+/// Delete one session owned by `user_id`. Returns whether a row was deleted.
+pub async fn revoke_session_for_user(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    session_id: &str,
+) -> AppResult<bool> {
+    let res = sqlx::query("DELETE FROM sessions WHERE id = $1 AND user_id = $2")
+        .bind(session_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Delete all sessions for `user_id` except `keep_session_id`.
+pub async fn revoke_other_sessions(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    keep_session_id: &str,
+) -> AppResult<u64> {
+    let res = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id <> $2")
+        .bind(user_id)
+        .bind(keep_session_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Delete every session for `user_id`.
+pub async fn revoke_all_sessions(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<u64> {
+    let res = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
 }
 
 pub async fn load_session_user(
