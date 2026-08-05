@@ -23,7 +23,9 @@ use axum::middleware as axum_mw;
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
-use crate::middleware::{rate_limit_middleware, security_headers_layer};
+use crate::middleware::{
+    inline_script_csp_hashes_from_dist, rate_limit_middleware, security_headers_layer,
+};
 use crate::state::AppState;
 
 /// Default JSON body limit (2 MiB). Photo multipart route layers a higher limit.
@@ -32,7 +34,12 @@ const PHOTO_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router {
     let enable_hsts = state.config.public_base_url.starts_with("https");
-    let (nosniff, referrer, frame, csp, permissions, hsts) = security_headers_layer(enable_hsts);
+    // Trunk embeds an inline module bootstrap in dist/index.html; hash it so CSP
+    // can allow that exact script without script-src 'unsafe-inline'.
+    let dist = std::env::var("WEB_DIST").unwrap_or_else(|_| "crates/web/dist".into());
+    let script_hashes = inline_script_csp_hashes_from_dist(std::path::Path::new(&dist));
+    let (nosniff, referrer, frame, csp, permissions, hsts) =
+        security_headers_layer(enable_hsts, &script_hashes);
 
     let photo_routes = Router::new()
         .merge(cars::photo_router())
