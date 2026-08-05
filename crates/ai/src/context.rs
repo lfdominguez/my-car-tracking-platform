@@ -1,0 +1,149 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// Unit labels for narrative (values in context stay SI/raw).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UnitLabels {
+    pub distance: String,
+    pub speed: String,
+    pub fuel_volume: String,
+    pub economy: String,
+    pub odometer: String,
+}
+
+impl UnitLabels {
+    pub fn metric() -> Self {
+        Self {
+            distance: "km".into(),
+            speed: "km/h".into(),
+            fuel_volume: "L".into(),
+            economy: "L/100km".into(),
+            odometer: "km".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TripOverview {
+    pub trip_id: String,
+    pub car_name: String,
+    pub make_model: Option<String>,
+    pub fuel_type: String,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub finished: bool,
+    pub point_count: i64,
+    /// Meters (raw).
+    pub distance_m: Option<f64>,
+    pub duration_secs: Option<f64>,
+    pub avg_speed_kph: Option<f64>,
+    pub max_speed_kph: Option<f64>,
+    pub fuel_used_l: Option<f64>,
+    pub displacement_l: Option<f64>,
+    pub stoich_afr: Option<f64>,
+    pub density_gl: Option<f64>,
+    pub ve: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SpeedProfile {
+    pub sample_count: usize,
+    pub min_kph: Option<f64>,
+    pub p50_kph: Option<f64>,
+    pub p95_kph: Option<f64>,
+    pub max_kph: Option<f64>,
+    pub hard_accel_events: u32,
+    pub hard_brake_events: u32,
+    pub moving_share: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EngineStats {
+    pub rpm_min: Option<f64>,
+    pub rpm_max: Option<f64>,
+    pub rpm_avg: Option<f64>,
+    pub load_pct_max: Option<f64>,
+    pub load_pct_avg: Option<f64>,
+    pub abs_load_pct_max: Option<f64>,
+    pub maf_max: Option<f64>,
+    pub map_kpa_max: Option<f64>,
+    pub high_rpm_share: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FuelMixtureStats {
+    pub fuel_rate_lph_avg: Option<f64>,
+    pub fuel_rate_lph_max: Option<f64>,
+    pub fuel_level_pct_start: Option<f64>,
+    pub fuel_level_pct_end: Option<f64>,
+    pub stft_min: Option<f64>,
+    pub stft_max: Option<f64>,
+    pub ltft_min: Option<f64>,
+    pub ltft_max: Option<f64>,
+    pub lambda_min: Option<f64>,
+    pub lambda_max: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ThermalElectricalStats {
+    pub coolant_min_c: Option<f64>,
+    pub coolant_max_c: Option<f64>,
+    pub iat_min_c: Option<f64>,
+    pub iat_max_c: Option<f64>,
+    pub ambient_min_c: Option<f64>,
+    pub ambient_max_c: Option<f64>,
+    pub voltage_min: Option<f64>,
+    pub voltage_max: Option<f64>,
+    pub atmospheric_kpa_avg: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopEvent {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub duration_secs: f64,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StopSummary {
+    pub stop_count: usize,
+    pub total_stop_secs: f64,
+    pub longest_stop_secs: f64,
+    pub stops: Vec<StopEvent>,
+}
+
+/// Sparse sample for drill-down windows (SI/raw).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplePoint {
+    pub recorded_at: DateTime<Utc>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub speed_kph: Option<f64>,
+    pub rpm: Option<f64>,
+    pub engine_load_pct: Option<f64>,
+    pub fuel_rate_lph: Option<f64>,
+    pub coolant_c: Option<f64>,
+    pub voltage: Option<f64>,
+    pub stft_pct: Option<f64>,
+    pub ltft_pct: Option<f64>,
+    pub lambda: Option<f64>,
+    pub odometer_km: Option<f64>,
+    pub engine_on_time_s: Option<f64>,
+}
+
+/// Everything the Rig tools may read. Built by the server; no DB access here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TripAnalysisContext {
+    pub overview: TripOverview,
+    pub units: UnitLabels,
+    pub speed: SpeedProfile,
+    pub engine: EngineStats,
+    pub fuel: FuelMixtureStats,
+    pub thermal: ThermalElectricalStats,
+    pub stops: StopSummary,
+    /// Downsampled chronological samples for window queries.
+    pub samples: Vec<SamplePoint>,
+    pub prior_markdown: Option<String>,
+}

@@ -17,7 +17,7 @@ export function renderQr(elId, text) {
     window.QRCode.toCanvas(
       canvas,
       text,
-      { width: 256, margin: 2, color: { dark: '#111827', light: '#ffffff' } },
+      { width: 512, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#111827', light: '#ffffff' } },
       function (err) {
         if (err) {
           el.textContent = String(err);

@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
+use crate::units::UnitSystem;
 
 pub const SESSION_COOKIE: &str = "ctp_session";
 const SESSION_TTL_DAYS: i64 = 14;
@@ -17,6 +18,7 @@ pub struct SessionUser {
     pub name: String,
     pub avatar_url: Option<String>,
     pub session_id: String,
+    pub unit_system: UnitSystem,
 }
 
 pub fn session_cookie_name() -> &'static str {
@@ -69,7 +71,7 @@ pub async fn load_session_user(
 ) -> AppResult<Option<SessionUser>> {
     let row = sqlx::query_as::<_, SessionRow>(
         r#"
-        SELECT s.id AS session_id, u.id, u.email, u.name, u.avatar_url, s.expires_at
+        SELECT s.id AS session_id, u.id, u.email, u.name, u.avatar_url, u.unit_system, s.expires_at
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.id = $1
@@ -91,12 +93,15 @@ pub async fn load_session_user(
         return Ok(None);
     }
 
+    let unit_system = UnitSystem::parse(&row.unit_system).unwrap_or_default();
+
     Ok(Some(SessionUser {
         id: row.id,
         email: row.email,
         name: row.name,
         avatar_url: row.avatar_url,
         session_id: row.session_id,
+        unit_system,
     }))
 }
 
@@ -124,6 +129,7 @@ struct SessionRow {
     email: String,
     name: String,
     avatar_url: Option<String>,
+    unit_system: String,
     expires_at: chrono::DateTime<Utc>,
 }
 

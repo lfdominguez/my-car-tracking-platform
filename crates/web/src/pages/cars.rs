@@ -4,8 +4,8 @@ use leptos_router::hooks::use_params_map;
 
 use crate::api::{
     create_car, create_device, create_share, get_car, list_cars, list_devices, list_shares,
-    provisioning, provisioning_payload_json, revoke_device, update_car, Car, CreateDeviceResponse,
-    Device, Share,
+    provisioning, provisioning_payload_json, revoke_device, update_car, upload_car_photo, Car,
+    CreateDeviceResponse, Device, Share,
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
@@ -60,7 +60,7 @@ pub fn CarsPage() -> impl IntoView {
                 >
                     <table class="table">
                         <thead>
-                            <tr><th>"Name"</th><th>"Model"</th><th>"Fuel"</th><th>"Role"</th><th></th></tr>
+                            <tr><th></th><th>"Name"</th><th>"Model"</th><th>"Fuel"</th><th>"Role"</th><th></th></tr>
                         </thead>
                         <tbody>
                             <For
@@ -73,8 +73,24 @@ pub fn CarsPage() -> impl IntoView {
                                         "editor" => "pencil-simple",
                                         _ => "eye",
                                     };
+                                    let thumb = c.photo_path.as_ref().map(|p| format!("/uploads/{p}"));
+                                    let has_photo = thumb.is_some();
+                                    let thumb_src = thumb.unwrap_or_default();
                                     view! {
                                         <tr>
+                                            <td class="car-list-thumb-cell">
+                                                {if has_photo {
+                                                    view! {
+                                                        <img class="car-list-thumb" src=thumb_src alt="" />
+                                                    }.into_any()
+                                                } else {
+                                                    view! {
+                                                        <div class="car-list-thumb car-list-thumb-fallback">
+                                                            <Icon name="car" size=IconSize::Sm color=IconColor::Device />
+                                                        </div>
+                                                    }.into_any()
+                                                }}
+                                            </td>
                                             <td>{c.name.clone()}</td>
                                             <td>{c.make_model.clone()}</td>
                                             <td>
@@ -166,6 +182,10 @@ pub fn CarDetailPage() -> impl IntoView {
     let ve = RwSignal::new("0.85".into());
     let name = RwSignal::new(String::new());
     let make_model = RwSignal::new(String::new());
+    let photo_busy = RwSignal::new(false);
+    let photo_input: NodeRef<leptos::html::Input> = NodeRef::new();
+    // Cache-buster so the browser reloads the image after upload.
+    let photo_rev = RwSignal::new(0u32);
 
     Effect::new(move |_| {
         let id = params.with(|p| p.get("id").unwrap_or_default());
@@ -225,6 +245,73 @@ pub fn CarDetailPage() -> impl IntoView {
                     <Icon name="engine" color=IconColor::Warn />
                     "Profile & fuel"
                 </h2>
+
+                <div class="car-photo-editor">
+                    <div class="car-photo-preview-wrap">
+                        {move || {
+                            let c = car.get();
+                            let rev = photo_rev.get();
+                            match c.and_then(|c| c.photo_path.clone()) {
+                                Some(path) => {
+                                    let src = format!("/uploads/{path}?v={rev}");
+                                    view! {
+                                        <img class="car-photo-preview" src=src alt="Car photo" />
+                                    }
+                                    .into_any()
+                                }
+                                None => view! {
+                                    <div class="car-photo-preview car-photo-preview-fallback">
+                                        <Icon name="car" size=IconSize::Xl color=IconColor::Device />
+                                    </div>
+                                }
+                                .into_any(),
+                            }
+                        }}
+                    </div>
+                    <div class="car-photo-actions stack" style="gap:0.45rem;flex:1;min-width:0">
+                        <div class="muted" style="font-size:0.85rem;margin:0">
+                            "Car image shown on the dashboard. JPEG, PNG, WebP, or GIF · max 8 MB."
+                        </div>
+                        <div class="car-photo-buttons">
+                            <label class="btn secondary car-photo-pick">
+                                <Icon name="image" size=IconSize::Sm />
+                                {move || if photo_busy.get() { "Uploading…" } else { "Change image" }}
+                                <input
+                                    type="file"
+                                    accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+                                    node_ref=photo_input
+                                    disabled=move || photo_busy.get()
+                                    style="display:none"
+                                    on:change=move |_| {
+                                        let Some(input) = photo_input.get() else { return };
+                                        let Some(files) = input.files() else { return };
+                                        let Some(file) = files.get(0) else { return };
+                                        let id = params.with(|p| p.get("id").unwrap_or_default());
+                                        if id.is_empty() {
+                                            return;
+                                        }
+                                        error.set(None);
+                                        photo_busy.set(true);
+                                        leptos::task::spawn_local(async move {
+                                            match upload_car_photo(&id, &file).await {
+                                                Ok(c) => {
+                                                    car.set(Some(c));
+                                                    photo_rev.update(|n| *n = n.wrapping_add(1));
+                                                    if let Some(el) = photo_input.get_untracked() {
+                                                        el.set_value("");
+                                                    }
+                                                }
+                                                Err(e) => error.set(Some(e.to_string())),
+                                            }
+                                            photo_busy.set(false);
+                                        });
+                                    }
+                                />
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="form-row"><label>"Name"</label>
                     <input prop:value=move || name.get() on:input=move |ev| name.set(event_target_value(&ev))/></div>
                 <div class="form-row"><label>"Make / model"</label>

@@ -24,6 +24,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     db::migrate(&pool).await?;
 
+    match server::analysis::fail_interrupted_jobs(&pool).await {
+        Ok(n) if n > 0 => {
+            tracing::warn!(count = n, "marked interrupted AI analysis jobs as failed")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::error!(error = %e, "failed to sweep interrupted AI jobs"),
+    }
+
     let listen_addr = config.listen_addr;
     let upload_dir = config.upload_dir.clone();
     let state = AppState::new(pool, config);

@@ -10,6 +10,8 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     pub public_base_url: String,
     pub session_secret: String,
+    /// Key material for encrypting user secrets (OpenRouter API keys). Falls back to session_secret.
+    pub secrets_key: String,
     pub google_client_id: String,
     pub google_client_secret: String,
     pub google_redirect_url: String,
@@ -41,6 +43,7 @@ impl Config {
             .unwrap_or_else(|_| format!("http://{}", listen_addr));
         let session_secret = env::var("SESSION_SECRET")
             .unwrap_or_else(|_| "dev-session-secret-change-me".into());
+        let secrets_key = env::var("SECRETS_KEY").unwrap_or_else(|_| session_secret.clone());
         let google_client_id =
             env::var("GOOGLE_CLIENT_ID").unwrap_or_else(|_| String::new());
         let google_client_secret =
@@ -65,6 +68,7 @@ impl Config {
             listen_addr,
             public_base_url,
             session_secret,
+            secrets_key,
             google_client_id,
             google_client_secret,
             google_redirect_url,

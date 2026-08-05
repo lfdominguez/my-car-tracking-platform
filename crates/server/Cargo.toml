@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 shared = { workspace = true }
+ai = { workspace = true }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
@@ -36,6 +37,7 @@ url = "2"
 mime_guess = "2"
 async-trait = "0.1"
 anyhow = "1"
+aes-gcm = "0.10"
 
 [dev-dependencies]
 http-body-util = "0.1"

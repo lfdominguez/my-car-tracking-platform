@@ -1,6 +1,6 @@
 # Car Tracking Platform
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-my--car--tracking--platform-blue)](https://github.com/lfdominguez/my-car-tracking-platform/pkgs/container/my-car-tracking-platform)
 
 Rust modular-monolith API (Axum + PostgreSQL/PostGIS) and Leptos CSR SPA for personal multi-user car tracking.
@@ -24,7 +24,7 @@ migrations/     # SQLx SQL migrations
 
 - Rust 1.88+ (edition 2024)
 - Docker (for PostGIS) or a local PostgreSQL + PostGIS
-- Optional: [trunk](https://trunkrs.dev/) to build the SPA
+- [trunk](https://trunkrs.dev/) to build the SPA (prefer `nix run nixpkgs#trunk -- <args>`; see below)
 - Google OAuth Web client (or `ALLOW_DEV_LOGIN=1` for local API testing)
 
 ## Quick start
@@ -56,10 +56,13 @@ Migrations run automatically on startup. Health check: `http://localhost:8080/he
 ### 4. Build SPA (optional for UI)
 
 ```bash
-cargo install trunk
 rustup target add wasm32-unknown-unknown
-cd crates/web && trunk build --release
+cd crates/web
+# Prefer Nix (this environment); avoid relying on a global trunk install:
+nix run nixpkgs#trunk -- build --release
 ```
+
+Equivalent without Nix: install [trunk](https://trunkrs.dev/) (`cargo install trunk`) and run `trunk build --release` from `crates/web`.
 
 Serve the built assets by running the server from the repo root (`WEB_DIST` defaults to `crates/web/dist`).
 
@@ -158,4 +161,22 @@ Integration tests that hit Postgres expect `DATABASE_URL` and PostGIS.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
+
+## AI route analysis
+
+Car owners can save an **OpenRouter API key** and model under **Settings**, then run **Analyze route** on a trip detail page.
+
+- Analysis runs in the background using the Rig agent crate (`crates/ai`) and the owner’s key.
+- Reports are stored on the track (`analysis_status`, JSON report). Re-analyze is supported when idle.
+- Encrypt keys at rest with `SECRETS_KEY` (falls back to `SESSION_SECRET`).
+- Only the car owner can start analysis; shared users can read completed reports.
+- You pay OpenRouter directly for model usage.
+
+## Routes Optimization
+
+- Cluster finished trips into **corridors** (similar origin→destination) and **path variants**.
+- Compare variants by time-of-day / weekday; fetch **OpenRouteService** alternate routes + elevation when the car owner has an ORS API key in **Settings**.
+- After `track/stop`, a background job assigns the trip. Use **Routes → Recompute** to backfill.
+- No LLM is used for this feature.
+

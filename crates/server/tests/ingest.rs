@@ -20,6 +20,7 @@ fn test_config(database_url: String) -> Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         public_base_url: "http://127.0.0.1:8080".into(),
         session_secret: "test-secret".into(),
+        secrets_key: "test-secrets-key".into(),
         google_client_id: String::new(),
         google_client_secret: String::new(),
         google_redirect_url: "http://127.0.0.1:8080/auth/google/callback".into(),

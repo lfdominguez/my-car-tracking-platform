@@ -174,6 +174,26 @@ async fn track_stop(
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+
+    // Best-effort routes optimization (non-blocking).
+    if let Ok(Some(track_id)) = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2",
+    )
+    .bind(device.car_id)
+    .bind(legacy_key)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        let pool = state.pool.clone();
+        let secrets = state.config.secrets_key.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::route_opt::process_finished_track(&pool, &secrets, track_id).await
+            {
+                tracing::warn!(%track_id, error = %e, "route optimization job failed");
+            }
+        });
+    }
+
     Ok(StatusCode::OK)
 }
 

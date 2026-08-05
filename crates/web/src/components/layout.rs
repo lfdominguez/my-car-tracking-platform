@@ -4,10 +4,13 @@ use leptos_router::hooks::use_navigate;
 
 use crate::api::{get_me, logout, Me};
 use crate::components::{Icon, IconColor, IconSize};
+use crate::units::{UnitPrefs, UnitPrefsSignal};
 
 #[component]
 pub fn AppLayout() -> impl IntoView {
     let me = RwSignal::new(Option::<Me>::None);
+    let unit_prefs: UnitPrefsSignal = RwSignal::new(UnitPrefs::default());
+    provide_context(unit_prefs);
     let error = RwSignal::new(Option::<String>::None);
     let avatar_failed = RwSignal::new(false);
     let navigate = StoredValue::new(use_navigate());
@@ -17,6 +20,7 @@ pub fn AppLayout() -> impl IntoView {
             match get_me().await {
                 Ok(user) => {
                     avatar_failed.set(false);
+                    unit_prefs.set(UnitPrefs::from_me(&user));
                     me.set(Some(user));
                 }
                 Err(crate::api::ApiError::Unauthorized) => {
@@ -46,6 +50,14 @@ pub fn AppLayout() -> impl IntoView {
                     <A href="/trips">
                         <Icon name="map-trifold" color=IconColor::Accent />
                         "Trips"
+                    </A>
+                    <A href="/routes">
+                        <Icon name="path" color=IconColor::Accent />
+                        "Routes"
+                    </A>
+                    <A href="/settings">
+                        <Icon name="gear" color=IconColor::Accent />
+                        "Settings"
                     </A>
                 </nav>
                 <div style="margin-top:auto" class="stack">

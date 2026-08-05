@@ -1,4 +1,5 @@
 mod api;
+mod units;
 mod components;
 mod pages;
 
@@ -9,8 +10,10 @@ use leptos_router::path;
 use crate::components::layout::AppLayout;
 use crate::pages::cars::{CarDetailPage, CarsPage};
 use crate::pages::dashboard::DashboardPage;
+use crate::pages::settings::SettingsPage;
 use crate::pages::login::LoginPage;
 use crate::pages::not_found::NotFoundPage;
+use crate::pages::routes::{RouteCorridorPage, RoutesPage};
 use crate::pages::trips::{TripDetailPage, TripsPage};
 
 fn main() {
@@ -28,6 +31,9 @@ fn main() {
                         <Route path=path!("cars/:id") view=CarDetailPage/>
                         <Route path=path!("trips") view=TripsPage/>
                         <Route path=path!("trips/:id") view=TripDetailPage/>
+                        <Route path=path!("routes") view=RoutesPage/>
+                        <Route path=path!("routes/:id") view=RouteCorridorPage/>
+                        <Route path=path!("settings") view=SettingsPage/>
                     </ParentRoute>
                 </Routes>
             </Router>

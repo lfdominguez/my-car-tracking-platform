@@ -1,11 +1,15 @@
 use leptos::prelude::*;
 use leptos_router::components::A;
 
-use crate::api::{get_dashboard, list_trips, DashboardSummary, Trip};
+use crate::api::{get_dashboard, list_trips, DashboardCarSummary, DashboardSummary, Trip};
 use crate::components::{Icon, IconColor, IconSize};
+use crate::units::{
+    fmt_distance, fmt_distance_value, fmt_fuel, fmt_odometer_delta, use_unit_prefs, UnitPrefs,
+};
 
 #[component]
 pub fn DashboardPage() -> impl IntoView {
+    let prefs = use_unit_prefs();
     let summary = RwSignal::new(Option::<DashboardSummary>::None);
     let trips = RwSignal::new(Vec::<Trip>::new());
     let error = RwSignal::new(Option::<String>::None);
@@ -30,7 +34,7 @@ pub fn DashboardPage() -> impl IntoView {
                     <Icon name="chart-line-up" color=IconColor::Accent />
                     "Dashboard"
                 </h1>
-                <p class="muted">"Overview across cars you own or can access"</p>
+                <p class="muted">"Overview by car — odometer, tank level, and tracked distance"</p>
             </div>
         </div>
 
@@ -38,7 +42,40 @@ pub fn DashboardPage() -> impl IntoView {
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
 
-        <div class="grid stats" style="margin-bottom:1rem">
+        <section class="dash-cars-section">
+            <h2 class="section-title dash-section-heading">
+                <Icon name="car" color=IconColor::Device />
+                "Your cars"
+            </h2>
+            <Show
+                when=move || summary.get().map(|s| !s.cars.is_empty()).unwrap_or(false)
+                fallback=move || view! {
+                    <div class="card empty-state">
+                        <Icon name="car" size=IconSize::Xl color=IconColor::Device />
+                        <div>"No cars yet — add one under Cars, then track from the phone."</div>
+                        <A href="/cars"><button type="button" class="primary">"Manage cars"</button></A>
+                    </div>
+                }
+            >
+                <div class="dash-car-grid">
+                    <For
+                        each=move || {
+                            summary
+                                .get()
+                                .map(|s| s.cars)
+                                .unwrap_or_default()
+                        }
+                        key=|c| c.car_id.clone()
+                        children=move |car| {
+                            let p = prefs.get();
+                            view! { <DashCarCard car=car prefs=p /> }
+                        }
+                    />
+                </div>
+            </Show>
+        </section>
+
+        <div class="grid stats dash-global-stats">
             <div class="card">
                 <div class="stat-card-head">
                     <div class="stat-label">"Trips"</div>
@@ -48,10 +85,10 @@ pub fn DashboardPage() -> impl IntoView {
             </div>
             <div class="card">
                 <div class="stat-card-head">
-                    <div class="stat-label">"Distance (km)"</div>
+                    <div class="stat-label">{move || format!("Distance ({})", prefs.get().labels.distance)}</div>
                     <Icon name="ruler" size=IconSize::Lg color=IconColor::Accent />
                 </div>
-                <div class="stat-value">{move || summary.get().map(|s| format!("{:.1}", s.total_distance_m / 1000.0)).unwrap_or_else(|| "—".into())}</div>
+                <div class="stat-value">{move || summary.get().map(|s| fmt_distance_value(s.total_distance_m, &prefs.get())).unwrap_or_else(|| "—".into())}</div>
             </div>
             <div class="card">
                 <div class="stat-card-head">
@@ -62,7 +99,7 @@ pub fn DashboardPage() -> impl IntoView {
             </div>
             <div class="card">
                 <div class="stat-card-head">
-                    <div class="stat-label">"Fuel (L)"</div>
+                    <div class="stat-label">{move || format!("Fuel ({})", prefs.get().labels.fuel_volume)}</div>
                     <Icon name="gas-pump" size=IconSize::Lg color=IconColor::Success />
                 </div>
                 <div class="stat-value">{move || summary.get().map(|s| format!("{:.2}", s.total_fuel_l)).unwrap_or_else(|| "—".into())}</div>
@@ -107,13 +144,16 @@ pub fn DashboardPage() -> impl IntoView {
                             key=|t| t.id.clone()
                             children=move |t| {
                                 let id = t.id.clone();
+                                let p = prefs.get();
+                                let dist = fmt_distance(t.distance_m, &p);
+                                let fuel = fmt_fuel(t.fuel_used_l, &p);
                                 view! {
                                     <tr>
                                         <td>{t.car_name.clone()}</td>
                                         <td>{t.started_at.clone()}</td>
-                                        <td>{format!("{:.1} km", t.distance_m.unwrap_or(0.0) / 1000.0)}</td>
+                                        <td>{dist}</td>
                                         <td>{format!("{:.0} min", t.duration_s.unwrap_or(0.0) / 60.0)}</td>
-                                        <td>{format!("{:.2} L", t.fuel_used_l.unwrap_or(0.0))}</td>
+                                        <td>{fuel}</td>
                                         <td>
                                             <A href=format!("/trips/{id}")>
                                                 <span class="icon-label">
@@ -130,5 +170,87 @@ pub fn DashboardPage() -> impl IntoView {
                 </table>
             </Show>
         </div>
+    }
+}
+
+#[component]
+fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefs) -> impl IntoView {
+    let id = car.car_id.clone();
+    let href = format!("/cars/{id}");
+    let photo = car
+        .photo_path
+        .as_ref()
+        .map(|p| format!("/uploads/{p}"))
+        .unwrap_or_default();
+    let has_photo = car.photo_path.is_some();
+    let odo = fmt_odometer_delta(car.odometer, &prefs);
+    let fuel = car
+        .fuel_level_pct
+        .map(|v| format!("{v:.0}%"))
+        .unwrap_or_else(|| "—".into());
+    let fuel_fill = car
+        .fuel_level_pct
+        .map(|v| v.clamp(0.0, 100.0))
+        .unwrap_or(0.0);
+    let tracked = fmt_distance(Some(car.tracked_distance_m), &prefs);
+    let trips_label = if car.trip_count == 1 {
+        "1 trip".into()
+    } else {
+        format!("{} trips", car.trip_count)
+    };
+    let make = car.make_model.clone();
+    let name = car.name.clone();
+
+    view! {
+        <A href=href>
+            <article class="dash-car-card">
+                <div class="dash-car-card-top">
+                    <div class="dash-car-photo-wrap">
+                        {if has_photo {
+                            view! {
+                                <img class="dash-car-photo" src=photo alt=name.clone() />
+                            }.into_any()
+                        } else {
+                            view! {
+                                <div class="dash-car-photo dash-car-photo-fallback">
+                                    <Icon name="car" size=IconSize::Xl color=IconColor::Device />
+                                </div>
+                            }.into_any()
+                        }}
+                    </div>
+                    <div class="dash-car-titles">
+                        <div class="dash-car-name">{name}</div>
+                        <div class="dash-car-sub muted">{make}</div>
+                        <div class="dash-car-trips muted">{trips_label}</div>
+                    </div>
+                </div>
+                <div class="dash-car-metrics">
+                    <div class="dash-car-metric">
+                        <div class="dash-car-metric-label">
+                            <Icon name="gauge" size=IconSize::Sm color=IconColor::Accent />
+                            "Odometer"
+                        </div>
+                        <div class="dash-car-metric-value">{odo}</div>
+                    </div>
+                    <div class="dash-car-metric">
+                        <div class="dash-car-metric-label">
+                            <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Success />
+                            "Fuel tank"
+                        </div>
+                        <div class="dash-car-metric-value">{fuel.clone()}</div>
+                        <div class="dash-fuel-bar" aria-hidden="true">
+                            <div class="dash-fuel-bar-fill" style=format!("width:{fuel_fill}%")></div>
+                        </div>
+                    </div>
+                    <div class="dash-car-metric">
+                        <div class="dash-car-metric-label">
+                            <Icon name="path" size=IconSize::Sm color=IconColor::Accent />
+                            "Tracked"
+                        </div>
+                        <div class="dash-car-metric-value">{tracked}</div>
+                    </div>
+                </div>
+            </article>
+        </A>
     }
 }

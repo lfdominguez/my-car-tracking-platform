@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::auth::session::{load_session_user, SESSION_COOKIE};
 use crate::error::AppError;
 use crate::state::AppState;
+use crate::units::UnitSystem;
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
@@ -14,6 +15,7 @@ pub struct AuthUser {
     pub name: String,
     pub avatar_url: Option<String>,
     pub session_id: String,
+    pub unit_system: UnitSystem,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +41,7 @@ impl FromRequestParts<AppState> for AuthUser {
             name: user.name,
             avatar_url: user.avatar_url,
             session_id: user.session_id,
+            unit_system: user.unit_system,
         })
     }
 }

@@ -11,6 +11,10 @@ use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::shares::access::can_read_car;
 use crate::state::AppState;
+use crate::units::{
+    convert_distance_m, convert_fuel_l, convert_fuel_rate_lph, convert_odometer_km,
+    convert_speed_kph, UnitSystem,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -43,6 +47,9 @@ pub struct TripSummary {
     pub avg_speed_kph: Option<f64>,
     pub max_speed_kph: Option<f64>,
     pub fuel_used_l: Option<f64>,
+    pub analysis_status: String,
+    pub analyzed_at: Option<DateTime<Utc>>,
+    pub analyzed: bool,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -53,9 +60,24 @@ pub struct TripPoint {
     pub gps_acc_m: f64,
     pub vehicle_speed_kph: Option<f64>,
     pub vehicle_engine_rpm: Option<f64>,
+    pub engine_rpm: Option<f64>,
+    pub engine_vel: Option<f64>,
     pub fuel_consumption_rate: Option<f64>,
     pub engine_load_pct: Option<f64>,
+    pub absolute_engine_load_pct: Option<f64>,
+    pub short_term_fuel_trim_pct: Option<f64>,
+    pub long_term_fuel_trim_pct: Option<f64>,
+    pub fuel_level_pct: Option<f64>,
+    pub accelerator_pedal_pct: Option<f64>,
+    pub ambient_air_temp_c: Option<f64>,
+    pub odometer_value_km: Option<f64>,
+    pub engine_coolant_temp_c: Option<f64>,
+    pub manifold_absolute_pressure_kpa: Option<f64>,
+    pub control_module_voltage: Option<f64>,
+    pub engine_on_time: Option<f64>,
     pub lambda_cmd: Option<f64>,
+    pub atmospheric_pressure: Option<f64>,
+    pub intake_air_temperature: Option<f64>,
     pub mass_air_flow: Option<f64>,
 }
 
@@ -73,6 +95,42 @@ async fn accessible_car_filter(user_id: Uuid) -> &'static str {
       OR t.car_id IN (SELECT car_id FROM car_shares WHERE user_id = $1)
     )
     "#
+}
+
+
+fn apply_trip_summary_units(mut t: TripSummary, system: UnitSystem) -> TripSummary {
+    if let Some(d) = t.distance_m {
+        t.distance_m = Some(convert_distance_m(d, system));
+    }
+    if let Some(v) = t.avg_speed_kph {
+        t.avg_speed_kph = Some(convert_speed_kph(v, system));
+    }
+    if let Some(v) = t.max_speed_kph {
+        t.max_speed_kph = Some(convert_speed_kph(v, system));
+    }
+    if let Some(v) = t.fuel_used_l {
+        t.fuel_used_l = Some(convert_fuel_l(v, system));
+    }
+    t
+}
+
+fn apply_trip_point_units(mut p: TripPoint, system: UnitSystem) -> TripPoint {
+    if system == UnitSystem::Metric {
+        return p;
+    }
+    if let Some(v) = p.vehicle_speed_kph {
+        p.vehicle_speed_kph = Some(convert_speed_kph(v, system));
+    }
+    if let Some(v) = p.engine_vel {
+        p.engine_vel = Some(convert_speed_kph(v, system));
+    }
+    if let Some(v) = p.odometer_value_km {
+        p.odometer_value_km = Some(convert_odometer_km(v, system));
+    }
+    if let Some(v) = p.fuel_consumption_rate {
+        p.fuel_consumption_rate = Some(convert_fuel_rate_lph(v, system));
+    }
+    p
 }
 
 async fn list_trips(
@@ -102,7 +160,10 @@ async fn list_trips(
             END AS duration_s,
             stats.avg_speed_kph,
             stats.max_speed_kph,
-            stats.fuel_used_l
+            stats.fuel_used_l,
+            t.analysis_status,
+            t.analyzed_at,
+            (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
         LEFT JOIN LATERAL (
@@ -145,6 +206,11 @@ async fn list_trips(
     .fetch_all(&state.pool)
     .await?;
 
+    let system = user.unit_system;
+    let rows = rows
+        .into_iter()
+        .map(|t| apply_trip_summary_units(t, system))
+        .collect();
     Ok(Json(rows))
 }
 
@@ -172,7 +238,10 @@ async fn get_trip(
               WHEN stats.last_at IS NOT NULL THEN EXTRACT(EPOCH FROM (stats.last_at - t.started_at))::float8
               ELSE NULL
             END AS duration_s,
-            stats.avg_speed_kph, stats.max_speed_kph, stats.fuel_used_l
+            stats.avg_speed_kph, stats.max_speed_kph, stats.fuel_used_l,
+            t.analysis_status,
+            t.analyzed_at,
+            (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
         LEFT JOIN LATERAL (
@@ -201,7 +270,7 @@ async fn get_trip(
     .fetch_one(&state.pool)
     .await?;
 
-    Ok(Json(row))
+    Ok(Json(apply_trip_summary_units(row, user.unit_system)))
 }
 
 async fn trip_points(
@@ -225,9 +294,24 @@ async fn trip_points(
             gps_acc_m,
             vehicle_speed_kph,
             vehicle_engine_rpm,
+            engine_rpm,
+            engine_vel,
             fuel_consumption_rate,
             engine_load_pct,
+            absolute_engine_load_pct,
+            short_term_fuel_trim_pct,
+            long_term_fuel_trim_pct,
+            fuel_level_pct,
+            accelerator_pedal_pct,
+            ambient_air_temp_c,
+            odometer_value_km,
+            engine_coolant_temp_c,
+            manifold_absolute_pressure_kpa,
+            control_module_voltage,
+            engine_on_time,
             lambda_cmd,
+            atmospheric_pressure,
+            intake_air_temperature,
             mass_air_flow
         FROM track_points
         WHERE track_id = $1
@@ -237,6 +321,11 @@ async fn trip_points(
     .bind(id)
     .fetch_all(&state.pool)
     .await?;
+    let system = user.unit_system;
+    let rows = rows
+        .into_iter()
+        .map(|p| apply_trip_point_units(p, system))
+        .collect();
     Ok(Json(rows))
 }
 
