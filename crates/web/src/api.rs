@@ -66,6 +66,14 @@ pub struct Car {
     pub role: String,
 }
 
+/// Authenticated photo URL (same-origin cookie). `cache_bust` optional query.
+pub fn car_photo_url(car_id: &str, cache_bust: Option<u32>) -> String {
+    match cache_bust {
+        Some(v) => format!("/api/cars/{car_id}/photo?v={v}"),
+        None => format!("/api/cars/{car_id}/photo"),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DashboardCarSummary {
     pub car_id: String,
@@ -187,6 +195,29 @@ pub struct Share {
     pub email: String,
     pub name: String,
     pub role: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionInfo {
+    pub id: String,
+    pub created_at: String,
+    pub last_seen_at: String,
+    pub expires_at: String,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuditEvent {
+    pub id: String,
+    pub action: String,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub meta: serde_json::Value,
     pub created_at: String,
 }
 
@@ -364,8 +395,14 @@ pub async fn provisioning(
     device_id: &str,
     token: &str,
 ) -> Result<ProvisioningPayload, ApiError> {
-    let url = format!("/api/cars/{car_id}/devices/{device_id}/provisioning?token={token}");
-    send_json(Request::get(&url)).await
+    let body = serde_json::json!({ "token": token });
+    let req = with_creds(Request::post(&format!(
+        "/api/cars/{car_id}/devices/{device_id}/provisioning"
+    )))
+    .header("Content-Type", "application/json")
+    .json(&body)
+    .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
 }
 
 pub async fn revoke_device(car_id: &str, device_id: &str) -> Result<(), ApiError> {
@@ -425,7 +462,19 @@ pub async fn list_shares(car_id: &str) -> Result<Vec<Share>, ApiError> {
     send_json(Request::get(&format!("/api/cars/{car_id}/shares"))).await
 }
 
-pub async fn create_share(car_id: &str, email: &str, role: &str) -> Result<Share, ApiError> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CreateShareResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub share: Option<Share>,
+    pub message: String,
+}
+
+pub async fn create_share(
+    car_id: &str,
+    email: &str,
+    role: &str,
+) -> Result<CreateShareResponse, ApiError> {
     let body = serde_json::json!({ "email": email, "role": role });
     let req = with_creds(Request::post(&format!("/api/cars/{car_id}/shares")))
         .header("Content-Type", "application/json")
@@ -572,7 +621,7 @@ pub async fn route_opt_recompute(car_id: &str) -> Result<RouteRecomputeResponse,
 }
 
 pub async fn logout() -> Result<(), ApiError> {
-    let resp = with_creds(Request::get("/auth/logout"))
+    let resp = with_creds(Request::post("/auth/logout"))
         .send()
         .await
         .map_err(|e| ApiError::Message(e.to_string()))?;
@@ -581,4 +630,49 @@ pub async fn logout() -> Result<(), ApiError> {
     } else {
         Err(ApiError::Message(format!("logout {}", resp.status())))
     }
+}
+
+pub async fn get_sessions() -> Result<Vec<SessionInfo>, ApiError> {
+    send_json(Request::get("/api/me/sessions")).await
+}
+
+pub async fn revoke_session(id: &str) -> Result<(), ApiError> {
+    let resp = with_creds(Request::delete(&format!("/api/me/sessions/{id}")))
+        .send()
+        .await
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    if resp.status() == 401 {
+        return Err(ApiError::Unauthorized);
+    }
+    if !resp.ok() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+    }
+    Ok(())
+}
+
+pub async fn revoke_other_sessions() -> Result<(), ApiError> {
+    let req = with_creds(Request::post("/api/me/sessions/revoke-others"))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({}))
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    let _: serde_json::Value = send_body_json(req).await?;
+    Ok(())
+}
+
+pub async fn revoke_all_sessions() -> Result<(), ApiError> {
+    let req = with_creds(Request::post("/api/me/sessions/revoke-all"))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({}))
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    let _: serde_json::Value = send_body_json(req).await?;
+    Ok(())
+}
+
+pub async fn get_audit(limit: Option<i64>) -> Result<Vec<AuditEvent>, ApiError> {
+    let url = match limit {
+        Some(n) => format!("/api/me/audit?limit={n}"),
+        None => "/api/me/audit".into(),
+    };
+    send_json(Request::get(&url)).await
 }

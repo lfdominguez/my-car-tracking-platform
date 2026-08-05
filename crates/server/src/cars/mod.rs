@@ -1,8 +1,11 @@
 //! Car CRUD and photo upload.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use axum::extract::{Multipart, Path, State};
+use axum::body::Body;
+use axum::extract::{Multipart, Path as AxumPath, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
@@ -15,6 +18,8 @@ use crate::error::{AppError, AppResult};
 use crate::shares::access::{can_edit_car, can_read_car, require_owner};
 use crate::state::AppState;
 
+const MAX_PHOTO_BYTES: usize = 8 * 1024 * 1024;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/cars", get(list_cars).post(create_car))
@@ -22,7 +27,90 @@ pub fn router() -> Router<AppState> {
             "/api/cars/{id}",
             get(get_car).patch(update_car).delete(delete_car),
         )
-        .route("/api/cars/{id}/photo", axum::routing::post(upload_photo))
+}
+
+/// Photo routes (GET/POST) — higher body limit applied by `build_router`.
+pub fn photo_router() -> Router<AppState> {
+    Router::new().route(
+        "/api/cars/{id}/photo",
+        get(get_photo).post(upload_photo),
+    )
+}
+
+/// Detected image type from magic bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageKind {
+    Jpeg,
+    Png,
+    Webp,
+}
+
+impl ImageKind {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::Webp => "webp",
+        }
+    }
+
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+            Self::Webp => "image/webp",
+        }
+    }
+}
+
+/// Sniff jpeg/png/webp from leading bytes. Rejects everything else.
+pub fn sniff_image(bytes: &[u8]) -> Option<ImageKind> {
+    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        return Some(ImageKind::Jpeg);
+    }
+    if bytes.len() >= 8
+        && bytes[0..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+    {
+        return Some(ImageKind::Png);
+    }
+    // RIFF....WEBP
+    if bytes.len() >= 12
+        && &bytes[0..4] == b"RIFF"
+        && &bytes[8..12] == b"WEBP"
+    {
+        return Some(ImageKind::Webp);
+    }
+    None
+}
+
+fn content_type_for_path(path: &str) -> &'static str {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Ensure stored photo_path stays under upload_dir (no path traversal).
+fn resolve_photo_file(upload_dir: &Path, photo_path: &str) -> AppResult<PathBuf> {
+    if photo_path.is_empty()
+        || photo_path.contains("..")
+        || Path::new(photo_path).is_absolute()
+    {
+        return Err(AppError::NotFound);
+    }
+    let abs = upload_dir.join(photo_path);
+    let canon_root = upload_dir;
+    if !abs.starts_with(canon_root) {
+        return Err(AppError::NotFound);
+    }
+    Ok(abs)
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -134,7 +222,7 @@ async fn create_car(
 async fn get_car(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    AxumPath(id): AxumPath<Uuid>,
 ) -> AppResult<Json<CarRow>> {
     let access = can_read_car(&state.pool, user.id, id).await?;
     let role = match access {
@@ -160,7 +248,7 @@ async fn get_car(
 async fn update_car(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    AxumPath(id): AxumPath<Uuid>,
     Json(body): Json<UpdateCarRequest>,
 ) -> AppResult<Json<CarRow>> {
     can_edit_car(&state.pool, user.id, id).await?;
@@ -211,7 +299,7 @@ async fn update_car(
 async fn delete_car(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    AxumPath(id): AxumPath<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_owner(&state.pool, user.id, id).await?;
     let res = sqlx::query("DELETE FROM cars WHERE id = $1")
@@ -224,15 +312,56 @@ async fn delete_car(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+async fn get_photo(
+    State(state): State<AppState>,
+    user: AuthUser,
+    AxumPath(id): AxumPath<Uuid>,
+) -> AppResult<Response> {
+    can_read_car(&state.pool, user.id, id).await?;
+    let photo_path: Option<String> =
+        sqlx::query_scalar("SELECT photo_path FROM cars WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
+    let Some(photo_path) = photo_path else {
+        return Err(AppError::NotFound);
+    };
+    let abs = resolve_photo_file(&state.config.upload_dir, &photo_path)?;
+    let bytes = tokio::fs::read(&abs).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AppError::NotFound
+        } else {
+            AppError::internal(e.to_string())
+        }
+    })?;
+    let ct = content_type_for_path(&photo_path);
+    let mut res = Response::new(Body::from(bytes));
+    *res.status_mut() = StatusCode::OK;
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(ct),
+    );
+    res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    res.headers_mut().insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(res)
+}
+
 async fn upload_photo(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    AxumPath(id): AxumPath<Uuid>,
     mut multipart: Multipart,
 ) -> AppResult<Json<CarRow>> {
     can_edit_car(&state.pool, user.id, id).await?;
 
-    let mut data: Option<(String, Vec<u8>)> = None;
+    let mut data: Option<Vec<u8>> = None;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -240,34 +369,45 @@ async fn upload_photo(
     {
         let name = field.name().unwrap_or("").to_string();
         if name == "photo" || name == "file" {
-            let filename = field
-                .file_name()
-                .unwrap_or("photo.jpg")
-                .to_string();
             let bytes = field
                 .bytes()
                 .await
                 .map_err(|e| AppError::BadRequest(e.to_string()))?
                 .to_vec();
-            data = Some((filename, bytes));
+            data = Some(bytes);
             break;
         }
     }
 
-    let (filename, bytes) = data.ok_or_else(|| AppError::BadRequest("photo field required".into()))?;
-    if bytes.len() > 8 * 1024 * 1024 {
+    let bytes = data.ok_or_else(|| AppError::BadRequest("photo field required".into()))?;
+    if bytes.is_empty() {
+        return Err(AppError::BadRequest("photo is empty".into()));
+    }
+    if bytes.len() > MAX_PHOTO_BYTES {
         return Err(AppError::BadRequest("photo too large (max 8MB)".into()));
     }
+    let kind = sniff_image(&bytes).ok_or_else(|| {
+        AppError::BadRequest("photo must be a jpeg, png, or webp image".into())
+    })?;
 
-    let ext = std::path::Path::new(&filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("jpg");
-    let rel = format!("cars/{id}.{ext}");
+    let rel = format!("cars/{id}.{}", kind.extension());
     let dir = state.config.upload_dir.join("cars");
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
+
+    // Remove prior photo with a different extension if present.
+    if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+        let prefix = format!("{id}.");
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name != format!("{id}.{}", kind.extension()) {
+                let _ = tokio::fs::remove_file(entry.path()).await;
+            }
+        }
+    }
+
     let abs: PathBuf = state.config.upload_dir.join(&rel);
     tokio::fs::write(&abs, &bytes)
         .await
@@ -287,4 +427,39 @@ async fn upload_photo(
     .fetch_one(&state.pool)
     .await?;
     Ok(Json(row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sniff_jpeg_png_webp() {
+        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0]), Some(ImageKind::Jpeg));
+        assert_eq!(
+            sniff_image(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
+            Some(ImageKind::Png)
+        );
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0, 0, 0, 0]);
+        webp.extend_from_slice(b"WEBP");
+        webp.extend_from_slice(&[0, 0]);
+        assert_eq!(sniff_image(&webp), Some(ImageKind::Webp));
+    }
+
+    #[test]
+    fn sniff_rejects_html_svg() {
+        assert!(sniff_image(b"<html><script>alert(1)</script>").is_none());
+        assert!(sniff_image(b"<?xml version=\"1.0\"?><svg").is_none());
+        assert!(sniff_image(b"GIF89a").is_none());
+        assert!(sniff_image(b"").is_none());
+    }
+
+    #[test]
+    fn resolve_rejects_traversal() {
+        let root = PathBuf::from("/tmp/uploads");
+        assert!(resolve_photo_file(&root, "../etc/passwd").is_err());
+        assert!(resolve_photo_file(&root, "/etc/passwd").is_err());
+        assert!(resolve_photo_file(&root, "cars/x.jpg").is_ok());
+    }
 }

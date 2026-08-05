@@ -6,13 +6,14 @@
   <title>Car Tracking Platform</title>
   <link data-trunk rel="css" href="style.css"/>
   <link data-trunk rel="rust" data-wasm-opt="z"/>
-  <!-- Vendor qrcode browser build (jsDelivr path for 1.5.4/build is 404). -->
+  <!-- Vendor assets (self-hosted for CSP script-src 'self'). -->
   <link data-trunk rel="copy-file" href="public/qrcode.min.js"/>
-  <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/duotone/style.css"/>
-  <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css"/>
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <link data-trunk rel="copy-dir" href="public/vendor" data-target-path="vendor"/>
+  <link rel="stylesheet" type="text/css" href="/vendor/phosphor-duotone.css"/>
+  <link rel="stylesheet" type="text/css" href="/vendor/phosphor-regular.css"/>
+  <link rel="stylesheet" href="/vendor/maplibre-gl.css"/>
+  <script src="/vendor/maplibre-gl.js"></script>
+  <script src="/vendor/echarts.min.js"></script>
   <!-- Absolute path: relative src breaks on client routes like /cars/:id (SPA deep links). -->
   <script src="/qrcode.min.js"></script>
 </head>

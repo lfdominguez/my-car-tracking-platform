@@ -6,20 +6,11 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{header, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get_service;
 use axum::Router;
 use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::state::AppState;
-
-/// Serve uploaded car photos.
-pub fn uploads_router(upload_dir: PathBuf) -> Router<AppState> {
-    Router::new().nest_service(
-        "/uploads",
-        get_service(ServeDir::new(upload_dir)),
-    )
-}
 
 /// SPA assets from `WEB_DIST` or `crates/web/dist`.
 pub fn spa_router() -> Router<AppState> {

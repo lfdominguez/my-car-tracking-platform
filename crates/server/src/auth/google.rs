@@ -1,4 +1,5 @@
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -9,11 +10,19 @@ use oauth2::{
     TokenResponse, TokenUrl,
 };
 use serde::Deserialize;
+use std::net::SocketAddr;
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+use crate::audit::{self, actions, AuditEvent};
 use crate::auth::create_session;
 use crate::auth::ensure_dev_user;
+use crate::auth::session::{
+    clear_oauth_state_cookie, oauth_state_from_jar, set_oauth_state_cookie, NewSessionMeta,
+};
 use crate::error::{AppError, AppResult};
+use crate::http_client::outbound_client;
+use crate::middleware::client_ip;
 use crate::state::AppState;
 
 pub fn google_auth_router() -> Router<AppState> {
@@ -23,36 +32,47 @@ pub fn google_auth_router() -> Router<AppState> {
         .route("/auth/dev-login", post(dev_login))
 }
 
-async fn start_google(State(state): State<AppState>) -> AppResult<Redirect> {
+async fn start_google(State(state): State<AppState>, jar: CookieJar) -> AppResult<Response> {
     if state.config.google_client_id.is_empty() {
         return Err(AppError::BadRequest(
             "GOOGLE_CLIENT_ID is not configured".into(),
         ));
     }
     let client = build_oauth_client(&state)?;
-    let (auth_url, _csrf) = client
+    let (auth_url, csrf) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new("openid".into()))
         .add_scope(Scope::new("email".into()))
         .add_scope(Scope::new("profile".into()))
         .url();
-    Ok(Redirect::temporary(auth_url.as_str()))
+    let secure = state.config.public_base_url.starts_with("https");
+    let jar = set_oauth_state_cookie(jar, csrf.secret(), secure);
+    Ok((jar, Redirect::temporary(auth_url.as_str())).into_response())
 }
 
 #[derive(Debug, Deserialize)]
 struct CallbackQuery {
     code: String,
-    #[allow(dead_code)]
     state: Option<String>,
 }
 
 async fn google_callback(
     State(state): State<AppState>,
+    connect_info: ConnectInfo<SocketAddr>,
     jar: CookieJar,
+    headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
 ) -> AppResult<Response> {
+    let cookie_state = oauth_state_from_jar(&jar);
+    let query_state = q.state.as_deref();
+    if !oauth_state_matches(cookie_state.as_deref(), query_state) {
+        return Err(AppError::BadRequest(
+            "invalid or missing OAuth state".into(),
+        ));
+    }
+
     let client = build_oauth_client(&state)?;
-    let http = reqwest::Client::new();
+    let http = outbound_client().map_err(|e| AppError::internal(e.to_string()))?;
     let token = client
         .exchange_code(AuthorizationCode::new(q.code))
         .request_async(&http)
@@ -61,9 +81,55 @@ async fn google_callback(
 
     let access_token = token.access_token().secret();
     let profile = fetch_google_profile(access_token).await?;
+    if profile.email_verified != Some(true) {
+        return Err(AppError::BadRequest(
+            "Google account email is not verified".into(),
+        ));
+    }
     let user_id = upsert_google_user(&state, &profile).await?;
-    let (jar, _) = create_session(&state, jar, user_id).await?;
+    let jar = clear_oauth_state_cookie(jar);
+
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+
+    let meta = NewSessionMeta {
+        ip: Some(&ip_str),
+        user_agent,
+    };
+
+    let (jar, session_id) = create_session(&state, jar, user_id, meta).await?;
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user_id),
+            actor_session_id: Some(&session_id),
+            action: actions::AUTH_LOGIN,
+            resource_type: None,
+            resource_id: None,
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "method": "google" }),
+        },
+    )
+    .await;
     Ok((jar, Redirect::temporary("/app")).into_response())
+}
+
+/// Constant-time compare of OAuth CSRF cookie vs query `state`.
+pub fn oauth_state_matches(cookie_state: Option<&str>, query_state: Option<&str>) -> bool {
+    match (cookie_state, query_state) {
+        (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() && a.len() == b.len() => {
+            bool::from(a.as_bytes().ct_eq(b.as_bytes()))
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +140,9 @@ struct DevLoginRequest {
 
 async fn dev_login(
     State(state): State<AppState>,
+    connect_info: ConnectInfo<SocketAddr>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<DevLoginRequest>,
 ) -> AppResult<Response> {
     if !state.config.allow_dev_login {
@@ -82,7 +150,37 @@ async fn dev_login(
     }
     let name = body.name.unwrap_or_else(|| body.email.clone());
     let user_id = ensure_dev_user(&state.pool, &body.email, &name).await?;
-    let (jar, _) = create_session(&state, jar, user_id).await?;
+
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+
+    let meta = NewSessionMeta {
+        ip: Some(&ip_str),
+        user_agent,
+    };
+
+    let (jar, session_id) = create_session(&state, jar, user_id, meta).await?;
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user_id),
+            actor_session_id: Some(&session_id),
+            action: actions::AUTH_LOGIN,
+            resource_type: None,
+            resource_id: None,
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "method": "dev" }),
+        },
+    )
+    .await;
     Ok((
         jar,
         Json(serde_json::json!({ "ok": true, "user_id": user_id })),
@@ -94,12 +192,13 @@ async fn dev_login(
 struct GoogleProfile {
     sub: String,
     email: String,
+    email_verified: Option<bool>,
     name: Option<String>,
     picture: Option<String>,
 }
 
 async fn fetch_google_profile(access_token: &str) -> AppResult<GoogleProfile> {
-    let client = reqwest::Client::new();
+    let client = outbound_client().map_err(|e| AppError::internal(e.to_string()))?;
     let resp = client
         .get("https://openidconnect.googleapis.com/v1/userinfo")
         .bearer_auth(access_token)
@@ -115,6 +214,24 @@ async fn fetch_google_profile(access_token: &str) -> AppResult<GoogleProfile> {
     resp.json::<GoogleProfile>()
         .await
         .map_err(|e| AppError::internal(format!("userinfo parse failed: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::oauth_state_matches;
+
+    #[test]
+    fn oauth_state_requires_both_sides() {
+        assert!(!oauth_state_matches(None, Some("abc")));
+        assert!(!oauth_state_matches(Some("abc"), None));
+        assert!(!oauth_state_matches(Some(""), Some("")));
+    }
+
+    #[test]
+    fn oauth_state_accepts_equal() {
+        assert!(oauth_state_matches(Some("csrf-token-1"), Some("csrf-token-1")));
+        assert!(!oauth_state_matches(Some("csrf-token-1"), Some("csrf-token-2")));
+    }
 }
 
 async fn upsert_google_user(state: &AppState, profile: &GoogleProfile) -> AppResult<Uuid> {

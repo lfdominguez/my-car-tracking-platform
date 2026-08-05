@@ -2,18 +2,22 @@
 
 mod token;
 
-pub use token::{hash_token, issue_plaintext_token};
+pub use token::{hash_token, issue_plaintext_token, verify_token_hash};
 
-use axum::extract::{Path, State};
-use axum::routing::get;
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::HeaderMap;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::ProvisioningPayload;
+use std::net::SocketAddr;
 use uuid::Uuid;
 
+use crate::audit::{self, actions, AuditEvent};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
+use crate::middleware::client_ip;
 use crate::shares::access::{can_edit_car, can_read_car};
 use crate::state::AppState;
 
@@ -26,7 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/cars/{car_id}/devices/{device_id}", axum::routing::delete(revoke_device))
         .route(
             "/api/cars/{car_id}/devices/{device_id}/provisioning",
-            get(provisioning),
+            post(provisioning),
         )
 }
 
@@ -77,6 +81,8 @@ async fn create_device(
     State(state): State<AppState>,
     user: AuthUser,
     Path(car_id): Path<Uuid>,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<CreateDeviceRequest>,
 ) -> AppResult<Json<CreateDeviceResponse>> {
     can_edit_car(&state.pool, user.id, car_id).await?;
@@ -101,6 +107,32 @@ async fn create_device(
     .fetch_one(&state.pool)
     .await?;
 
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let device_id_str = device.id.to_string();
+    let car_id_str = car_id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::DEVICE_CREATED,
+            resource_type: Some("device"),
+            resource_id: Some(&device_id_str),
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "car_id": car_id_str }),
+        },
+    )
+    .await;
+
     Ok(Json(CreateDeviceResponse {
         device,
         token: plaintext,
@@ -111,6 +143,8 @@ async fn revoke_device(
     State(state): State<AppState>,
     user: AuthUser,
     Path((car_id, device_id)): Path<(Uuid, Uuid)>,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> AppResult<Json<serde_json::Value>> {
     can_edit_car(&state.pool, user.id, car_id).await?;
 
@@ -128,6 +162,31 @@ async fn revoke_device(
     .await?;
 
     if updated.rows_affected() > 0 {
+        let ip = client_ip(
+            &headers,
+            Some(connect_info.0),
+            state.config.trust_forwarded_headers,
+        );
+        let ip_str = ip.to_string();
+        let user_agent = headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok());
+        let device_id_str = device_id.to_string();
+        let car_id_str = car_id.to_string();
+        audit::record(
+            &state.pool,
+            AuditEvent {
+                user_id: Some(user.id),
+                actor_session_id: Some(&user.session_id),
+                action: actions::DEVICE_REVOKED,
+                resource_type: Some("device"),
+                resource_id: Some(&device_id_str),
+                ip: Some(&ip_str),
+                user_agent,
+                meta: serde_json::json!({ "car_id": car_id_str }),
+            },
+        )
+        .await;
         return Ok(Json(serde_json::json!({ "ok": true, "already_revoked": false })));
     }
 
@@ -161,15 +220,19 @@ struct CarFuelRow {
     ve: f64,
 }
 
-/// Returns provisioning JSON. Requires the plaintext token query param because
-/// the server only stores a hash after creation. Preferred flow: SPA keeps the
-/// one-time token in memory and encodes QR client-side; this endpoint rebuilds
-/// URLs + fuel fields and accepts `?token=` for convenience.
+#[derive(Debug, Deserialize)]
+struct ProvisioningBody {
+    token: String,
+}
+
+/// Returns provisioning JSON. Requires the plaintext token in the POST body
+/// because the server only stores a hash after creation. Preferred flow: SPA
+/// keeps the one-time token in memory and encodes QR client-side.
 async fn provisioning(
     State(state): State<AppState>,
     user: AuthUser,
     Path((car_id, device_id)): Path<(Uuid, Uuid)>,
-    axum::extract::Query(q): axum::extract::Query<ProvisioningQuery>,
+    Json(body): Json<ProvisioningBody>,
 ) -> AppResult<Json<ProvisioningPayload>> {
     can_edit_car(&state.pool, user.id, car_id).await?;
 
@@ -189,22 +252,24 @@ async fn provisioning(
         return Err(AppError::BadRequest("device revoked".into()));
     }
 
-    let token = q.token.ok_or_else(|| {
-        AppError::BadRequest(
-            "token query param required (plaintext shown only at device creation)".into(),
-        )
-    })?;
+    let token = body.token.trim();
+    if token.is_empty() {
+        return Err(AppError::BadRequest(
+            "token required (plaintext shown only at device creation)".into(),
+        ));
+    }
 
-    // Verify token matches stored hash
+    // Verify token matches stored hash (constant-time).
     let expected_hash = sqlx::query_scalar::<_, String>(
         "SELECT token_hash FROM devices WHERE id = $1",
     )
     .bind(device_id)
     .fetch_one(&state.pool)
     .await?;
-    if hash_token(&token, &state.config.device_token_pepper) != expected_hash {
+    if !verify_token_hash(token, &state.config.device_token_pepper, &expected_hash) {
         return Err(AppError::Forbidden);
     }
+    let token = token.to_string();
 
     let car = sqlx::query_as::<_, CarFuelRow>(
         r#"
@@ -231,11 +296,6 @@ async fn provisioning(
         car_id: car.id.to_string(),
         car_name: car.name,
     }))
-}
-
-#[derive(Debug, Deserialize)]
-struct ProvisioningQuery {
-    token: Option<String>,
 }
 
 /// Authenticated device context for ingest.

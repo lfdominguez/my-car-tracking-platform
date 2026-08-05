@@ -560,11 +560,11 @@ async fn recompute(
     }
 
     let pool = state.pool.clone();
-    let key = state.config.secrets_key.clone();
+    let keyring = state.keyring.clone();
     let car_id = q.car_id;
 
     // Run inline for small batches so UI can refresh; still bounded.
-    let processed = recompute_car(&pool, &key, car_id, 80)
+    let processed = recompute_car(&pool, &keyring, car_id, 80)
         .await
         .map_err(|e| AppError::internal(format!("recompute failed: {e}")))?;
 

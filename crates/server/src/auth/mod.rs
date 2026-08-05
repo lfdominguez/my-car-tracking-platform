@@ -8,21 +8,32 @@ pub use extractors::{AuthUser, OptionalAuthUser};
 pub use google::google_auth_router;
 pub use session::{create_session, destroy_session};
 
-use axum::extract::State;
-use axum::routing::get;
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::HeaderMap;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use axum_extra::extract::CookieJar;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use uuid::Uuid;
 
+use crate::audit::{self, actions, AuditEvent};
 use crate::error::{AppError, AppResult};
+use crate::middleware::client_ip;
 use crate::state::AppState;
 use crate::units::{UnitLabels, UnitSystem};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/me", get(me).patch(update_me))
+        .route("/api/me/sessions", get(list_sessions))
+        .route("/api/me/sessions/revoke-others", post(revoke_others))
+        .route("/api/me/sessions/revoke-all", post(revoke_all))
+        .route("/api/me/sessions/{id}", delete(revoke_one_session))
+        .route("/api/me/audit", get(list_audit))
         .route("/api/public-config", get(public_config))
-        .route("/auth/logout", get(logout))
+        .route("/auth/logout", post(logout))
         .merge(google_auth_router())
 }
 
@@ -54,6 +65,44 @@ pub struct UpdateMeRequest {
 #[derive(Debug, Serialize)]
 pub struct PublicConfigResponse {
     pub allow_dev_login: bool,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct SessionInfoRow {
+    id: String,
+    created_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    ip: Option<String>,
+    user_agent: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub current: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AuditEventRow {
+    pub id: Uuid,
+    pub action: String,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub meta: serde_json::Value,
+    pub created_at: DateTime<Utc>,
 }
 
 async fn public_config(State(state): State<AppState>) -> Json<PublicConfigResponse> {
@@ -114,6 +163,8 @@ async fn me(State(state): State<AppState>, user: AuthUser) -> AppResult<Json<MeR
 async fn update_me(
     State(state): State<AppState>,
     user: AuthUser,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<UpdateMeRequest>,
 ) -> AppResult<Json<MeResponse>> {
     if body.unit_system.is_none()
@@ -162,15 +213,29 @@ async fn update_me(
         .await?;
     }
 
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+
+    let user_id_str = user.id.to_string();
+
     if let Some(key) = body.openrouter_api_key.as_ref() {
         let key = key.trim();
-        if key.is_empty() {
+        let cleared = key.is_empty();
+        if cleared {
             sqlx::query(
                 r#"
                 UPDATE users
                 SET openrouter_api_key_enc = NULL,
                     openrouter_api_key_nonce = NULL,
-                    openrouter_key_hint = NULL
+                    openrouter_key_hint = NULL,
+                    openrouter_key_version = 1
                 WHERE id = $1
                 "#,
             )
@@ -178,15 +243,17 @@ async fn update_me(
             .execute(&state.pool)
             .await?;
         } else {
-            let (nonce, ct) = crate::crypto::encrypt_secret(key.as_bytes(), &state.config.secrets_key)
-                .map_err(|_| AppError::internal("Failed to encrypt API key"))?;
+            let (nonce, ct, version) =
+                crate::crypto::encrypt_secret_versioned(key.as_bytes(), &state.keyring)
+                    .map_err(|_| AppError::internal("Failed to encrypt API key"))?;
             let hint = crate::crypto::key_hint(key);
             sqlx::query(
                 r#"
                 UPDATE users
                 SET openrouter_api_key_enc = $2,
                     openrouter_api_key_nonce = $3,
-                    openrouter_key_hint = $4
+                    openrouter_key_hint = $4,
+                    openrouter_key_version = $5
                 WHERE id = $1
                 "#,
             )
@@ -194,20 +261,37 @@ async fn update_me(
             .bind(&ct)
             .bind(&nonce)
             .bind(&hint)
+            .bind(version)
             .execute(&state.pool)
             .await?;
         }
+        audit::record(
+            &state.pool,
+            AuditEvent {
+                user_id: Some(user.id),
+                actor_session_id: Some(&user.session_id),
+                action: actions::SETTINGS_OPENROUTER,
+                resource_type: Some("user"),
+                resource_id: Some(&user_id_str),
+                ip: Some(&ip_str),
+                user_agent,
+                meta: serde_json::json!({ "cleared": cleared }),
+            },
+        )
+        .await;
     }
 
     if let Some(key) = body.ors_api_key.as_ref() {
         let key = key.trim();
-        if key.is_empty() {
+        let cleared = key.is_empty();
+        if cleared {
             sqlx::query(
                 r#"
                 UPDATE users
                 SET ors_api_key_enc = NULL,
                     ors_api_key_nonce = NULL,
-                    ors_key_hint = NULL
+                    ors_key_hint = NULL,
+                    ors_key_version = 1
                 WHERE id = $1
                 "#,
             )
@@ -215,15 +299,17 @@ async fn update_me(
             .execute(&state.pool)
             .await?;
         } else {
-            let (nonce, ct) = crate::crypto::encrypt_secret(key.as_bytes(), &state.config.secrets_key)
-                .map_err(|_| AppError::internal("Failed to encrypt ORS API key"))?;
+            let (nonce, ct, version) =
+                crate::crypto::encrypt_secret_versioned(key.as_bytes(), &state.keyring)
+                    .map_err(|_| AppError::internal("Failed to encrypt ORS API key"))?;
             let hint = crate::crypto::key_hint(key);
             sqlx::query(
                 r#"
                 UPDATE users
                 SET ors_api_key_enc = $2,
                     ors_api_key_nonce = $3,
-                    ors_key_hint = $4
+                    ors_key_hint = $4,
+                    ors_key_version = $5
                 WHERE id = $1
                 "#,
             )
@@ -231,9 +317,24 @@ async fn update_me(
             .bind(&ct)
             .bind(&nonce)
             .bind(&hint)
+            .bind(version)
             .execute(&state.pool)
             .await?;
         }
+        audit::record(
+            &state.pool,
+            AuditEvent {
+                user_id: Some(user.id),
+                actor_session_id: Some(&user.session_id),
+                action: actions::SETTINGS_ORS,
+                resource_type: Some("user"),
+                resource_id: Some(&user_id_str),
+                ip: Some(&ip_str),
+                user_agent,
+                meta: serde_json::json!({ "cleared": cleared }),
+            },
+        )
+        .await;
     }
 
     // Refresh session unit_system if changed — AuthUser may be stale; load_me reads DB.
@@ -243,14 +344,212 @@ async fn update_me(
 async fn logout(
     state: axum::extract::State<AppState>,
     user: OptionalAuthUser,
-    jar: axum_extra::extract::CookieJar,
-) -> AppResult<(axum_extra::extract::CookieJar, Json<serde_json::Value>)> {
+    jar: CookieJar,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> AppResult<(CookieJar, Json<serde_json::Value>)> {
     let jar = if let Some(u) = user.0 {
+        let ip = client_ip(
+            &headers,
+            Some(connect_info.0),
+            state.config.trust_forwarded_headers,
+        );
+        let ip_str = ip.to_string();
+        let user_agent = headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok());
+        audit::record(
+            &state.pool,
+            AuditEvent {
+                user_id: Some(u.id),
+                actor_session_id: Some(&u.session_id),
+                action: actions::AUTH_LOGOUT,
+                resource_type: None,
+                resource_id: None,
+                ip: Some(&ip_str),
+                user_agent,
+                meta: serde_json::json!({}),
+            },
+        )
+        .await;
         destroy_session(&state, &jar, u.session_id).await?
     } else {
         jar
     };
     Ok((jar, Json(serde_json::json!({ "ok": true }))))
+}
+
+async fn list_sessions(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> AppResult<Json<Vec<SessionInfo>>> {
+    let rows = sqlx::query_as::<_, SessionInfoRow>(
+        r#"
+        SELECT id, created_at, last_seen_at, expires_at, ip, user_agent
+        FROM sessions
+        WHERE user_id = $1
+        ORDER BY last_seen_at DESC
+        "#,
+    )
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let out = rows
+        .into_iter()
+        .map(|r| SessionInfo {
+            current: r.id == user.session_id,
+            id: r.id,
+            created_at: r.created_at,
+            last_seen_at: r.last_seen_at,
+            expires_at: r.expires_at,
+            ip: r.ip,
+            user_agent: r.user_agent,
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+async fn revoke_one_session(
+    State(state): State<AppState>,
+    user: AuthUser,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> AppResult<(CookieJar, Json<serde_json::Value>)> {
+    let deleted = session::revoke_session_for_user(&state.pool, user.id, &id).await?;
+    if !deleted {
+        return Err(AppError::NotFound);
+    }
+
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::SESSION_REVOKE,
+            resource_type: Some("session"),
+            resource_id: Some(&id),
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "current": id == user.session_id }),
+        },
+    )
+    .await;
+
+    let jar = if id == user.session_id {
+        session::clear_session_cookie(jar)
+    } else {
+        jar
+    };
+    Ok((jar, Json(serde_json::json!({ "ok": true }))))
+}
+
+async fn revoke_others(
+    State(state): State<AppState>,
+    user: AuthUser,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> AppResult<Json<serde_json::Value>> {
+    let n = session::revoke_other_sessions(&state.pool, user.id, &user.session_id).await?;
+
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::SESSION_REVOKE_OTHERS,
+            resource_type: None,
+            resource_id: None,
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "revoked_count": n }),
+        },
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({ "ok": true, "revoked_count": n })))
+}
+
+async fn revoke_all(
+    State(state): State<AppState>,
+    user: AuthUser,
+    jar: CookieJar,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> AppResult<(CookieJar, Json<serde_json::Value>)> {
+    let n = session::revoke_all_sessions(&state.pool, user.id).await?;
+
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::SESSION_REVOKE_ALL,
+            resource_type: None,
+            resource_id: None,
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "revoked_count": n }),
+        },
+    )
+    .await;
+
+    let jar = session::clear_session_cookie(jar);
+    Ok((
+        jar,
+        Json(serde_json::json!({ "ok": true, "revoked_count": n })),
+    ))
+}
+
+async fn list_audit(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<AuditQuery>,
+) -> AppResult<Json<Vec<AuditEventRow>>> {
+    let limit = audit::clamp_audit_limit(q.limit);
+    let rows = sqlx::query_as::<_, AuditEventRow>(
+        r#"
+        SELECT id, action, resource_type, resource_id, ip, user_agent, meta, created_at
+        FROM audit_events
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(user.id)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(rows))
 }
 
 /// Development-only login helper (enabled when ALLOW_DEV_LOGIN=1).

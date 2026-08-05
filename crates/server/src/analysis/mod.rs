@@ -13,7 +13,6 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
-use crate::crypto::decrypt_secret;
 use crate::error::{AppError, AppResult};
 use crate::shares::access::{can_read_car, require_owner};
 use crate::state::AppState;
@@ -145,7 +144,8 @@ async fn start_analysis(
     // Load owner's OpenRouter credentials
     let creds = sqlx::query(
         r#"
-        SELECT openrouter_api_key_enc, openrouter_api_key_nonce, openrouter_model, unit_system
+        SELECT openrouter_api_key_enc, openrouter_api_key_nonce, openrouter_key_version,
+               openrouter_model, unit_system
         FROM users WHERE id = $1
         "#,
     )
@@ -155,6 +155,7 @@ async fn start_analysis(
 
     let enc: Option<Vec<u8>> = creds.try_get("openrouter_api_key_enc").ok().flatten();
     let nonce: Option<Vec<u8>> = creds.try_get("openrouter_api_key_nonce").ok().flatten();
+    let version: i32 = creds.try_get("openrouter_key_version").unwrap_or(1);
     let model: String = creds
         .try_get::<String, _>("openrouter_model")
         .unwrap_or_else(|_| "anthropic/claude-3.7-sonnet".into());
@@ -168,7 +169,7 @@ async fn start_analysis(
             "Configure your OpenRouter API key in Settings before analyzing trips".into(),
         ));
     };
-    let api_key = decrypt_secret(&nonce, &enc, &state.config.secrets_key)
+    let api_key = crate::crypto::decrypt_secret_versioned(&nonce, &enc, version, &state.keyring)
         .map_err(|_| AppError::BadRequest("Could not decrypt OpenRouter API key".into()))?;
     if api_key.trim().is_empty() {
         return Err(AppError::BadRequest(

@@ -20,13 +20,19 @@ fn test_config(database_url: String) -> Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         public_base_url: "http://127.0.0.1:8080".into(),
         session_secret: "test-secret".into(),
+        session_idle_hours: 168,
+        session_absolute_days: 14,
         secrets_key: "test-secrets-key".into(),
+        secrets_key_previous: None,
+        secrets_key_version: 2,
         google_client_id: String::new(),
         google_client_secret: String::new(),
         google_redirect_url: "http://127.0.0.1:8080/auth/google/callback".into(),
         upload_dir: std::env::temp_dir().join("ctp-test-uploads"),
         device_token_pepper: "pepper".into(),
         allow_dev_login: true,
+        is_local_dev: true,
+        trust_forwarded_headers: false,
     }
 }
 
@@ -84,7 +90,11 @@ async fn setup() -> Option<(String, reqwest::Client, String, Uuid)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
     let addr = listener.local_addr().ok()?;
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -199,6 +209,85 @@ async fn unknown_tracking_id_rejected_in_batch() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["accepted"], 0);
     assert_eq!(body["rejected"][0]["reason"], "unknown_tracking_id");
+}
+
+#[tokio::test]
+async fn batch_over_max_rejected() {
+    let Some((base, client, token, _)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let n = server::ingest::MAX_BATCH_SAMPLES + 1;
+    let samples: Vec<serde_json::Value> = (0..n)
+        .map(|i| {
+            json!({
+                "tracking_id": "1999-01-01T00:00:00Z",
+                "recorded_at": i as i64,
+                "lat": 1.0,
+                "lon": 2.0,
+                "acc": 1.0
+            })
+        })
+        .collect();
+    let resp = client
+        .post(format!("{base}/api/track/samples"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "samples": samples }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(err.contains("batch too large"), "unexpected error: {err}");
+}
+
+#[tokio::test]
+async fn finished_track_samples_rejected() {
+    let Some((base, client, token, _)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+
+    let started_at = Utc::now();
+    let tracking_id = started_at.to_rfc3339();
+
+    let start = client
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": started_at }))
+        .send()
+        .await
+        .unwrap();
+    assert!(start.status().is_success(), "start: {}", start.status());
+
+    let stop = client
+        .post(format!("{base}/api/track/stop"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "id": tracking_id }))
+        .send()
+        .await
+        .unwrap();
+    assert!(stop.status().is_success(), "stop failed: {}", stop.status());
+
+    let sample = json!({
+        "tracking_id": tracking_id,
+        "recorded_at": started_at.timestamp_millis(),
+        "lat": 48.1,
+        "lon": 11.5,
+        "acc": 3.0
+    });
+    let resp = client
+        .post(format!("{base}/api/track/samples"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "samples": [sample] }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["accepted"], 0);
+    assert_eq!(body["rejected"][0]["reason"], "track_finished");
 }
 
 // silence unused warnings in skip path

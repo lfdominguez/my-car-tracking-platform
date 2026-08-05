@@ -13,7 +13,7 @@ use super::geo::{
 use super::insights::{build_insights, InsightDraft};
 use super::ors::OrsClient;
 use super::stats::VariantSample;
-use crate::crypto;
+use crate::crypto::{self, KeyRing};
 
 const MIN_POINTS: usize = 10;
 const MIN_DURATION_SECS: f64 = 120.0;
@@ -39,7 +39,7 @@ pub enum JobError {
 
 pub async fn process_finished_track(
     pool: &PgPool,
-    secrets_key: &str,
+    keyring: &KeyRing,
     track_id: Uuid,
 ) -> Result<(), JobError> {
     let track = sqlx::query(
@@ -265,7 +265,7 @@ pub async fn process_finished_track(
         .execute(pool)
         .await?;
 
-        if let Err(e) = refresh_ors_if_needed(pool, secrets_key, car_id, corridor_id).await {
+        if let Err(e) = refresh_ors_if_needed(pool, keyring, car_id, corridor_id).await {
             warn!(error = %e, %corridor_id, "ORS refresh skipped");
         }
         if let Err(e) = rebuild_insights(pool, car_id, corridor_id).await {
@@ -519,7 +519,7 @@ async fn find_or_create_variant(
 
 async fn refresh_ors_if_needed(
     pool: &PgPool,
-    secrets_key: &str,
+    keyring: &KeyRing,
     car_id: Uuid,
     corridor_id: Uuid,
 ) -> Result<(), JobError> {
@@ -572,7 +572,7 @@ async fn refresh_ors_if_needed(
 
     let owner = sqlx::query(
         r#"
-        SELECT u.ors_api_key_enc, u.ors_api_key_nonce
+        SELECT u.ors_api_key_enc, u.ors_api_key_nonce, u.ors_key_version
         FROM cars c
         JOIN users u ON u.id = c.owner_user_id
         WHERE c.id = $1
@@ -587,10 +587,11 @@ async fn refresh_ors_if_needed(
     };
     let enc: Option<Vec<u8>> = owner.try_get("ors_api_key_enc")?;
     let nonce: Option<Vec<u8>> = owner.try_get("ors_api_key_nonce")?;
+    let version: i32 = owner.try_get("ors_key_version").unwrap_or(1);
     let (Some(enc), Some(nonce)) = (enc, nonce) else {
         return Ok(());
     };
-    let api_key = crypto::decrypt_secret(&nonce, &enc, secrets_key)
+    let api_key = crypto::decrypt_secret_versioned(&nonce, &enc, version, keyring)
         .map_err(|e| JobError::Crypto(e.to_string()))?;
 
     let client = OrsClient::new(api_key);
@@ -764,7 +765,7 @@ pub async fn rebuild_insights(
 
 pub async fn recompute_car(
     pool: &PgPool,
-    secrets_key: &str,
+    keyring: &KeyRing,
     car_id: Uuid,
     limit: i64,
 ) -> Result<u32, JobError> {
@@ -845,7 +846,7 @@ pub async fn recompute_car(
 
     let mut n = 0u32;
     for id in ids {
-        match process_finished_track(pool, secrets_key, id).await {
+        match process_finished_track(pool, keyring, id).await {
             Ok(()) => n += 1,
             Err(JobError::Skipped(_)) => {}
             Err(e) => warn!(%id, error = %e, "recompute track failed"),

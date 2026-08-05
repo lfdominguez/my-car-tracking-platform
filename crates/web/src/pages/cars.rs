@@ -73,9 +73,8 @@ pub fn CarsPage() -> impl IntoView {
                                         "editor" => "pencil-simple",
                                         _ => "eye",
                                     };
-                                    let thumb = c.photo_path.as_ref().map(|p| format!("/uploads/{p}"));
-                                    let has_photo = thumb.is_some();
-                                    let thumb_src = thumb.unwrap_or_default();
+                                    let has_photo = c.photo_path.is_some();
+                                    let thumb_src = crate::api::car_photo_url(&id, None);
                                     view! {
                                         <tr>
                                             <td class="car-list-thumb-cell">
@@ -251,9 +250,9 @@ pub fn CarDetailPage() -> impl IntoView {
                         {move || {
                             let c = car.get();
                             let rev = photo_rev.get();
-                            match c.and_then(|c| c.photo_path.clone()) {
-                                Some(path) => {
-                                    let src = format!("/uploads/{path}?v={rev}");
+                            match c.as_ref().and_then(|c| c.photo_path.as_ref().map(|_| c.id.clone())) {
+                                Some(car_id) => {
+                                    let src = crate::api::car_photo_url(&car_id, Some(rev));
                                     view! {
                                         <img class="car-photo-preview" src=src alt="Car photo" />
                                     }
