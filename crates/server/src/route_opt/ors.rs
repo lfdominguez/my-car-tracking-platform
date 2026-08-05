@@ -38,9 +38,11 @@ pub struct OrsClient {
 
 impl OrsClient {
     pub fn new(api_key: impl Into<String>) -> Self {
+        let http = crate::http_client::outbound_client()
+            .expect("failed to build outbound HTTP client");
         Self {
             api_key: api_key.into(),
-            http: reqwest::Client::new(),
+            http,
         }
     }
 

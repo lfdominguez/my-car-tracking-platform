@@ -273,10 +273,20 @@ async fn get_trip(
     Ok(Json(apply_trip_summary_units(row, user.unit_system)))
 }
 
+const DEFAULT_TRIP_POINTS_LIMIT: i64 = 2000;
+const MAX_TRIP_POINTS_LIMIT: i64 = 5000;
+const MAX_TRIP_MAP_VERTICES: i64 = 5000;
+
+#[derive(Debug, Deserialize)]
+pub struct TripPointsQuery {
+    pub limit: Option<i64>,
+}
+
 async fn trip_points(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    Query(q): Query<TripPointsQuery>,
 ) -> AppResult<Json<Vec<TripPoint>>> {
     let car_id = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
         .bind(id)
@@ -284,6 +294,11 @@ async fn trip_points(
         .await?
         .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
+
+    let limit = q
+        .limit
+        .unwrap_or(DEFAULT_TRIP_POINTS_LIMIT)
+        .clamp(1, MAX_TRIP_POINTS_LIMIT);
 
     let rows = sqlx::query_as::<_, TripPoint>(
         r#"
@@ -316,9 +331,11 @@ async fn trip_points(
         FROM track_points
         WHERE track_id = $1
         ORDER BY recorded_at
+        LIMIT $2
         "#,
     )
     .bind(id)
+    .bind(limit)
     .fetch_all(&state.pool)
     .await?;
     let system = user.unit_system;
@@ -347,9 +364,11 @@ async fn trip_map(
         FROM track_points
         WHERE track_id = $1
         ORDER BY recorded_at
+        LIMIT $2
         "#,
     )
     .bind(id)
+    .bind(MAX_TRIP_MAP_VERTICES)
     .fetch_all(&state.pool)
     .await?;
 

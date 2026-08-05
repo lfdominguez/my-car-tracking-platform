@@ -1,4 +1,5 @@
 use rand::RngCore;
+use subtle::ConstantTimeEq;
 
 /// Issue a URL-safe plaintext device token (shown once).
 pub fn issue_plaintext_token() -> String {
@@ -17,8 +18,24 @@ pub fn hash_token(plaintext: &str, pepper: &str) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+/// Constant-time compare of computed hash vs stored hex hash.
 pub fn verify_token_hash(plaintext: &str, pepper: &str, expected_hash: &str) -> bool {
-    hash_token(plaintext, pepper) == expected_hash
+    let computed = hash_token(plaintext, pepper);
+    ct_eq_hex(&computed, expected_hash)
+}
+
+fn ct_eq_hex(a: &str, b: &str) -> bool {
+    let (Ok(a_bytes), Ok(b_bytes)) = (hex::decode(a), hex::decode(b)) else {
+        // Fall back to equal-length byte compare on raw strings if not hex.
+        if a.len() != b.len() {
+            return false;
+        }
+        return bool::from(a.as_bytes().ct_eq(b.as_bytes()));
+    };
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+    bool::from(a_bytes.ct_eq(&b_bytes))
 }
 
 #[cfg(test)]
@@ -37,5 +54,6 @@ mod tests {
         let h = hash_token(&t, "pep");
         assert!(verify_token_hash(&t, "pep", &h));
         assert!(!verify_token_hash("nope", "pep", &h));
+        assert!(!verify_token_hash(&t, "pep", "00"));
     }
 }

@@ -66,6 +66,14 @@ pub struct Car {
     pub role: String,
 }
 
+/// Authenticated photo URL (same-origin cookie). `cache_bust` optional query.
+pub fn car_photo_url(car_id: &str, cache_bust: Option<u32>) -> String {
+    match cache_bust {
+        Some(v) => format!("/api/cars/{car_id}/photo?v={v}"),
+        None => format!("/api/cars/{car_id}/photo"),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DashboardCarSummary {
     pub car_id: String,
@@ -364,8 +372,14 @@ pub async fn provisioning(
     device_id: &str,
     token: &str,
 ) -> Result<ProvisioningPayload, ApiError> {
-    let url = format!("/api/cars/{car_id}/devices/{device_id}/provisioning?token={token}");
-    send_json(Request::get(&url)).await
+    let body = serde_json::json!({ "token": token });
+    let req = with_creds(Request::post(&format!(
+        "/api/cars/{car_id}/devices/{device_id}/provisioning"
+    )))
+    .header("Content-Type", "application/json")
+    .json(&body)
+    .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
 }
 
 pub async fn revoke_device(car_id: &str, device_id: &str) -> Result<(), ApiError> {
@@ -425,7 +439,19 @@ pub async fn list_shares(car_id: &str) -> Result<Vec<Share>, ApiError> {
     send_json(Request::get(&format!("/api/cars/{car_id}/shares"))).await
 }
 
-pub async fn create_share(car_id: &str, email: &str, role: &str) -> Result<Share, ApiError> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CreateShareResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub share: Option<Share>,
+    pub message: String,
+}
+
+pub async fn create_share(
+    car_id: &str,
+    email: &str,
+    role: &str,
+) -> Result<CreateShareResponse, ApiError> {
     let body = serde_json::json!({ "email": email, "role": role });
     let req = with_creds(Request::post(&format!("/api/cars/{car_id}/shares")))
         .header("Content-Type", "application/json")
@@ -572,7 +598,7 @@ pub async fn route_opt_recompute(car_id: &str) -> Result<RouteRecomputeResponse,
 }
 
 pub async fn logout() -> Result<(), ApiError> {
-    let resp = with_creds(Request::get("/auth/logout"))
+    let resp = with_creds(Request::post("/auth/logout"))
         .send()
         .await
         .map_err(|e| ApiError::Message(e.to_string()))?;

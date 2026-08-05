@@ -69,23 +69,42 @@ async fn list_shares(
     Ok(Json(rows))
 }
 
+#[derive(Debug, Serialize)]
+pub struct CreateShareResponse {
+    /// Always true on HTTP 200 so missing emails cannot be enumerated.
+    pub ok: bool,
+    /// Present only when a share was actually created/updated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share: Option<ShareRow>,
+    pub message: String,
+}
+
 async fn create_share(
     State(state): State<AppState>,
     user: AuthUser,
     Path(car_id): Path<Uuid>,
     Json(body): Json<CreateShareRequest>,
-) -> AppResult<Json<ShareRow>> {
+) -> AppResult<Json<CreateShareResponse>> {
     require_owner(&state.pool, user.id, car_id).await?;
     let role = ShareRole::parse(&body.role)
         .ok_or_else(|| AppError::BadRequest("role must be editor or viewer".into()))?;
+
+    let uniform_msg = "If that user exists, they were added";
 
     let target = sqlx::query_as::<_, (Uuid, String, String)>(
         "SELECT id, email, name FROM users WHERE LOWER(email) = LOWER($1)",
     )
     .bind(body.email.trim())
     .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound)?;
+    .await?;
+
+    let Some(target) = target else {
+        return Ok(Json(CreateShareResponse {
+            ok: true,
+            share: None,
+            message: uniform_msg.into(),
+        }));
+    };
 
     if target.0 == user.id {
         return Err(AppError::BadRequest("cannot share with yourself".into()));
@@ -108,7 +127,11 @@ async fn create_share(
     .fetch_one(&state.pool)
     .await?;
 
-    Ok(Json(row))
+    Ok(Json(CreateShareResponse {
+        ok: true,
+        share: Some(row),
+        message: uniform_msg.into(),
+    }))
 }
 
 async fn update_share(

@@ -12,6 +12,9 @@ use crate::devices::authenticate_device_token;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
+/// Max samples accepted in one `/api/track/samples` batch.
+pub const MAX_BATCH_SAMPLES: usize = 1000;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health).head(health_head))
@@ -197,6 +200,16 @@ async fn track_stop(
     Ok(StatusCode::OK)
 }
 
+fn map_sample_error(e: SampleError) -> AppError {
+    match e {
+        SampleError::UnknownTrack => AppError::BadRequest("unknown tracking_id".into()),
+        SampleError::InvalidCoords => AppError::BadRequest("invalid lat/lon".into()),
+        SampleError::Duplicate => AppError::Conflict("duplicate".into()),
+        SampleError::TrackFinished => AppError::BadRequest("track_finished".into()),
+        SampleError::Db(err) => AppError::Db(err),
+    }
+}
+
 async fn track_sample(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -205,12 +218,7 @@ async fn track_sample(
     let device = auth_device(&state, &headers).await?;
     insert_sample(&state, device.car_id, &body)
         .await
-        .map_err(|e| match e {
-            SampleError::UnknownTrack => AppError::BadRequest("unknown tracking_id".into()),
-            SampleError::InvalidCoords => AppError::BadRequest("invalid lat/lon".into()),
-            SampleError::Duplicate => AppError::Conflict("duplicate".into()),
-            SampleError::Db(err) => AppError::Db(err),
-        })?;
+        .map_err(map_sample_error)?;
     Ok(StatusCode::OK)
 }
 
@@ -220,6 +228,11 @@ async fn track_samples(
     Json(body): Json<TrackSamplesBatchRequest>,
 ) -> AppResult<Json<TrackSamplesBatchResponse>> {
     let device = auth_device(&state, &headers).await?;
+    if body.samples.len() > MAX_BATCH_SAMPLES {
+        return Err(AppError::BadRequest(format!(
+            "batch too large: max {MAX_BATCH_SAMPLES} samples"
+        )));
+    }
     let mut accepted: i64 = 0;
     let mut rejected = Vec::new();
 
@@ -237,6 +250,10 @@ async fn track_samples(
             Err(SampleError::InvalidCoords) => rejected.push(RejectedSample {
                 recorded_at: sample.recorded_at,
                 reason: "invalid_coords".into(),
+            }),
+            Err(SampleError::TrackFinished) => rejected.push(RejectedSample {
+                recorded_at: sample.recorded_at,
+                reason: "track_finished".into(),
             }),
             Err(SampleError::Db(e)) => {
                 tracing::error!(error = %e, "sample insert failed");
@@ -256,6 +273,7 @@ enum SampleError {
     UnknownTrack,
     InvalidCoords,
     Duplicate,
+    TrackFinished,
     Db(sqlx::Error),
 }
 
@@ -269,8 +287,8 @@ async fn insert_sample(
     }
 
     let legacy_key = parse_legacy_key(&sample.tracking_id).ok_or(SampleError::UnknownTrack)?;
-    let track_id = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2",
+    let row = sqlx::query_as::<_, (Uuid, bool)>(
+        "SELECT id, finished FROM tracks WHERE car_id = $1 AND legacy_key = $2",
     )
     .bind(car_id)
     .bind(legacy_key)
@@ -278,6 +296,10 @@ async fn insert_sample(
     .await
     .map_err(SampleError::Db)?
     .ok_or(SampleError::UnknownTrack)?;
+    let (track_id, finished) = row;
+    if finished {
+        return Err(SampleError::TrackFinished);
+    }
 
     let recorded_at = millis_to_datetime(sample.recorded_at);
     let engine_rpm = sample.vehicle_engine_rpm;

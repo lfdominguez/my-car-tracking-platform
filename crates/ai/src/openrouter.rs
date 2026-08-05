@@ -41,6 +41,8 @@ impl OpenRouterClient {
     pub fn new(api_key: impl Into<String>) -> Result<Self, AiError> {
         let http = reqwest::Client::builder()
             .user_agent("car-tracking-platform-ai/0.1")
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .map_err(|e| AiError::Agent(format!("http client: {e}")))?;
         Ok(Self {

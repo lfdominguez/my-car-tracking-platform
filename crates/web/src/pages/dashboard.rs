@@ -177,11 +177,7 @@ pub fn DashboardPage() -> impl IntoView {
 fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefs) -> impl IntoView {
     let id = car.car_id.clone();
     let href = format!("/app/cars/{id}");
-    let photo = car
-        .photo_path
-        .as_ref()
-        .map(|p| format!("/uploads/{p}"))
-        .unwrap_or_default();
+    let photo = crate::api::car_photo_url(&id, None);
     let has_photo = car.photo_path.is_some();
     let odo = fmt_odometer_delta(car.odometer, &prefs);
     let fuel = car

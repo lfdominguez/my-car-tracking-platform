@@ -80,8 +80,9 @@ docker compose up -d db
 <summary>📦 Or a standalone PostGIS container</summary>
 
 ```bash
-docker run --name ctp-postgis -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=car_tracking -p 5432:5432 -d postgis/postgis:16-3.4
+docker run --name ctp-postgis -e POSTGRES_USER=ctp \
+  -e POSTGRES_PASSWORD=replace-with-strong-db-password \
+  -e POSTGRES_DB=car_tracking -p 127.0.0.1:5432:5432 -d postgis/postgis:16-3.4
 ```
 
 </details>
@@ -90,7 +91,8 @@ docker run --name ctp-postgis -e POSTGRES_PASSWORD=postgres \
 
 ```bash
 cp .env.example .env
-# set SESSION_SECRET, DEVICE_TOKEN_PEPPER, GOOGLE_*, PUBLIC_BASE_URL, …
+# set SESSION_SECRET, SECRETS_KEY, DEVICE_TOKEN_PEPPER (≥32 chars each, independent),
+# GOOGLE_*, PUBLIC_BASE_URL, POSTGRES_PASSWORD, …
 ```
 
 ### 3️⃣ Run the API
@@ -145,17 +147,19 @@ App listens on **`:8080`**. Uploads persist on the `app-data` volume.
 ```bash
 docker run --rm -p 8080:8080 \
   -e DATABASE_URL=postgres://user:pass@db-host:5432/car_tracking \
-  -e SESSION_SECRET=long-random-string \
-  -e DEVICE_TOKEN_PEPPER=long-random-string \
+  -e SESSION_SECRET="$(openssl rand -base64 48)" \
+  -e SECRETS_KEY="$(openssl rand -base64 48)" \
+  -e DEVICE_TOKEN_PEPPER="$(openssl rand -base64 48)" \
   -e PUBLIC_BASE_URL=https://tracking.example.com \
   -e GOOGLE_CLIENT_ID=... \
   -e GOOGLE_CLIENT_SECRET=... \
   -e GOOGLE_REDIRECT_URL=https://tracking.example.com/auth/google/callback \
+  -e ALLOW_DEV_LOGIN=0 \
   -v ctp-uploads:/app/data/uploads \
   ghcr.io/lfdominguez/my-car-tracking-platform:latest
 ```
 
-Required: `DATABASE_URL`, `SESSION_SECRET`, `DEVICE_TOKEN_PEPPER`. Keep `ALLOW_DEV_LOGIN` off in production.
+Required outside local: `DATABASE_URL`, independent `SESSION_SECRET`, `SECRETS_KEY`, `DEVICE_TOKEN_PEPPER` (≥32 chars). Keep `ALLOW_DEV_LOGIN=0`. Terminate TLS at a reverse proxy and set `PUBLIC_BASE_URL=https://…` (Secure cookies + HSTS). Compose does **not** publish Postgres by default.
 
 Packages may start private on GHCR — mark public in GitHub → Packages, or `docker login ghcr.io`.
 
@@ -167,9 +171,19 @@ Packages may start private on GHCR — mark public in GitHub → Packages, or `d
 
 | Who | How |
 |-----|-----|
-| 🌐 **Web** | Google OAuth → `/auth/google` → `HttpOnly` session `ctp_session` |
-| 🧪 **Dev** | `POST /auth/dev-login` when `ALLOW_DEV_LOGIN=1` |
+| 🌐 **Web** | Google OAuth → `/auth/google` (CSRF `state` cookie) → verified email → `HttpOnly` session `ctp_session` |
+| 🚪 **Logout** | `POST /auth/logout` |
+| 🧪 **Dev** | `POST /auth/dev-login` only when `ALLOW_DEV_LOGIN=1` **and** local URL (or `I_REALLY_WANT_DEV_LOGIN=1`) |
 | 📱 **Android** | SPA device token → `Authorization: Basic <token>` (shown once) |
+
+### Security baseline
+
+- **Secrets:** Non-local boots refuse weak/default/shared `SESSION_SECRET` / `SECRETS_KEY` / `DEVICE_TOKEN_PEPPER`.
+- **Photos:** `GET|POST /api/cars/{id}/photo` (session + `can_read_car` / edit); jpeg/png/webp magic-byte check; **no** public `/uploads`.
+- **DoS:** Per-IP rate limits (stricter on `/auth/*` and `/api/track/*`), 2 MiB default body limit (8 MiB photos), batch/point caps, finished-track sample reject.
+- **Headers:** CSP (self-hosted SPA vendor assets), `nosniff`, `frame-ancestors 'none'`, HSTS when `PUBLIC_BASE_URL` is https.
+- **Proxy:** Set `TRUST_FORWARDED_HEADERS=1` only behind a trusted reverse proxy.
+- Multi-instance deploys should still put edge rate limits at the proxy (in-app limits are per process).
 
 ---
 
@@ -209,13 +223,14 @@ Header: `Authorization: Basic <device_token>`. External track id = Android start
 | Method | Path | Notes |
 |--------|------|--------|
 | `GET` / `PATCH` | `/api/me` | profile, units, API key flags |
+| `POST` | `/auth/logout` | clear session |
 | `GET` / `POST` | `/api/cars` | list / create |
 | `GET` / `PATCH` / `DELETE` | `/api/cars/{id}` | car CRUD |
-| `POST` | `/api/cars/{id}/photo` | multipart photo |
+| `GET` / `POST` | `/api/cars/{id}/photo` | auth image bytes / multipart (jpeg\|png\|webp) |
 | `GET` / `POST` | `/api/cars/{id}/devices` | device tokens |
-| `GET` | `/api/cars/{id}/devices/{id}/provisioning?token=` | QR JSON |
-| `GET` / `POST` | `/api/cars/{id}/shares` | sharing |
-| `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` | trips |
+| `POST` | `/api/cars/{id}/devices/{id}/provisioning` | JSON `{ "token": "…" }` → QR payload |
+| `GET` / `POST` | `/api/cars/{id}/shares` | sharing (unknown email → uniform 200) |
+| `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` | trips (points/map capped) |
 | `POST` / `GET` | `/api/trips/{id}/analyze` · `…/analysis` | AI (owner) |
 | `GET` | `/api/dashboard/summary` | globals + per-car cards |
 | `GET` / `POST` | `/api/route-optimization/…` | corridors, map, recompute |
@@ -256,8 +271,9 @@ cargo test -p ai --lib
 
 Integration tests need `DATABASE_URL` + PostGIS.
 
-- Device tokens: blake3 + pepper; plaintext once at creation  
+- Device tokens: blake3 + pepper; constant-time verify; plaintext once at creation  
 - Health is intentionally public  
+- Ingest batch max 1000 samples; samples rejected on finished tracks  
 - Ingest / OBD stored metric-raw forever; display units convert on read  
 
 </details>

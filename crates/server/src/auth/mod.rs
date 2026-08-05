@@ -9,7 +9,7 @@ pub use google::google_auth_router;
 pub use session::{create_session, destroy_session};
 
 use axum::extract::State;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -22,7 +22,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/me", get(me).patch(update_me))
         .route("/api/public-config", get(public_config))
-        .route("/auth/logout", get(logout))
+        .route("/auth/logout", post(logout))
         .merge(google_auth_router())
 }
 

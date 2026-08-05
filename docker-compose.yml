@@ -2,14 +2,17 @@ services:
   db:
     image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: car_tracking
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-ctp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-car_tracking}
+    # Do not publish Postgres on all interfaces. For local tools only:
+    # uncomment and keep the 127.0.0.1 bind.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER:-ctp}\" -d \"$${POSTGRES_DB:-car_tracking}\""]
       interval: 3s
       timeout: 5s
       retries: 10
@@ -26,7 +29,7 @@ services:
       - .env
     environment:
       # Override host-oriented defaults from .env for in-compose networking.
-      DATABASE_URL: postgres://postgres:postgres@db:5432/car_tracking
+      DATABASE_URL: postgres://${POSTGRES_USER:-ctp}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-car_tracking}
       LISTEN_ADDR: 0.0.0.0:8080
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:8080/auth/google/callback}

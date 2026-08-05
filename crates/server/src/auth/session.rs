@@ -9,7 +9,9 @@ use crate::state::AppState;
 use crate::units::UnitSystem;
 
 pub const SESSION_COOKIE: &str = "ctp_session";
+pub const OAUTH_STATE_COOKIE: &str = "ctp_oauth_state";
 const SESSION_TTL_DAYS: i64 = 14;
+const OAUTH_STATE_MAX_AGE_SECS: i64 = 600;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionUser {
@@ -113,6 +115,29 @@ fn build_session_cookie(session_id: &str, secure: bool) -> Cookie<'static> {
     cookie.set_secure(secure);
     cookie.set_max_age(TimeDuration::days(SESSION_TTL_DAYS));
     cookie
+}
+
+pub fn set_oauth_state_cookie(jar: CookieJar, state: &str, secure: bool) -> CookieJar {
+    let mut cookie = Cookie::new(OAUTH_STATE_COOKIE, state.to_string());
+    cookie.set_http_only(true);
+    cookie.set_path("/");
+    cookie.set_same_site(SameSite::Lax);
+    cookie.set_secure(secure);
+    cookie.set_max_age(TimeDuration::seconds(OAUTH_STATE_MAX_AGE_SECS));
+    jar.add(cookie)
+}
+
+pub fn clear_oauth_state_cookie(jar: CookieJar) -> CookieJar {
+    let mut cookie = Cookie::new(OAUTH_STATE_COOKIE, "");
+    cookie.set_path("/");
+    cookie.make_removal();
+    jar.add(cookie)
+}
+
+pub fn oauth_state_from_jar(jar: &CookieJar) -> Option<String> {
+    jar.get(OAUTH_STATE_COOKIE)
+        .map(|c| c.value().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn generate_session_id() -> String {
