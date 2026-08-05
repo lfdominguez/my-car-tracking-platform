@@ -2,11 +2,15 @@ name: Security
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   schedule:
-    - cron: '0 0 * * 0' # Weekly on Sunday at midnight
+    - cron: "0 0 * * 0" # Weekly on Sunday at midnight
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   cargo-audit:
@@ -14,9 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
       - name: Run cargo audit
+        # Reads ignore list from .cargo/audit.toml (unfixed transitive advisories).
         run: cargo audit
 
   trivy:
@@ -26,21 +38,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Filesystem / dependency vulns in the repo tree (lockfile, etc.)
       - name: Run Trivy vulnerability scanner (FS)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'table'
-          exit-code: '1'
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: "1"
           ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'HIGH,CRITICAL'
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
 
-      - name: Run Trivy vulnerability scanner (Dockerfile)
-        uses: aquasecurity/trivy-action@master
+      # Dockerfile / IaC misconfiguration scan (path on disk — not an image tag).
+      - name: Run Trivy config scanner (Dockerfile)
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: 'car-tracking-platform:local'
-          scan-type: 'config'
-          exit-code: '1'
-          severity: 'HIGH,CRITICAL'
+          scan-type: config
+          scan-ref: .
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL

@@ -1,0 +1,14 @@
+# cargo-audit configuration (used by CI and scripts/ci-security.sh)
+# https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+# Informational unmaintained/unsound warnings should not fail the gate.
+informational_warnings = ["unmaintained", "unsound", "notice"]
+
+ignore = [
+    # RUSTSEC-2023-0071 — Marvin Attack (timing sidechannel) in `rsa`.
+    # No fixed upgrade is available on crates.io.
+    # Pulled in transitively by `sqlx-postgres` (SCRAM/auth). We do not use
+    # the `rsa` crate directly; re-check when sqlx drops or patches it.
+    "RUSTSEC-2023-0071",
+]

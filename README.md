@@ -186,7 +186,7 @@ Packages may start private on GHCR — mark public in GitHub → Packages, or `d
 - **Headers:** CSP (self-hosted SPA vendor assets), `nosniff`, `frame-ancestors 'none'`, HSTS when `PUBLIC_BASE_URL` is https.
 - **Proxy:** Set `TRUST_FORWARDED_HEADERS=1` only behind a trusted reverse proxy. See `deploy/nginx-security.conf.example`.
 - **Hardening:** Example Fail2ban and Nginx configs are available in `deploy/`.
-- **CI/Local:** Run `scripts/ci-security.sh` for dependency audits and filesystem vulnerability scans.
+- **CI/Local:** GitHub Actions (`.github/workflows/security.yml`) runs `cargo audit` + Trivy FS/config on PRs and weekly. Locally: `scripts/ci-security.sh`. Known unfixed transitive advisory `RUSTSEC-2023-0071` (`rsa` via `sqlx-postgres`) is ignored in `.cargo/audit.toml` until upstream ships a fix.
 
 #### 🔄 Secrets rotation procedure
 
