@@ -1,0 +1,60 @@
+# Nginx security configuration example for Car Tracking Platform (CTP)
+#
+# This is an example file and is NOT used by the default docker-compose setup.
+#
+# Usage: Include this in your nginx site configuration.
+# Ensure the backend app is running with TRUST_FORWARDED_HEADERS=1 if behind this proxy.
+
+# Rate limiting zones
+limit_req_zone $binary_remote_addr zone=ctp_auth:10m rate=1r/s;
+limit_req_zone $binary_remote_addr zone=ctp_ingest:10m rate=10r/s;
+
+server {
+    listen 443 ssl http2;
+    server_name tracking.example.com;
+
+    # TLS Security (Best practices)
+    # Use Let's Encrypt or similar. Example settings:
+    # ssl_certificate /etc/letsencrypt/live/tracking.example.com/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/tracking.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+
+    # Security Headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # WAF Pointer:
+    # Consider using ModSecurity or AWS WAF for deeper inspection.
+
+    location / {
+        proxy_pass http://ctp-app:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Strict rate limiting for Auth
+    location /auth/ {
+        limit_req zone=ctp_auth burst=5 nodelay;
+        proxy_pass http://ctp-app:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Moderate rate limiting for Ingest
+    location /api/track/ {
+        limit_req zone=ctp_ingest burst=20 nodelay;
+        proxy_pass http://ctp-app:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

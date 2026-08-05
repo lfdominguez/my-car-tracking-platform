@@ -1,0 +1,14 @@
+# Fail2ban jail for Car Tracking Platform (CTP)
+#
+# This is an example file and is NOT used by the default docker-compose setup.
+#
+# Usage: Copy to /etc/fail2ban/jail.d/ctp.local and adjust paths/ports.
+
+[ctp-auth]
+enabled  = true
+port     = http,https
+filter   = ctp-auth
+logpath  = /var/log/nginx/access.log
+maxretry = 5
+findtime = 600
+bantime  = 3600

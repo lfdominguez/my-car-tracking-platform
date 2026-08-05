@@ -1,0 +1,15 @@
+# Fail2ban filter for Car Tracking Platform (CTP)
+# Ban repeated 401 Unauthorized or 429 Too Many Requests on sensitive endpoints.
+#
+# This is an example file and is NOT used by the default docker-compose setup.
+# Assumes standard Nginx access log format or similar.
+#
+# Usage: Copy to /etc/fail2ban/filter.d/ctp-auth.conf
+#
+# Example log line:
+# 1.2.3.4 - - [05/Aug/2026:10:00:00 +0000] "POST /auth/google HTTP/1.1" 401 ...
+# 1.2.3.4 - - [05/Aug/2026:10:00:01 +0000] "POST /api/track/sample HTTP/1.1" 429 ...
+
+[Definition]
+failregex = ^<HOST> -.*"(GET|POST) /(auth|api/track)/.*" (401|429)
+ignoreregex =
