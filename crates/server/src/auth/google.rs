@@ -14,6 +14,7 @@ use std::net::SocketAddr;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+use crate::audit::{self, actions, AuditEvent};
 use crate::auth::create_session;
 use crate::auth::ensure_dev_user;
 use crate::auth::session::{
@@ -103,7 +104,21 @@ async fn google_callback(
         user_agent,
     };
 
-    let (jar, _) = create_session(&state, jar, user_id, meta).await?;
+    let (jar, session_id) = create_session(&state, jar, user_id, meta).await?;
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user_id),
+            actor_session_id: Some(&session_id),
+            action: actions::AUTH_LOGIN,
+            resource_type: None,
+            resource_id: None,
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "method": "google" }),
+        },
+    )
+    .await;
     Ok((jar, Redirect::temporary("/app")).into_response())
 }
 
@@ -151,7 +166,21 @@ async fn dev_login(
         user_agent,
     };
 
-    let (jar, _) = create_session(&state, jar, user_id, meta).await?;
+    let (jar, session_id) = create_session(&state, jar, user_id, meta).await?;
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user_id),
+            actor_session_id: Some(&session_id),
+            action: actions::AUTH_LOGIN,
+            resource_type: None,
+            resource_id: None,
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "method": "dev" }),
+        },
+    )
+    .await;
     Ok((
         jar,
         Json(serde_json::json!({ "ok": true, "user_id": user_id })),

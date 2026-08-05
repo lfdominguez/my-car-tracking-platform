@@ -2,16 +2,20 @@
 
 pub mod access;
 
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::HeaderMap;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::ShareRole;
+use std::net::SocketAddr;
 use uuid::Uuid;
 
+use crate::audit::{self, actions, AuditEvent};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
+use crate::middleware::client_ip;
 use crate::shares::access::{can_manage_shares, can_read_car, require_owner};
 use crate::state::AppState;
 
@@ -83,6 +87,8 @@ async fn create_share(
     State(state): State<AppState>,
     user: AuthUser,
     Path(car_id): Path<Uuid>,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<CreateShareRequest>,
 ) -> AppResult<Json<CreateShareResponse>> {
     require_owner(&state.pool, user.id, car_id).await?;
@@ -127,6 +133,35 @@ async fn create_share(
     .fetch_one(&state.pool)
     .await?;
 
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let car_id_str = car_id.to_string();
+    let shared_user_id = row.user_id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::SHARE_CREATED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id_str),
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({
+                "shared_user_id": shared_user_id,
+                "role": row.role,
+            }),
+        },
+    )
+    .await;
+
     Ok(Json(CreateShareResponse {
         ok: true,
         share: Some(row),
@@ -168,6 +203,8 @@ async fn delete_share(
     State(state): State<AppState>,
     user: AuthUser,
     Path((car_id, target_user_id)): Path<(Uuid, Uuid)>,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> AppResult<Json<serde_json::Value>> {
     can_manage_shares(&state.pool, user.id, car_id).await?;
     let res = sqlx::query("DELETE FROM car_shares WHERE car_id = $1 AND user_id = $2")
@@ -178,5 +215,32 @@ async fn delete_share(
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let car_id_str = car_id.to_string();
+    let shared_user_id = target_user_id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::SHARE_REVOKED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id_str),
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "shared_user_id": shared_user_id }),
+        },
+    )
+    .await;
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }

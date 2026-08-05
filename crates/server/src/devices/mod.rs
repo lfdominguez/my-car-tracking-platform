@@ -4,16 +4,20 @@ mod token;
 
 pub use token::{hash_token, issue_plaintext_token, verify_token_hash};
 
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::ProvisioningPayload;
+use std::net::SocketAddr;
 use uuid::Uuid;
 
+use crate::audit::{self, actions, AuditEvent};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
+use crate::middleware::client_ip;
 use crate::shares::access::{can_edit_car, can_read_car};
 use crate::state::AppState;
 
@@ -77,6 +81,8 @@ async fn create_device(
     State(state): State<AppState>,
     user: AuthUser,
     Path(car_id): Path<Uuid>,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<CreateDeviceRequest>,
 ) -> AppResult<Json<CreateDeviceResponse>> {
     can_edit_car(&state.pool, user.id, car_id).await?;
@@ -101,6 +107,32 @@ async fn create_device(
     .fetch_one(&state.pool)
     .await?;
 
+    let ip = client_ip(
+        &headers,
+        Some(connect_info.0),
+        state.config.trust_forwarded_headers,
+    );
+    let ip_str = ip.to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let device_id_str = device.id.to_string();
+    let car_id_str = car_id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::DEVICE_CREATED,
+            resource_type: Some("device"),
+            resource_id: Some(&device_id_str),
+            ip: Some(&ip_str),
+            user_agent,
+            meta: serde_json::json!({ "car_id": car_id_str }),
+        },
+    )
+    .await;
+
     Ok(Json(CreateDeviceResponse {
         device,
         token: plaintext,
@@ -111,6 +143,8 @@ async fn revoke_device(
     State(state): State<AppState>,
     user: AuthUser,
     Path((car_id, device_id)): Path<(Uuid, Uuid)>,
+    connect_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> AppResult<Json<serde_json::Value>> {
     can_edit_car(&state.pool, user.id, car_id).await?;
 
@@ -128,6 +162,31 @@ async fn revoke_device(
     .await?;
 
     if updated.rows_affected() > 0 {
+        let ip = client_ip(
+            &headers,
+            Some(connect_info.0),
+            state.config.trust_forwarded_headers,
+        );
+        let ip_str = ip.to_string();
+        let user_agent = headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok());
+        let device_id_str = device_id.to_string();
+        let car_id_str = car_id.to_string();
+        audit::record(
+            &state.pool,
+            AuditEvent {
+                user_id: Some(user.id),
+                actor_session_id: Some(&user.session_id),
+                action: actions::DEVICE_REVOKED,
+                resource_type: Some("device"),
+                resource_id: Some(&device_id_str),
+                ip: Some(&ip_str),
+                user_agent,
+                meta: serde_json::json!({ "car_id": car_id_str }),
+            },
+        )
+        .await;
         return Ok(Json(serde_json::json!({ "ok": true, "already_revoked": false })));
     }
 
