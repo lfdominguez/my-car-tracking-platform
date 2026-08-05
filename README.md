@@ -178,12 +178,24 @@ Packages may start private on GHCR — mark public in GitHub → Packages, or `d
 
 ### Security baseline
 
+- **Sessions:** Configure timeouts via `SESSION_IDLE_HOURS` (default 24h) and `SESSION_ABSOLUTE_DAYS` (default 30d). Users can audit active sessions and security activity in the **Settings** UI.
 - **Secrets:** Non-local boots refuse weak/default/shared `SESSION_SECRET` / `SECRETS_KEY` / `DEVICE_TOKEN_PEPPER`.
+- **Key Rotation:** Supports zero-downtime rotation via `SECRETS_KEY_VERSION` and `SECRETS_KEY_PREVIOUS`. See *Rotation procedure* below.
 - **Photos:** `GET|POST /api/cars/{id}/photo` (session + `can_read_car` / edit); jpeg/png/webp magic-byte check; **no** public `/uploads`.
 - **DoS:** Per-IP rate limits (stricter on `/auth/*` and `/api/track/*`), 2 MiB default body limit (8 MiB photos), batch/point caps, finished-track sample reject.
 - **Headers:** CSP (self-hosted SPA vendor assets), `nosniff`, `frame-ancestors 'none'`, HSTS when `PUBLIC_BASE_URL` is https.
-- **Proxy:** Set `TRUST_FORWARDED_HEADERS=1` only behind a trusted reverse proxy.
-- Multi-instance deploys should still put edge rate limits at the proxy (in-app limits are per process).
+- **Proxy:** Set `TRUST_FORWARDED_HEADERS=1` only behind a trusted reverse proxy. See `deploy/nginx-security.conf.example`.
+- **Hardening:** Example Fail2ban and Nginx configs are available in `deploy/`.
+- **CI/Local:** Run `scripts/ci-security.sh` for dependency audits and filesystem vulnerability scans.
+
+#### 🔄 Secrets rotation procedure
+
+To rotate the primary encryption key without losing access to existing encrypted data (e.g., OpenRouter keys):
+
+1. Set `SECRETS_KEY_PREVIOUS` to your current `SECRETS_KEY`.
+2. Generate a new 32+ char string and set it as `SECRETS_KEY`.
+3. Increment `SECRETS_KEY_VERSION` (e.g., from `1` to `2`).
+4. Restart the service. The app will now encrypt new data with the new key while still being able to decrypt old data.
 
 ---
 
