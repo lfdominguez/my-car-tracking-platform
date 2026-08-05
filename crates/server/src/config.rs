@@ -15,8 +15,12 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     pub public_base_url: String,
     pub session_secret: String,
+    pub session_idle_hours: i64,
+    pub session_absolute_days: i64,
     /// Key material for encrypting user secrets (OpenRouter / ORS API keys).
     pub secrets_key: String,
+    pub secrets_key_previous: Option<String>,
+    pub secrets_key_version: i32,
     pub google_client_id: String,
     pub google_client_secret: String,
     pub google_redirect_url: String,
@@ -111,6 +115,23 @@ impl Config {
         let upload_dir =
             PathBuf::from(env::var("UPLOAD_DIR").unwrap_or_else(|_| "data/uploads".into()));
 
+        let session_idle_hours = env::var("SESSION_IDLE_HOURS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(168);
+        let session_absolute_days = env::var("SESSION_ABSOLUTE_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(14);
+        let secrets_key_previous = env::var("SECRETS_KEY_PREVIOUS")
+            .ok()
+            .filter(|v| !v.is_empty());
+        let secrets_key_version = env::var("SECRETS_KEY_VERSION")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2)
+            .max(1);
+
         let allow_dev_login = env_flag("ALLOW_DEV_LOGIN", false);
         if allow_dev_login && !is_local_dev {
             let override_ok = env_flag("I_REALLY_WANT_DEV_LOGIN", false);
@@ -145,7 +166,11 @@ impl Config {
             listen_addr,
             public_base_url,
             session_secret,
+            session_idle_hours,
+            session_absolute_days,
             secrets_key,
+            secrets_key_previous,
+            secrets_key_version,
             google_client_id,
             google_client_secret,
             google_redirect_url,
@@ -242,6 +267,10 @@ mod tests {
             env::set_var("GOOGLE_CLIENT_SECRET", "");
             env::remove_var("GOOGLE_REDIRECT_URL");
             env::set_var("UPLOAD_DIR", "data/uploads");
+            env::remove_var("SESSION_IDLE_HOURS");
+            env::remove_var("SESSION_ABSOLUTE_DAYS");
+            env::remove_var("SECRETS_KEY_PREVIOUS");
+            env::remove_var("SECRETS_KEY_VERSION");
         }
     }
 
@@ -371,5 +400,50 @@ mod tests {
         }
         assert!(detect_local_dev("https://track.example.com"));
         clear_optional_env();
+    }
+
+    #[test]
+    fn loads_session_and_secrets_config() {
+        let _guard = lock_env();
+        clear_optional_env();
+        set_db("postgres://u:p@localhost/db");
+
+        // 1. Defaults
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.session_idle_hours, 168);
+        assert_eq!(cfg.session_absolute_days, 14);
+        assert_eq!(cfg.secrets_key_previous, None);
+        assert_eq!(cfg.secrets_key_version, 2);
+
+        // 2. Overrides
+        unsafe {
+            env::set_var("SESSION_IDLE_HOURS", "24");
+            env::set_var("SESSION_ABSOLUTE_DAYS", "7");
+            env::set_var("SECRETS_KEY_PREVIOUS", "old-key");
+            env::set_var("SECRETS_KEY_VERSION", "3");
+        }
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.session_idle_hours, 24);
+        assert_eq!(cfg.session_absolute_days, 7);
+        assert_eq!(cfg.secrets_key_previous, Some("old-key".into()));
+        assert_eq!(cfg.secrets_key_version, 3);
+
+        // 3. Clamping and empty strings
+        unsafe {
+            env::set_var("SECRETS_KEY_PREVIOUS", "");
+            env::set_var("SECRETS_KEY_VERSION", "0");
+        }
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.secrets_key_previous, None);
+        assert_eq!(cfg.secrets_key_version, 1); // clamped to >= 1
+
+        // 4. Invalid values use defaults
+        unsafe {
+            env::set_var("SESSION_IDLE_HOURS", "invalid");
+            env::set_var("SECRETS_KEY_VERSION", "not-a-number");
+        }
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.session_idle_hours, 168);
+        assert_eq!(cfg.secrets_key_version, 2);
     }
 }
