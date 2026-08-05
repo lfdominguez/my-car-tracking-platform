@@ -63,7 +63,7 @@ async fn google_callback(
     let profile = fetch_google_profile(access_token).await?;
     let user_id = upsert_google_user(&state, &profile).await?;
     let (jar, _) = create_session(&state, jar, user_id).await?;
-    Ok((jar, Redirect::temporary("/")).into_response())
+    Ok((jar, Redirect::temporary("/app")).into_response())
 }
 
 #[derive(Debug, Deserialize)]

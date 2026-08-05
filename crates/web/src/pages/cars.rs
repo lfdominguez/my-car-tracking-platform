@@ -108,7 +108,7 @@ pub fn CarsPage() -> impl IntoView {
                                                 </span>
                                             </td>
                                             <td>
-                                                <A href=format!("/cars/{id}")>
+                                                <A href=format!("/app/cars/{id}")>
                                                     <span class="icon-label">
                                                         "Manage"
                                                         <Icon name="caret-right" size=IconSize::Sm />
@@ -227,7 +227,7 @@ pub fn CarDetailPage() -> impl IntoView {
                 </h1>
                 <p class="muted">"Fuel settings, devices / QR, and sharing"</p>
             </div>
-            <A href="/cars">
+            <A href="/app/cars">
                 <span class="icon-label">
                     <Icon name="arrow-left" size=IconSize::Sm />
                     "Back"

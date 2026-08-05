@@ -147,7 +147,7 @@ pub fn RoutesPage() -> impl IntoView {
                 view! {
                     <div class="banner warn">
                         "OpenRouteService API key is not set for the car owner. "
-                        <A href="/settings">"Add it in Settings"</A>
+                        <A href="/app/settings">"Add it in Settings"</A>
                         " to fetch alternate paths and elevation. Recorded path comparison still works."
                     </div>
                 }.into_any()
@@ -186,7 +186,7 @@ pub fn RoutesPage() -> impl IntoView {
                                         on:click=move |_| {
                                             let cid = i.corridor_id.clone();
                                             navigate.with_value(|nav| {
-                                                nav(&format!("/routes/{cid}"), Default::default());
+                                                nav(&format!("/app/routes/{cid}"), Default::default());
                                             });
                                         }
                                     >
@@ -246,7 +246,7 @@ pub fn RoutesPage() -> impl IntoView {
                                 )
                             };
                             view! {
-                                <A href=format!("/routes/{id}")>
+                                <A href=format!("/app/routes/{id}")>
                                     <div class="card routes-corridor-card">
                                         <div class="routes-corridor-top">
                                             <strong>{format!("{} trips", c.trip_count)}</strong>
@@ -322,7 +322,7 @@ pub fn RouteCorridorPage() -> impl IntoView {
     view! {
         <div class="page-header">
             <div>
-                <A href="/routes"><span class="muted">"← Routes"</span></A>
+                <A href="/app/routes"><span class="muted">"← Routes"</span></A>
                 <h1>"Corridor"</h1>
             </div>
         </div>

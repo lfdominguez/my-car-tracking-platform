@@ -24,21 +24,25 @@ pub fn NotFoundPage() -> impl IntoView {
 
                 <div class="not-found-actions">
                     <a class="btn primary" href="/">
-                        <Icon name="chart-line-up" color=IconColor::Default />
-                        "Back to dashboard"
+                        <Icon name="gauge" color=IconColor::Default />
+                        "Back to home"
                     </a>
                     <div class="not-found-secondary">
-                        <a class="btn" href="/cars">
+                        <a class="btn" href="/app">
+                            <Icon name="chart-line-up" color=IconColor::Accent />
+                            "Dashboard"
+                        </a>
+                        <a class="btn" href="/app/cars">
                             <Icon name="car" color=IconColor::Accent />
                             "Cars"
                         </a>
-                        <a class="btn" href="/trips">
+                        <a class="btn" href="/app/trips">
                             <Icon name="path" color=IconColor::Accent />
                             "Trips"
                         </a>
-                        <a class="btn" href="/login">
-                            <Icon name="sign-in" color=IconColor::Default />
-                            "Sign in"
+                        <a class="btn" href="/auth/google" rel="external">
+                            <Icon name="google-logo" color=IconColor::Default />
+                            "Continue with Google"
                         </a>
                     </div>
                 </div>

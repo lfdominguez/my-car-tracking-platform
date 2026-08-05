@@ -127,7 +127,7 @@ pub fn TripsPage() -> impl IntoView {
                 key=|t| t.id.clone()
                 children=move |t| {
                     let id = t.id.clone();
-                    let href = format!("/trips/{id}");
+                    let href = format!("/app/trips/{id}");
                     let finished = t.finished;
                     let car = t.car_name.clone();
                     let started = pretty_started(&t.started_at);
@@ -371,7 +371,7 @@ pub fn TripDetailPage() -> impl IntoView {
                     }}
                 </p>
             </div>
-            <A href="/trips">
+            <A href="/app/trips">
                 <span class="btn">
                     <span class="icon-label">
                         <Icon name="arrow-left" size=IconSize::Sm />

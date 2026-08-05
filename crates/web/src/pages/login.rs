@@ -1,14 +1,20 @@
 use leptos::prelude::*;
+use leptos_router::hooks::use_navigate;
 
-use crate::api::get_public_config;
+use crate::api::{get_me, get_public_config};
 use crate::components::{Icon, IconColor, IconSize};
 
 #[component]
 pub fn LoginPage() -> impl IntoView {
     let allow_dev_login = RwSignal::new(false);
+    let navigate = StoredValue::new(use_navigate());
 
     Effect::new(move |_| {
         leptos::task::spawn_local(async move {
+            if get_me().await.is_ok() {
+                navigate.with_value(|nav| nav("/app", Default::default()));
+                return;
+            }
             if let Ok(cfg) = get_public_config().await {
                 allow_dev_login.set(cfg.allow_dev_login);
             }
@@ -28,6 +34,9 @@ pub fn LoginPage() -> impl IntoView {
                 <a class="btn primary" href="/auth/google" rel="external">
                     <Icon name="google-logo" color=IconColor::Default />
                     "Continue with Google"
+                </a>
+                <a class="muted" href="/" style="font-size:0.9rem;text-align:center">
+                    "← Back to home"
                 </a>
                 <Show when=move || allow_dev_login.get()>
                     <p class="muted" style="font-size:0.85rem">

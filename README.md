@@ -177,11 +177,12 @@ Packages may start private on GHCR — mark public in GitHub → Packages, or `d
 
 | Path | What you get |
 |------|----------------|
-| 🏠 **Dashboard** | Per-car odometer, fuel %, tracked distance |
-| 🚘 **Cars** | CRUD, photo, shares, devices, QR provisioning |
-| 🛣️ **Trips** | Analytics cockpit · map · AI analyze / re-analyze |
-| 🔀 **Routes** | Corridors, variants vs ORS, time-of-day insights |
-| ⚙️ **Settings** | Metric / Imperial · OpenRouter · OpenRouteService keys |
+| ✨ **`/`** | Marketing landing (guests) · redirects to app when signed in |
+| 🏠 **`/app`** | Per-car odometer, fuel %, tracked distance |
+| 🚘 **`/app/cars`** | CRUD, photo, shares, devices, QR provisioning |
+| 🛣️ **`/app/trips`** | Analytics cockpit · map · AI analyze / re-analyze |
+| 🔀 **`/app/routes`** | Corridors, variants vs ORS, time-of-day insights |
+| ⚙️ **`/app/settings`** | Metric / Imperial · OpenRouter · OpenRouteService keys |
 
 ---
 

@@ -39,23 +39,23 @@ pub fn AppLayout() -> impl IntoView {
                     "Car Tracking"
                 </div>
                 <nav class="nav">
-                    <A href="/">
+                    <A href="/app">
                         <Icon name="chart-line-up" color=IconColor::Accent />
                         "Dashboard"
                     </A>
-                    <A href="/cars">
+                    <A href="/app/cars">
                         <Icon name="car" color=IconColor::Accent />
                         "Cars"
                     </A>
-                    <A href="/trips">
+                    <A href="/app/trips">
                         <Icon name="map-trifold" color=IconColor::Accent />
                         "Trips"
                     </A>
-                    <A href="/routes">
+                    <A href="/app/routes">
                         <Icon name="path" color=IconColor::Accent />
                         "Routes"
                     </A>
-                    <A href="/settings">
+                    <A href="/app/settings">
                         <Icon name="gear" color=IconColor::Accent />
                         "Settings"
                     </A>
@@ -109,7 +109,7 @@ pub fn AppLayout() -> impl IntoView {
                                 let _ = logout().await;
                                 // hard redirect avoids nested navigate borrow issues
                                 if let Some(win) = web_sys::window() {
-                                    let _ = win.location().set_href("/login");
+                                    let _ = win.location().set_href("/");
                                 }
                             });
                         }>

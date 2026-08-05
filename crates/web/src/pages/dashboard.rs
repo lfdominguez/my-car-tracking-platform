@@ -53,7 +53,7 @@ pub fn DashboardPage() -> impl IntoView {
                     <div class="card empty-state">
                         <Icon name="car" size=IconSize::Xl color=IconColor::Device />
                         <div>"No cars yet — add one under Cars, then track from the phone."</div>
-                        <A href="/cars"><button type="button" class="primary">"Manage cars"</button></A>
+                        <A href="/app/cars"><button type="button" class="primary">"Manage cars"</button></A>
                     </div>
                 }
             >
@@ -155,7 +155,7 @@ pub fn DashboardPage() -> impl IntoView {
                                         <td>{format!("{:.0} min", t.duration_s.unwrap_or(0.0) / 60.0)}</td>
                                         <td>{fuel}</td>
                                         <td>
-                                            <A href=format!("/trips/{id}")>
+                                            <A href=format!("/app/trips/{id}")>
                                                 <span class="icon-label">
                                                     "Open"
                                                     <Icon name="caret-right" size=IconSize::Sm />
@@ -176,7 +176,7 @@ pub fn DashboardPage() -> impl IntoView {
 #[component]
 fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefs) -> impl IntoView {
     let id = car.car_id.clone();
-    let href = format!("/cars/{id}");
+    let href = format!("/app/cars/{id}");
     let photo = car
         .photo_path
         .as_ref()
