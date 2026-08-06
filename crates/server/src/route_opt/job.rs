@@ -37,6 +37,123 @@ pub enum JobError {
     Ors(String),
 }
 
+/// Recount corridor/variant `trip_count` from assignments.
+/// Deletes the corridor (cascading variants/insights/ORS rows) when empty.
+pub async fn sync_corridor_trip_counts(pool: &PgPool, corridor_id: Uuid) -> Result<(), JobError> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM route_trip_assignments WHERE corridor_id = $1",
+    )
+    .bind(corridor_id)
+    .fetch_one(pool)
+    .await?;
+
+    if n == 0 {
+        sqlx::query("DELETE FROM route_corridors WHERE id = $1")
+            .bind(corridor_id)
+            .execute(pool)
+            .await?;
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE route_variants v
+        SET trip_count = (
+                SELECT COUNT(*)::int FROM route_trip_assignments a WHERE a.variant_id = v.id
+            ),
+            updated_at = now()
+        WHERE v.corridor_id = $1
+        "#,
+    )
+    .bind(corridor_id)
+    .execute(pool)
+    .await?;
+
+    // Drop variants that lost every assignment (rep polyline shells).
+    sqlx::query(
+        r#"
+        DELETE FROM route_variants v
+        WHERE v.corridor_id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM route_trip_assignments a WHERE a.variant_id = v.id
+          )
+        "#,
+    )
+    .bind(corridor_id)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE route_corridors c
+        SET trip_count = $2,
+            last_trip_at = (
+                SELECT MAX(started_at) FROM route_trip_assignments WHERE corridor_id = c.id
+            ),
+            updated_at = now()
+        WHERE c.id = $1
+        "#,
+    )
+    .bind(corridor_id)
+    .bind(n as i32)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Sync each distinct corridor id (deduped).
+pub async fn sync_corridors(
+    pool: &PgPool,
+    corridor_ids: impl IntoIterator<Item = Uuid>,
+) -> Result<(), JobError> {
+    let mut seen = std::collections::HashSet::new();
+    for id in corridor_ids {
+        if seen.insert(id) {
+            sync_corridor_trip_counts(pool, id).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove corridors for a car that have no trip assignments left.
+pub async fn prune_empty_corridors_for_car(pool: &PgPool, car_id: Uuid) -> Result<u64, JobError> {
+    let res = sqlx::query(
+        r#"
+        DELETE FROM route_corridors c
+        WHERE c.car_id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM route_trip_assignments a WHERE a.corridor_id = c.id
+          )
+        "#,
+    )
+    .bind(car_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+async fn corridors_for_track(pool: &PgPool, track_id: Uuid) -> Result<Vec<Uuid>, JobError> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT DISTINCT corridor_id FROM route_trip_assignments WHERE track_id = $1",
+    )
+    .bind(track_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(ids)
+}
+
+/// Drop this track's route assignments and refresh affected corridor counts/pruning.
+pub async fn clear_track_route_assignments(pool: &PgPool, track_id: Uuid) -> Result<(), JobError> {
+    let old = corridors_for_track(pool, track_id).await?;
+    sqlx::query("DELETE FROM route_trip_assignments WHERE track_id = $1")
+        .bind(track_id)
+        .execute(pool)
+        .await?;
+    sync_corridors(pool, old).await?;
+    Ok(())
+}
+
 pub async fn process_finished_track(
     pool: &PgPool,
     keyring: &KeyRing,
@@ -78,6 +195,7 @@ pub async fn process_finished_track(
     .await?;
 
     if rows.len() < MIN_POINTS {
+        clear_track_route_assignments(pool, track_id).await?;
         return Err(JobError::Skipped("too few points"));
     }
 
@@ -102,13 +220,18 @@ pub async fn process_finished_track(
         });
     }
     if points.len() < MIN_POINTS {
+        clear_track_route_assignments(pool, track_id).await?;
         return Err(JobError::Skipped("too few valid points"));
     }
 
-    let start = median_endpoint(&points, true, 45)
-        .ok_or(JobError::Skipped("no start endpoint"))?;
-    let end = median_endpoint(&points, false, 45)
-        .ok_or(JobError::Skipped("no end endpoint"))?;
+    let Some(start) = median_endpoint(&points, true, 45) else {
+        clear_track_route_assignments(pool, track_id).await?;
+        return Err(JobError::Skipped("no start endpoint"));
+    };
+    let Some(end) = median_endpoint(&points, false, 45) else {
+        clear_track_route_assignments(pool, track_id).await?;
+        return Err(JobError::Skipped("no end endpoint"));
+    };
     let coords: Vec<LatLon> = points
         .iter()
         .map(|p| LatLon {
@@ -121,10 +244,7 @@ pub async fn process_finished_track(
     let duration_secs = (end_t - started_at).num_milliseconds() as f64 / 1000.0;
 
     if duration_secs < MIN_DURATION_SECS || distance_m < MIN_DISTANCE_M {
-        let _ = sqlx::query("DELETE FROM route_trip_assignments WHERE track_id = $1")
-            .bind(track_id)
-            .execute(pool)
-            .await;
+        clear_track_route_assignments(pool, track_id).await?;
         return Err(JobError::Skipped("trip too short"));
     }
 
@@ -137,20 +257,19 @@ pub async fn process_finished_track(
         MIN_DISTANCE_M,
     );
     if legs.is_empty() {
-        let _ = sqlx::query("DELETE FROM route_trip_assignments WHERE track_id = $1")
-            .bind(track_id)
-            .execute(pool)
-            .await;
+        clear_track_route_assignments(pool, track_id).await?;
         return Err(JobError::Skipped("no usable legs"));
     }
 
-    // Re-assign all legs for this track.
+    // Re-assign all legs for this track; remember previous corridors to prune/recount.
+    let old_corridors = corridors_for_track(pool, track_id).await?;
     sqlx::query("DELETE FROM route_trip_assignments WHERE track_id = $1")
         .bind(track_id)
         .execute(pool)
         .await?;
 
     let mut assigned = 0u32;
+    let mut touched_corridors = std::collections::HashSet::new();
     for leg in &legs {
         let p_end = leg.point_end.min(points.len() - 1);
         let p_start = leg.point_start.min(p_end);
@@ -265,6 +384,8 @@ pub async fn process_finished_track(
         .execute(pool)
         .await?;
 
+        touched_corridors.insert(corridor_id);
+
         if let Err(e) = refresh_ors_if_needed(pool, keyring, car_id, corridor_id).await {
             warn!(error = %e, %corridor_id, "ORS refresh skipped");
         }
@@ -282,6 +403,12 @@ pub async fn process_finished_track(
         );
         assigned += 1;
     }
+
+    // Corridors this track left (or all previous ones if nothing reassigned) need recount/prune.
+    let stale = old_corridors
+        .into_iter()
+        .filter(|id| !touched_corridors.contains(id));
+    sync_corridors(pool, stale).await?;
 
     if assigned == 0 {
         return Err(JobError::Skipped("no legs assigned"));
@@ -852,5 +979,11 @@ pub async fn recompute_car(
             Err(e) => warn!(%id, error = %e, "recompute track failed"),
         }
     }
+
+    // Drop corridor shells left with zero assignments after the full rebuild.
+    if let Err(e) = prune_empty_corridors_for_car(pool, car_id).await {
+        warn!(%car_id, error = %e, "prune empty corridors failed");
+    }
+
     Ok(n)
 }

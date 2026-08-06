@@ -27,7 +27,15 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Delete vault ciphertext for this track and the track row (cascades points/assignments).
+/// Also recounts/prunes route corridors that lost this trip.
 pub async fn purge_track(pool: &PgPool, track_id: Uuid) -> AppResult<()> {
+    let corridor_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT corridor_id FROM route_trip_assignments WHERE track_id = $1",
+    )
+    .bind(track_id)
+    .fetch_all(pool)
+    .await?;
+
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM vault_objects WHERE logical_id = $1")
         .bind(track_id)
@@ -38,6 +46,10 @@ pub async fn purge_track(pool: &PgPool, track_id: Uuid) -> AppResult<()> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+
+    if let Err(e) = crate::route_opt::sync_corridors(pool, corridor_ids).await {
+        tracing::warn!(%track_id, error = %e, "route corridor sync after trip purge failed");
+    }
     Ok(())
 }
 

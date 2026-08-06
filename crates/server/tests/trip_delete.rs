@@ -215,6 +215,100 @@ async fn owner_can_delete_trip_and_cascades() {
 }
 
 #[tokio::test]
+async fn delete_trip_removes_empty_route_corridor() {
+    let Some(ctx) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+
+    let track_id = insert_track_with_points(&ctx.pool, ctx.car_id).await;
+    let corridor_id = Uuid::new_v4();
+    let variant_id = Uuid::new_v4();
+    let started = Utc::now();
+
+    sqlx::query(
+        r#"
+        INSERT INTO route_corridors (
+            id, car_id, start_lat, start_lon, end_lat, end_lon,
+            start_geog, end_geog, trip_count, last_trip_at, is_round_trip
+        ) VALUES (
+            $1, $2, -23.5, -46.6, -23.6, -46.7,
+            ST_SetSRID(ST_MakePoint(-46.6, -23.5), 4326)::geography,
+            ST_SetSRID(ST_MakePoint(-46.7, -23.6), 4326)::geography,
+            1, $3, false
+        )
+        "#,
+    )
+    .bind(corridor_id)
+    .bind(ctx.car_id)
+    .bind(started)
+    .execute(&ctx.pool)
+    .await
+    .expect("insert corridor");
+
+    sqlx::query(
+        r#"
+        INSERT INTO route_variants (
+            id, corridor_id, label, signature, rep_track_id, trip_count
+        ) VALUES ($1, $2, 'Variant A', 'sig-test', $3, 1)
+        "#,
+    )
+    .bind(variant_id)
+    .bind(corridor_id)
+    .bind(track_id)
+    .execute(&ctx.pool)
+    .await
+    .expect("insert variant");
+
+    sqlx::query(
+        r#"
+        INSERT INTO route_trip_assignments (
+            track_id, leg_index, corridor_id, variant_id,
+            hour_bin, is_weekend, month, duration_secs, distance_m, started_at
+        ) VALUES ($1, 0, $2, $3, 10, false, 8, 600.0, 5000.0, $4)
+        "#,
+    )
+    .bind(track_id)
+    .bind(corridor_id)
+    .bind(variant_id)
+    .bind(started)
+    .execute(&ctx.pool)
+    .await
+    .expect("insert assignment");
+
+    let resp = ctx
+        .client
+        .delete(format!("{}/api/trips/{}", ctx.base, track_id))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "delete status {}",
+        resp.status()
+    );
+
+    let corridors: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM route_corridors WHERE id = $1")
+            .bind(corridor_id)
+            .fetch_one(&ctx.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        corridors, 0,
+        "empty corridor must be pruned after last trip delete"
+    );
+
+    let variants: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM route_variants WHERE id = $1")
+            .bind(variant_id)
+            .fetch_one(&ctx.pool)
+            .await
+            .unwrap();
+    assert_eq!(variants, 0, "variant must cascade with corridor");
+}
+
+#[tokio::test]
 async fn non_owner_cannot_delete_trip() {
     let Some(ctx) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");

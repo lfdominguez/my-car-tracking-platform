@@ -105,14 +105,27 @@ async fn summary(
     can_read_car(&state.pool, user.id, q.car_id).await?;
     let system = load_unit_system(&state.pool, user.id).await?;
 
+    // Opportunistically drop empty corridor shells left by older builds / deletes.
+    let _ = super::job::prune_empty_corridors_for_car(&state.pool, q.car_id).await;
+
     let corridors_rows = sqlx::query(
         r#"
-        SELECT id, car_id, start_lat, start_lon, end_lat, end_lon,
-               COALESCE(is_round_trip, false) AS is_round_trip,
-               via_lat, via_lon,
-               trip_count, last_trip_at
-        FROM route_corridors
-        WHERE car_id = $1
+        SELECT c.id, c.car_id, c.start_lat, c.start_lon, c.end_lat, c.end_lon,
+               COALESCE(c.is_round_trip, false) AS is_round_trip,
+               c.via_lat, c.via_lon,
+               (
+                 SELECT COUNT(*)::int FROM route_trip_assignments a
+                 WHERE a.corridor_id = c.id
+               ) AS trip_count,
+               (
+                 SELECT MAX(a.started_at) FROM route_trip_assignments a
+                 WHERE a.corridor_id = c.id
+               ) AS last_trip_at
+        FROM route_corridors c
+        WHERE c.car_id = $1
+          AND EXISTS (
+            SELECT 1 FROM route_trip_assignments a WHERE a.corridor_id = c.id
+          )
         ORDER BY last_trip_at DESC NULLS LAST, trip_count DESC
         "#,
     )
@@ -261,9 +274,13 @@ async fn corridor_detail(
 ) -> AppResult<Json<CorridorDetailResponse>> {
     let corridor = sqlx::query(
         r#"
-        SELECT id, car_id, start_lat, start_lon, end_lat, end_lon, trip_count,
+        SELECT id, car_id, start_lat, start_lon, end_lat, end_lon,
                COALESCE(is_round_trip, false) AS is_round_trip,
-               via_lat, via_lon
+               via_lat, via_lon,
+               (
+                 SELECT COUNT(*)::int FROM route_trip_assignments a
+                 WHERE a.corridor_id = route_corridors.id
+               ) AS trip_count
         FROM route_corridors WHERE id = $1
         "#,
     )
@@ -276,12 +293,23 @@ async fn corridor_detail(
     can_read_car(&state.pool, user.id, car_id).await?;
     let system = load_unit_system(&state.pool, user.id).await?;
     let trip_count: i32 = corridor.try_get("trip_count")?;
+    if trip_count == 0 {
+        // Stale empty shell — remove and treat as missing.
+        let _ = super::job::sync_corridor_trip_counts(&state.pool, id).await;
+        return Err(AppError::NotFound);
+    }
 
     let samples = load_samples(&state.pool, id).await?;
     let by_var = aggregate_by_variant(&samples);
 
     let vrows = sqlx::query(
-        "SELECT id, label, trip_count FROM route_variants WHERE corridor_id = $1 ORDER BY label",
+        r#"
+        SELECT v.id, v.label,
+               (SELECT COUNT(*)::int FROM route_trip_assignments a WHERE a.variant_id = v.id) AS trip_count
+        FROM route_variants v
+        WHERE v.corridor_id = $1
+        ORDER BY v.label
+        "#,
     )
     .bind(id)
     .fetch_all(&state.pool)
@@ -292,6 +320,10 @@ async fn corridor_detail(
     for v in &vrows {
         let vid: Uuid = v.try_get("id")?;
         let label: String = v.try_get("label")?;
+        let v_count: i32 = v.try_get("trip_count")?;
+        if v_count == 0 {
+            continue;
+        }
         labels.insert(vid, label.clone());
         let stats = by_var
             .get(&vid)
@@ -300,7 +332,7 @@ async fn corridor_detail(
         variants.push(VariantDto {
             id: vid,
             label,
-            trip_count: v.try_get("trip_count")?,
+            trip_count: v_count,
             median_duration_secs: stats.median_duration_secs,
             median_distance: convert_distance_m(stats.median_distance_m, system),
             median_stop_time_secs: stats.median_stop_time_secs,
