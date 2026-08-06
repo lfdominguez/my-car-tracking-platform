@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/trips/{id}", get(get_trip).delete(delete_trip))
         .route("/api/trips/{id}/points", get(trip_points))
         .route("/api/trips/{id}/map", get(trip_map))
+        .route("/api/trips/{id}/traffic/frames", get(trip_traffic_frames))
 }
 
 /// Delete vault ciphertext for this track and the track row (cascades points/assignments).
@@ -186,6 +187,56 @@ pub struct TripMapResponse {
     pub coordinates: Vec<[f64; 2]>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TrafficShareDto {
+    #[serde(default)]
+    pub free: f64,
+    #[serde(default)]
+    pub light: f64,
+    #[serde(default)]
+    pub moderate: f64,
+    #[serde(default)]
+    pub heavy: f64,
+    #[serde(default)]
+    pub jam: f64,
+    #[serde(default)]
+    pub signal_stop: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrafficSummaryDto {
+    pub status: String,
+    pub overall_index: Option<f64>,
+    pub time_share: Option<TrafficShareDto>,
+    pub distance_share: Option<TrafficShareDto>,
+    pub frame_count: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TripDetailResponse {
+    #[serde(flatten)]
+    pub trip: TripSummary,
+    pub traffic: Option<TrafficSummaryDto>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrafficFrameDto {
+    pub seq: i32,
+    pub t_start: DateTime<Utc>,
+    pub t_end: DateTime<Utc>,
+    pub lat: f64,
+    pub lon: f64,
+    pub speed_kph: f64,
+    pub v_ff_kph: f64,
+    pub level: String,
+    pub distance_m: f64,
+}
+
+fn share_from_json(v: Option<serde_json::Value>) -> Option<TrafficShareDto> {
+    let v = v?;
+    serde_json::from_value(v).ok()
+}
+
 async fn accessible_car_filter(user_id: Uuid) -> &'static str {
     let _ = user_id;
     r#"
@@ -320,7 +371,7 @@ async fn get_trip(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
-) -> AppResult<Json<TripSummary>> {
+) -> AppResult<Json<TripDetailResponse>> {
     let car_id = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.pool)
@@ -374,10 +425,98 @@ async fn get_trip(
     .fetch_one(&state.pool)
     .await?;
 
-    Ok(Json(apply_trip_summary_units(
-        seal_trip_if_vault(row),
-        user.unit_system,
-    )))
+    let traffic_row = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<f64>,
+            Option<serde_json::Value>,
+            Option<serde_json::Value>,
+            i32,
+        ),
+    >(
+        r#"
+        SELECT status, overall_index, time_share, distance_share, frame_count
+        FROM trip_traffic_summaries
+        WHERE track_id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let traffic = traffic_row.map(|(status, overall_index, time_share, distance_share, frame_count)| {
+        TrafficSummaryDto {
+            status,
+            overall_index,
+            time_share: share_from_json(time_share),
+            distance_share: share_from_json(distance_share),
+            frame_count,
+        }
+    });
+
+    Ok(Json(TripDetailResponse {
+        trip: apply_trip_summary_units(seal_trip_if_vault(row), user.unit_system),
+        traffic,
+    }))
+}
+
+async fn trip_traffic_frames(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<Vec<TrafficFrameDto>>> {
+    let car_id = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    can_read_car(&state.pool, user.id, car_id).await?;
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            i32,
+            DateTime<Utc>,
+            DateTime<Utc>,
+            f64,
+            f64,
+            f64,
+            f64,
+            String,
+            f64,
+        ),
+    >(
+        r#"
+        SELECT seq, t_start, t_end, lat, lon, speed_kph, v_ff_kph, level, distance_m
+        FROM trip_traffic_frames
+        WHERE track_id = $1
+        ORDER BY seq ASC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let out = rows
+        .into_iter()
+        .map(
+            |(seq, t_start, t_end, lat, lon, speed_kph, v_ff_kph, level, distance_m)| {
+                TrafficFrameDto {
+                    seq,
+                    t_start,
+                    t_end,
+                    lat,
+                    lon,
+                    speed_kph,
+                    v_ff_kph,
+                    level,
+                    distance_m,
+                }
+            },
+        )
+        .collect();
+    Ok(Json(out))
 }
 
 const DEFAULT_TRIP_POINTS_LIMIT: i64 = 2000;

@@ -345,16 +345,68 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
   return { features, minSpeed, maxSpeed, hasSpeed };
 }
 
+const TRAFFIC_LEVEL_COLORS = {
+  free: '#2ecc71',
+  light: '#a8e063',
+  moderate: '#f1c40f',
+  heavy: '#e67e22',
+  jam: '#e74c3c',
+  signal_stop: '#95a5a6'
+};
+
 function speedLinePaintColor() {
+  // Prefer discrete congestion color when present; else speed gradient.
   return [
-    'interpolate', ['linear'], ['coalesce', ['get', 'speed_t'], 0.45],
-    0.0, '#1d4ed8',
-    0.2, '#0891b2',
-    0.4, '#16a34a',
-    0.6, '#ca8a04',
-    0.8, '#ea580c',
-    1.0, '#dc2626'
+    'case',
+    ['has', 'congestion_color'],
+    ['to-color', ['get', 'congestion_color']],
+    [
+      'interpolate', ['linear'], ['coalesce', ['get', 'speed_t'], 0.45],
+      0.0, '#1d4ed8',
+      0.2, '#0891b2',
+      0.4, '#16a34a',
+      0.6, '#ca8a04',
+      0.8, '#ea580c',
+      1.0, '#dc2626'
+    ]
   ];
+}
+
+function levelForTime(frames, tMs) {
+  if (!frames || !frames.length || tMs == null) return null;
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    const a = Date.parse(f.t_start);
+    const b = Date.parse(f.t_end);
+    if (Number.isFinite(a) && Number.isFinite(b) && tMs >= a && tMs <= b) {
+      return f.level || null;
+    }
+  }
+  // nearest by start time
+  let best = null;
+  let bestD = Infinity;
+  for (let i = 0; i < frames.length; i++) {
+    const a = Date.parse(frames[i].t_start);
+    if (!Number.isFinite(a)) continue;
+    const d = Math.abs(a - tMs);
+    if (d < bestD) { bestD = d; best = frames[i].level; }
+  }
+  return best;
+}
+
+function applyTrafficColors(features, frames) {
+  if (!frames || !frames.length || !features || !features.length) return false;
+  let any = false;
+  for (let i = 0; i < features.length; i++) {
+    const t = parseTimeMs(features[i].properties && features[i].properties.recorded_at);
+    const level = levelForTime(frames, t);
+    if (level && TRAFFIC_LEVEL_COLORS[level]) {
+      features[i].properties.congestion_color = TRAFFIC_LEVEL_COLORS[level];
+      features[i].properties.traffic_level = level;
+      any = true;
+    }
+  }
+  return any;
 }
 
 function ensureMapImages(map) {
@@ -894,7 +946,7 @@ export function disposeTripMap(elId) {
   } catch (_) {}
 }
 
-export function renderTripMap(elId, geojson, pointsJson) {
+export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
   const el = document.getElementById(elId);
   if (!el || !window.maplibregl) return;
 
@@ -906,6 +958,14 @@ export function renderTripMap(elId, geojson, pointsJson) {
   }
   if (!Array.isArray(points)) points = [];
 
+  let trafficFrames = [];
+  try {
+    trafficFrames = typeof trafficJson === 'string' ? JSON.parse(trafficJson) : (trafficJson || []);
+  } catch (_) {
+    trafficFrames = [];
+  }
+  if (!Array.isArray(trafficFrames)) trafficFrames = [];
+
   let coordinates = points
     .filter((p) => p && Number.isFinite(p.lon) && Number.isFinite(p.lat))
     .map((p) => [p.lon, p.lat]);
@@ -914,6 +974,7 @@ export function renderTripMap(elId, geojson, pointsJson) {
   }
 
   const speedBuilt = buildSpeedLineFeatures(points, coordinates);
+  const usedTraffic = applyTrafficColors(speedBuilt.features, trafficFrames);
   const lineFc = { type: 'FeatureCollection', features: speedBuilt.features };
   const stopFeatures = buildStopFeatures(points);
   const stopsFc = { type: 'FeatureCollection', features: stopFeatures };
@@ -928,7 +989,19 @@ export function renderTripMap(elId, geojson, pointsJson) {
   const arrowFeatures = buildArrowFeatures(points, stopFeatures, initialZoom);
   const arrowsFc = { type: 'FeatureCollection', features: arrowFeatures };
 
-  updateSpeedLegend(speedBuilt.minSpeed, speedBuilt.maxSpeed, speedBuilt.hasSpeed);
+  if (usedTraffic) {
+    const minEl = document.getElementById('trip-speed-min');
+    const maxEl = document.getElementById('trip-speed-max');
+    const bar = document.getElementById('trip-speed-bar');
+    if (minEl) minEl.textContent = 'Free';
+    if (maxEl) maxEl.textContent = 'Jam';
+    if (bar) {
+      bar.classList.remove('is-empty');
+      bar.style.background = 'linear-gradient(90deg,#2ecc71,#a8e063,#f1c40f,#e67e22,#e74c3c)';
+    }
+  } else {
+    updateSpeedLegend(speedBuilt.minSpeed, speedBuilt.maxSpeed, speedBuilt.hasSpeed);
+  }
 
   let existing = __tripMaps.get(elId);
   // Recreate when style changes OR the DOM container was replaced (Leptos remount).
@@ -1022,7 +1095,7 @@ export function renderTripMap(elId, geojson, pointsJson) {
 }
 "#)]
 extern "C" {
-    fn renderTripMap(el_id: &str, geojson: &JsValue, points_json: &str);
+    fn renderTripMap(el_id: &str, geojson: &JsValue, points_json: &str, traffic_json: &str);
     fn setTripMapSpeedUnit(unit: &str);
     fn disposeTripMap(el_id: &str);
 }
@@ -1031,9 +1104,11 @@ extern "C" {
 pub fn TripMap(
     geojson: Signal<Option<serde_json::Value>>,
     #[prop(into)] points: Signal<Vec<TripPoint>>,
+    #[prop(into, optional)] traffic_frames: Option<Signal<Vec<crate::api::TripTrafficFrame>>>,
 ) -> impl IntoView {
     let id = "trip-map";
     let prefs = crate::units::use_unit_prefs();
+    let traffic_frames = traffic_frames.unwrap_or_else(|| Signal::derive(|| Vec::new()));
 
     // Always tear down MapLibre when this component leaves the tree so a remount
     // does not reuse a map bound to a disposed DOM node / reactive scope.
@@ -1053,6 +1128,7 @@ pub fn TripMap(
         let Some(pts) = points.try_get() else {
             return;
         };
+        let frames = traffic_frames.try_get().unwrap_or_default();
         // Need either a line payload or enough points to draw.
         if gj.is_none() && pts.len() < 2 {
             return;
@@ -1067,7 +1143,8 @@ pub fn TripMap(
             return;
         };
         let pts_json = serde_json::to_string(&pts).unwrap_or_else(|_| "[]".into());
-        renderTripMap(id, &js, &pts_json);
+        let traffic_json = serde_json::to_string(&frames).unwrap_or_else(|_| "[]".into());
+        renderTripMap(id, &js, &pts_json, &traffic_json);
     });
     view! { <div id=id class="map"></div> }
 }

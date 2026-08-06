@@ -30,7 +30,8 @@
 |---|---|
 | 🏎️ **Car garage** | Profiles, photos, fuel/engine settings, per-car device tokens |
 | 📡 **Phone ingest** | `start` / `sample(s)` / `stop` with `Authorization: Basic <token>` — no Android contract break |
-| 🗺️ **Trip cockpit** | Liberty basemap, speed gradient polyline, chevrons, stop circles, chart ↔ map sync |
+| 🗺️ **Trip cockpit** | Liberty basemap, speed/traffic-colored polyline, chevrons, stop circles, chart ↔ map sync |
+| 🚦 **Traffic guessing** | Per-frame congestion from speed vs OSM free-flow (Overpass maxspeed) + signal-stop heuristic |
 | 📈 **Telemetry suite** | Drive · engine · fuel · thermal/electrical — all stored OBD fields when present |
 | 🧭 **Routes Optimization** | Cluster similar OD corridors, path variants, OpenRouteService alts + elevation (**no LLM**) |
 | 🤖 **AI route analysis** | Owner OpenRouter key · Rig agent · structured findings + downloadable markdown |
@@ -52,8 +53,10 @@ flowchart TD
     Platform --> Tracks
     Platform --> AI[AI analysis]
     Platform --> Routes[Routes optimization]
+    Platform --> Traffic[Traffic guessing]
     AI --> OpenRouter[OpenRouter]
     Routes --> ORS[OpenRouteService]
+    Traffic --> Overpass[OSM Overpass]
     Server[Axum binary] -->|static SPA| Browser
 ```
 
@@ -242,7 +245,7 @@ Header: `Authorization: Basic <device_token>`. External track id = Android start
 | `GET` / `POST` | `/api/cars/{id}/devices` | device tokens |
 | `POST` | `/api/cars/{id}/devices/{id}/provisioning` | JSON `{ "token": "…" }` → QR payload |
 | `GET` / `POST` | `/api/cars/{id}/shares` | sharing (unknown email → uniform 200) |
-| `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` | trips (points/map capped) |
+| `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` · `…/traffic/frames` | trips (points/map capped); traffic frames when ready |
 | `POST` / `GET` | `/api/trips/{id}/analyze` · `…/analysis` | AI (owner) |
 | `GET` | `/api/dashboard/summary` | globals + per-car cards |
 | `GET` / `POST` | `/api/route-optimization/…` | corridors, map, recompute |
@@ -269,6 +272,17 @@ QR payload keys align with Android `AppSettings` (`apiToken`, absolute track URL
 - Time-of-day / weekday stats; **OpenRouteService** alts + elevation with owner ORS key
 - Job after `track/stop`; **Routes → Recompute** to backfill
 - Only trips **> 2 km**; **no LLM**
+
+</details>
+
+<details>
+<summary>🚦 Traffic guessing</summary>
+
+- After plaintext `track/stop`, async job builds ~80 m / ~10 s frames and scores congestion vs free-flow
+- Free-flow from OSM `maxspeed` / highway class via **Overpass** (`OVERPASS_URL`, default public interpreter) + optional own off-peak history
+- Levels: free → jam; short stationary then leave → `signal_stop` (not counted as queue)
+- Trip detail chips + map polyline colors; vault trips skipped in v1
+- Env: `OVERPASS_URL`
 
 </details>
 

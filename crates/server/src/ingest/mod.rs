@@ -197,6 +197,7 @@ async fn track_stop(
             Ok(false) => {
                 let pool = state.pool.clone();
                 let keyring = state.keyring.clone();
+                let overpass = state.config.overpass_url.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
                         crate::route_opt::process_finished_track(&pool, &keyring, track_id).await
@@ -204,16 +205,33 @@ async fn track_stop(
                         tracing::warn!(%track_id, error = %e, "route optimization job failed");
                     }
                 });
+                let pool_t = state.pool.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::traffic::process_finished_track(&pool_t, &overpass, track_id).await
+                    {
+                        tracing::warn!(%track_id, error = %e, "traffic job failed");
+                    }
+                });
             }
             Err(e) => {
                 tracing::warn!(%track_id, error = %e, "empty trip check failed");
                 let pool = state.pool.clone();
                 let keyring = state.keyring.clone();
+                let overpass = state.config.overpass_url.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
                         crate::route_opt::process_finished_track(&pool, &keyring, track_id).await
                     {
                         tracing::warn!(%track_id, error = %e, "route optimization job failed");
+                    }
+                });
+                let pool_t = state.pool.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::traffic::process_finished_track(&pool_t, &overpass, track_id).await
+                    {
+                        tracing::warn!(%track_id, error = %e, "traffic job failed");
                     }
                 });
             }

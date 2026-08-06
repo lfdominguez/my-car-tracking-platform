@@ -14,6 +14,7 @@ pub mod middleware;
 pub mod route_opt;
 pub mod shares;
 pub mod state;
+pub mod traffic;
 pub mod trips;
 pub mod units;
 pub mod vault;

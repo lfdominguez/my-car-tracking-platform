@@ -7,6 +7,7 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::api::{
     delete_trip, fetch_trip_analysis, get_trip, list_trips, start_trip_analysis, trip_map,
+    trip_traffic_frames, TripTrafficFrame,
     trip_points, vault_create_job, Trip, TripAnalysis, TripPoint,
 };
 use crate::vault::{
@@ -290,6 +291,7 @@ pub fn TripDetailPage() -> impl IntoView {
     let navigate = use_navigate();
     let trip = RwSignal::new(Option::<Trip>::None);
     let points = RwSignal::new(Vec::<TripPoint>::new());
+    let traffic_frames = RwSignal::new(Vec::<TripTrafficFrame>::new());
     let geojson = RwSignal::new(Option::<serde_json::Value>::None);
     let error = RwSignal::new(Option::<String>::None);
     let loading = RwSignal::new(true);
@@ -433,6 +435,21 @@ pub fn TripDetailPage() -> impl IntoView {
                         }
                     }
                     Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
+                }
+                if !alive_fetch.load(Ordering::SeqCst) {
+                    return;
+                }
+                match trip_traffic_frames(&id_fetch).await {
+                    Ok(f) => {
+                        if alive_fetch.load(Ordering::SeqCst) {
+                            traffic_frames.set(f);
+                        }
+                    }
+                    Err(_) => {
+                        if alive_fetch.load(Ordering::SeqCst) {
+                            traffic_frames.set(Vec::new());
+                        }
+                    }
                 }
                 if !alive_fetch.load(Ordering::SeqCst) {
                     return;
@@ -597,6 +614,7 @@ pub fn TripDetailPage() -> impl IntoView {
                         crate::units::UnitSystem::Metric => "Avg L/100km",
                         crate::units::UnitSystem::Us => "Avg mpg",
                     };
+                    let traffic = t.traffic.clone();
                     view! {
                         <div class="kpi-grid">
                             <KpiCard label="Distance" value=fmt_distance(t.distance_m, &prefs.get()) hint=None />
@@ -607,6 +625,7 @@ pub fn TripDetailPage() -> impl IntoView {
                             <KpiCard label=econ_label value=l100 hint=Some("from fuel ÷ distance".into()) />
                             <KpiCard label="Samples" value=format!("{}", t.point_count) hint=None />
                         </div>
+                        {traffic_summary_view(traffic)}
                     }
                 }
             }
@@ -689,21 +708,42 @@ pub fn TripDetailPage() -> impl IntoView {
                     <Icon name="map-pin" color=IconColor::Accent />
                     "Route"
                 </h2>
-                <span class="muted">"Speed-colored route · Liberty"</span>
+                <span class="muted">
+                    {move || {
+                        if traffic_frames.get().is_empty() {
+                            "Speed-colored route · Liberty".to_string()
+                        } else {
+                            "Traffic-colored route · Liberty".to_string()
+                        }
+                    }}
+                </span>
             </div>
-            <TripMap geojson=geojson.into() points=points/>
+            <TripMap
+                geojson=geojson.into()
+                points=points
+                traffic_frames=Signal::derive(move || traffic_frames.get())
+            />
             <div class="map-legend">
-                <div class="map-speed-legend" title="Colors scale to this trip's min and max speed">
+                <div class="map-speed-legend" title="Free flow → jam (or trip speed scale)">
                     <span class="map-speed-label" id="trip-speed-min">"—"</span>
                     <div class="map-speed-bar" id="trip-speed-bar" aria-hidden="true"></div>
                     <span class="map-speed-label" id="trip-speed-max">"—"</span>
                 </div>
                 <div class="map-legend-actions">
                     <p class="muted map-legend-note">
-                        {move || format!(
-                            "Circles = stops ≥1 min · chevrons show speed ({}) · hover route for RPM · click to pin charts",
-                            prefs.get().labels.speed
-                        )}
+                        {move || {
+                            if traffic_frames.get().is_empty() {
+                                format!(
+                                    "Circles = stops ≥1 min · chevrons show speed ({}) · hover route for RPM · click to pin charts",
+                                    prefs.get().labels.speed
+                                )
+                            } else {
+                                format!(
+                                    "Route colors = congestion · grey = signal stop · chevrons show speed ({})",
+                                    prefs.get().labels.speed
+                                )
+                            }
+                        }}
                     </p>
                     <button
                         type="button"
@@ -733,6 +773,58 @@ pub fn TripDetailPage() -> impl IntoView {
 }
 
 
+
+fn traffic_summary_view(traffic: Option<crate::api::TripTrafficSummary>) -> impl IntoView {
+    let Some(tr) = traffic else {
+        return view! { <></> }.into_any();
+    };
+    match tr.status.as_str() {
+        "pending" => view! {
+            <p class="muted traffic-status">"Estimating traffic…"</p>
+        }
+        .into_any(),
+        "ready" => {
+            let idx = tr.overall_index.unwrap_or(0.0);
+            let heavy = tr
+                .time_share
+                .as_ref()
+                .map(|s| s.heavy + s.jam)
+                .unwrap_or(0.0);
+            let signal = tr
+                .time_share
+                .as_ref()
+                .map(|s| s.signal_stop)
+                .unwrap_or(0.0);
+            view! {
+                <div class="context-chip-row traffic-chip-row" aria-label="Traffic estimate">
+                    <div class="context-chip">
+                        <span class="context-chip-label">"Traffic index"</span>
+                        <span class="context-chip-num">{format!("{idx:.2}")}</span>
+                        <span class="context-chip-delta muted">"0 = free flow"</span>
+                    </div>
+                    <div class="context-chip">
+                        <span class="context-chip-label">"Heavy + jam"</span>
+                        <span class="context-chip-num">{format!("{:.0}% time", heavy * 100.0)}</span>
+                    </div>
+                    <div class="context-chip">
+                        <span class="context-chip-label">"Signal stops"</span>
+                        <span class="context-chip-num">{format!("{:.0}% time", signal * 100.0)}</span>
+                    </div>
+                </div>
+            }
+            .into_any()
+        }
+        "skipped" | "skipped_vault" => view! {
+            <p class="muted traffic-status">"Traffic estimate skipped for this trip."</p>
+        }
+        .into_any(),
+        "failed" => view! {
+            <p class="muted traffic-status">"Traffic estimate failed."</p>
+        }
+        .into_any(),
+        _ => view! { <></> }.into_any(),
+    }
+}
 
 fn friendly_analysis_status(status: &str, analyzed: bool) -> (&'static str, &'static str) {
     match status {

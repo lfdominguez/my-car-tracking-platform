@@ -38,6 +38,8 @@ pub struct Config {
     pub vault_job_ttl_secs: u64,
     /// Max ciphertext bytes per vault object upload.
     pub vault_max_object_bytes: usize,
+    /// Overpass API interpreter URL (OSM maxspeed for traffic guessing).
+    pub overpass_url: String,
 }
 
 #[derive(Debug, Error)]
@@ -159,6 +161,9 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(512 * 1024);
+        let overpass_url = env::var("OVERPASS_URL").unwrap_or_else(|_| {
+            "https://overpass-api.de/api/interpreter".into()
+        });
 
         if is_local_dev {
             if session_secret == DEFAULT_SESSION_SECRET
@@ -197,6 +202,7 @@ impl Config {
             vault_ui_enabled,
             vault_job_ttl_secs,
             vault_max_object_bytes,
+            overpass_url,
         })
     }
 }

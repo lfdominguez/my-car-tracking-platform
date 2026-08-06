@@ -124,6 +124,47 @@ pub struct Trip {
     pub analyzed: bool,
     #[serde(default)]
     pub vault_sealed: bool,
+    #[serde(default)]
+    pub traffic: Option<TripTrafficSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TripTrafficShare {
+    #[serde(default)]
+    pub free: f64,
+    #[serde(default)]
+    pub light: f64,
+    #[serde(default)]
+    pub moderate: f64,
+    #[serde(default)]
+    pub heavy: f64,
+    #[serde(default)]
+    pub jam: f64,
+    #[serde(default)]
+    pub signal_stop: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TripTrafficSummary {
+    pub status: String,
+    pub overall_index: Option<f64>,
+    pub time_share: Option<TripTrafficShare>,
+    pub distance_share: Option<TripTrafficShare>,
+    #[serde(default)]
+    pub frame_count: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TripTrafficFrame {
+    pub seq: i32,
+    pub t_start: String,
+    pub t_end: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub speed_kph: f64,
+    pub v_ff_kph: f64,
+    pub level: String,
+    pub distance_m: f64,
 }
 
 fn default_analysis_status() -> String {
@@ -406,6 +447,10 @@ pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
 
 pub async fn trip_points(id: &str) -> Result<Vec<TripPoint>, ApiError> {
     send_json(Request::get(&format!("/api/trips/{id}/points"))).await
+}
+
+pub async fn trip_traffic_frames(id: &str) -> Result<Vec<TripTrafficFrame>, ApiError> {
+    send_json(Request::get(&format!("/api/trips/{id}/traffic/frames"))).await
 }
 
 pub async fn trip_map(id: &str) -> Result<serde_json::Value, ApiError> {

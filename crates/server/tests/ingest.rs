@@ -36,6 +36,7 @@ fn test_config(database_url: String) -> Config {
         vault_ui_enabled: true,
         vault_job_ttl_secs: 300,
         vault_max_object_bytes: 512 * 1024,
+        overpass_url: "http://127.0.0.1:9/overpass".into(),
     }
 }
 
