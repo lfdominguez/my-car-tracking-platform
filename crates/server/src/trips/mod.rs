@@ -1,7 +1,7 @@
 //! Trip list/detail/points/map APIs.
 
 use axum::extract::{Path, Query, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/trips/{id}/points", get(trip_points))
         .route("/api/trips/{id}/map", get(trip_map))
         .route("/api/trips/{id}/traffic/frames", get(trip_traffic_frames))
+        .route(
+            "/api/trips/{id}/traffic/analyze",
+            post(start_traffic_analyze),
+        )
 }
 
 /// Delete vault ciphertext for this track and the track row (cascades points/assignments).
@@ -136,6 +140,8 @@ pub struct TripSummary {
     pub analysis_status: String,
     pub analyzed_at: Option<DateTime<Utc>>,
     pub analyzed: bool,
+    /// Congestion estimate successfully ready (see trip_traffic_summaries).
+    pub traffic_analyzed: bool,
     /// Owner vault active — client should load ciphertext objects instead of points.
     pub vault_sealed: bool,
 }
@@ -314,6 +320,7 @@ async fn list_trips(
             t.analysis_status,
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
+            t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
@@ -395,6 +402,7 @@ async fn get_trip(
             t.analysis_status,
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
+            t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
@@ -459,6 +467,84 @@ async fn get_trip(
         trip: apply_trip_summary_units(seal_trip_if_vault(row), user.unit_system),
         traffic,
     }))
+}
+
+async fn start_traffic_analyze(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    let meta = sqlx::query_as::<_, (Uuid, Uuid, bool, bool, Option<String>)>(
+        r#"
+        SELECT t.car_id,
+               c.owner_user_id,
+               t.finished,
+               t.traffic_analyzed,
+               s.status
+        FROM tracks t
+        JOIN cars c ON c.id = t.car_id
+        LEFT JOIN trip_traffic_summaries s ON s.track_id = t.id
+        WHERE t.id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let (car_id, owner_id, finished, traffic_analyzed, summary_status) = meta;
+    require_owner(&state.pool, user.id, car_id).await?;
+
+    if !finished {
+        return Err(AppError::BadRequest(
+            "Trip must be finished before traffic analysis".into(),
+        ));
+    }
+
+    if crate::vault::owner_vault_active(&state.pool, owner_id).await? {
+        return Err(AppError::BadRequest(
+            "Traffic analysis is not available for vault cars (v1)".into(),
+        ));
+    }
+
+    if traffic_analyzed || summary_status.as_deref() == Some("ready") {
+        return Ok(Json(serde_json::json!({ "status": "ready" })));
+    }
+
+    if summary_status.as_deref() == Some("pending") {
+        return Ok(Json(serde_json::json!({ "status": "pending" })));
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO trip_traffic_summaries (
+            track_id, status, overall_index, time_share, distance_share,
+            frame_count, error, computed_at, updated_at
+        ) VALUES ($1, 'pending', NULL, '{}'::jsonb, '{}'::jsonb, 0, NULL, NULL, now())
+        ON CONFLICT (track_id) DO UPDATE SET
+            status = 'pending',
+            error = NULL,
+            updated_at = now()
+        "#,
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await?;
+
+    sqlx::query("UPDATE tracks SET traffic_analyzed = false WHERE id = $1")
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+
+    let pool = state.pool.clone();
+    let overpass = state.config.overpass_url.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::traffic::process_finished_track(&pool, &overpass, id).await {
+            tracing::error!(track_id = %id, error = %e, "traffic analyze job failed");
+        }
+    });
+
+    Ok(Json(serde_json::json!({ "status": "pending" })))
 }
 
 async fn trip_traffic_frames(

@@ -236,6 +236,89 @@ async fn traffic_job_scores_frames_from_cache() {
     assert!(detail.status().is_success());
     let d: serde_json::Value = detail.json().await.unwrap();
     assert_eq!(d["traffic"]["status"], "ready");
+    assert_eq!(d["traffic_analyzed"], true);
+
+    let flag: bool =
+        sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
+            .bind(track_id)
+            .fetch_one(&ctx.pool)
+            .await
+            .expect("traffic_analyzed column");
+    assert!(flag, "job should set tracks.traffic_analyzed on ready");
+}
+
+#[tokio::test]
+async fn analyze_traffic_endpoint_runs_job_and_sets_flag() {
+    let Some(ctx) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+
+    let track_id = insert_slow_trip(&ctx.pool, ctx.car_id).await;
+
+    let before: bool =
+        sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
+            .bind(track_id)
+            .fetch_one(&ctx.pool)
+            .await
+            .expect("flag");
+    assert!(!before);
+
+    let resp = ctx
+        .client
+        .post(format!(
+            "{}/api/trips/{}/traffic/analyze",
+            ctx.base, track_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "analyze status {} body {:?}",
+        resp.status(),
+        resp.text().await.ok()
+    );
+
+    // Job is async — poll until ready.
+    let mut ready = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM trip_traffic_summaries WHERE track_id = $1",
+        )
+        .bind(track_id)
+        .fetch_optional(&ctx.pool)
+        .await
+        .unwrap();
+        if status.as_deref() == Some("ready") {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready, "expected traffic job to finish ready");
+
+    let flag: bool =
+        sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
+            .bind(track_id)
+            .fetch_one(&ctx.pool)
+            .await
+            .unwrap();
+    assert!(flag);
+
+    // Already ready → no-op success.
+    let again = ctx
+        .client
+        .post(format!(
+            "{}/api/trips/{}/traffic/analyze",
+            ctx.base, track_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(again.status().is_success());
+    let body: serde_json::Value = again.json().await.unwrap();
+    assert_eq!(body["status"], "ready");
 }
 
 #[tokio::test]

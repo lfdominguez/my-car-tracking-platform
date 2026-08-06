@@ -6,9 +6,9 @@ use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::api::{
-    delete_trip, fetch_trip_analysis, get_trip, list_trips, start_trip_analysis, trip_map,
-    trip_traffic_frames, TripTrafficFrame,
-    trip_points, vault_create_job, Trip, TripAnalysis, TripPoint,
+    delete_trip, fetch_trip_analysis, get_trip, list_trips, start_trip_analysis,
+    start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames, vault_create_job, Trip,
+    TripAnalysis, TripPoint, TripTrafficFrame,
 };
 use crate::vault::{
     build_analysis_context_json, decrypt_ai_report, decrypt_track_meta, decrypt_track_points,
@@ -298,6 +298,8 @@ pub fn TripDetailPage() -> impl IntoView {
     let analysis = RwSignal::new(Option::<TripAnalysis>::None);
     let analysis_busy = RwSignal::new(false);
     let analysis_err = RwSignal::new(Option::<String>::None);
+    let traffic_busy = RwSignal::new(false);
+    let traffic_err = RwSignal::new(Option::<String>::None);
     let deleting = RwSignal::new(false);
     let vault = use_vault_session();
 
@@ -614,7 +616,6 @@ pub fn TripDetailPage() -> impl IntoView {
                         crate::units::UnitSystem::Metric => "Avg L/100km",
                         crate::units::UnitSystem::Us => "Avg mpg",
                     };
-                    let traffic = t.traffic.clone();
                     view! {
                         <div class="kpi-grid">
                             <KpiCard label="Distance" value=fmt_distance(t.distance_m, &prefs.get()) hint=None />
@@ -625,7 +626,6 @@ pub fn TripDetailPage() -> impl IntoView {
                             <KpiCard label=econ_label value=l100 hint=Some("from fuel ÷ distance".into()) />
                             <KpiCard label="Samples" value=format!("{}", t.point_count) hint=None />
                         </div>
-                        {traffic_summary_view(traffic)}
                     }
                 }
             }
@@ -718,6 +718,12 @@ pub fn TripDetailPage() -> impl IntoView {
                     }}
                 </span>
             </div>
+            {traffic_route_toolbar(
+                trip,
+                traffic_frames,
+                traffic_busy,
+                traffic_err,
+            )}
             <TripMap
                 geojson=geojson.into()
                 points=points
@@ -774,55 +780,228 @@ pub fn TripDetailPage() -> impl IntoView {
 
 
 
-fn traffic_summary_view(traffic: Option<crate::api::TripTrafficSummary>) -> impl IntoView {
-    let Some(tr) = traffic else {
-        return view! { <></> }.into_any();
-    };
-    match tr.status.as_str() {
-        "pending" => view! {
-            <p class="muted traffic-status">"Estimating traffic…"</p>
+/// Traffic controls live on the Route card (map is colored by congestion).
+fn traffic_route_toolbar(
+    trip: RwSignal<Option<Trip>>,
+    traffic_frames: RwSignal<Vec<TripTrafficFrame>>,
+    traffic_busy: RwSignal<bool>,
+    traffic_err: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let start_analyze = move |_| {
+        let Some(t) = trip.get_untracked() else {
+            return;
+        };
+        if traffic_busy.get_untracked() {
+            return;
         }
-        .into_any(),
-        "ready" => {
-            let idx = tr.overall_index.unwrap_or(0.0);
-            let heavy = tr
-                .time_share
-                .as_ref()
-                .map(|s| s.heavy + s.jam)
-                .unwrap_or(0.0);
-            let signal = tr
-                .time_share
-                .as_ref()
-                .map(|s| s.signal_stop)
-                .unwrap_or(0.0);
-            view! {
-                <div class="context-chip-row traffic-chip-row" aria-label="Traffic estimate">
-                    <div class="context-chip">
-                        <span class="context-chip-label">"Traffic index"</span>
-                        <span class="context-chip-num">{format!("{idx:.2}")}</span>
-                        <span class="context-chip-delta muted">"0 = free flow"</span>
-                    </div>
-                    <div class="context-chip">
-                        <span class="context-chip-label">"Heavy + jam"</span>
-                        <span class="context-chip-num">{format!("{:.0}% time", heavy * 100.0)}</span>
-                    </div>
-                    <div class="context-chip">
-                        <span class="context-chip-label">"Signal stops"</span>
-                        <span class="context-chip-num">{format!("{:.0}% time", signal * 100.0)}</span>
-                    </div>
-                </div>
+        let id = t.id.clone();
+        traffic_busy.set(true);
+        traffic_err.set(None);
+        // Optimistic pending so the status badge updates immediately.
+        if let Some(mut t) = trip.get_untracked() {
+            t.traffic = Some(crate::api::TripTrafficSummary {
+                status: "pending".into(),
+                overall_index: None,
+                time_share: None,
+                distance_share: None,
+                frame_count: 0,
+            });
+            trip.set(Some(t));
+        }
+        leptos::task::spawn_local(async move {
+            match start_trip_traffic_analyze(&id).await {
+                Ok(acc) => {
+                    if acc.status == "ready" {
+                        if let Ok(t) = get_trip(&id).await {
+                            trip.set(Some(t));
+                        }
+                        if let Ok(f) = trip_traffic_frames(&id).await {
+                            traffic_frames.set(f);
+                        }
+                        traffic_busy.set(false);
+                        return;
+                    }
+                    for _ in 0..60 {
+                        gloo_timers::future::TimeoutFuture::new(500).await;
+                        match get_trip(&id).await {
+                            Ok(t) => {
+                                let st = t
+                                    .traffic
+                                    .as_ref()
+                                    .map(|x| x.status.clone())
+                                    .unwrap_or_default();
+                                let done = t.traffic_analyzed
+                                    || matches!(
+                                        st.as_str(),
+                                        "ready" | "failed" | "skipped" | "skipped_vault"
+                                    );
+                                trip.set(Some(t));
+                                if done {
+                                    if st == "ready" {
+                                        if let Ok(f) = trip_traffic_frames(&id).await {
+                                            traffic_frames.set(f);
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                traffic_err.set(Some(e.to_string()));
+                                break;
+                            }
+                        }
+                    }
+                    traffic_busy.set(false);
+                }
+                Err(e) => {
+                    traffic_err.set(Some(e.to_string()));
+                    traffic_busy.set(false);
+                }
             }
-            .into_any()
-        }
-        "skipped" | "skipped_vault" => view! {
-            <p class="muted traffic-status">"Traffic estimate skipped for this trip."</p>
-        }
-        .into_any(),
-        "failed" => view! {
-            <p class="muted traffic-status">"Traffic estimate failed."</p>
-        }
-        .into_any(),
-        _ => view! { <></> }.into_any(),
+        });
+    };
+
+    view! {
+        <Show when=move || trip.get().map(|t| t.finished).unwrap_or(false)>
+            <div class="traffic-toolbar">
+                <div class="ai-status-block">
+                    <span class=move || {
+                        let t = trip.get();
+                        let status = t
+                            .as_ref()
+                            .and_then(|x| x.traffic.as_ref())
+                            .map(|x| x.status.as_str())
+                            .unwrap_or("");
+                        let analyzed = t.as_ref().map(|x| x.traffic_analyzed).unwrap_or(false);
+                        let busy = traffic_busy.get() || status == "pending";
+                        friendly_traffic_status(status, analyzed, busy).1.to_string()
+                    }>
+                        {move || {
+                            let t = trip.get();
+                            let status = t
+                                .as_ref()
+                                .and_then(|x| x.traffic.as_ref())
+                                .map(|x| x.status.as_str())
+                                .unwrap_or("");
+                            let analyzed = t.as_ref().map(|x| x.traffic_analyzed).unwrap_or(false);
+                            let busy = traffic_busy.get() || status == "pending";
+                            friendly_traffic_status(status, analyzed, busy).0.to_string()
+                        }}
+                    </span>
+                    <span class="ai-status-meta muted">
+                        "Congestion from speed vs free-flow (OSM)"
+                    </span>
+                </div>
+                <div class="ai-toolbar-actions">
+                    <Show when=move || {
+                        let t = trip.get();
+                        let status = t
+                            .as_ref()
+                            .and_then(|x| x.traffic.as_ref())
+                            .map(|x| x.status.as_str())
+                            .unwrap_or("");
+                        traffic_busy.get() || status == "pending"
+                    }>
+                        <span class="ai-running-hint muted">
+                            <Icon name="spinner-gap" size=IconSize::Sm color=IconColor::Accent />
+                            " Working in background"
+                        </span>
+                    </Show>
+                    <Show when=move || {
+                        let t = trip.get();
+                        let Some(t) = t else {
+                            return false;
+                        };
+                        let st = t.traffic.as_ref().map(|x| x.status.as_str()).unwrap_or("");
+                        t.finished
+                            && !t.vault_sealed
+                            && !t.traffic_analyzed
+                            && st != "pending"
+                            && !traffic_busy.get()
+                    }>
+                        <button
+                            type="button"
+                            class="btn primary traffic-run-btn"
+                            prop:disabled=move || traffic_busy.get()
+                            on:click=start_analyze
+                        >
+                            "Analyze traffic"
+                        </button>
+                    </Show>
+                </div>
+            </div>
+        </Show>
+
+        <Show when=move || traffic_err.get().is_some()>
+            <div class="banner err traffic-err-banner">
+                {move || traffic_err.get().unwrap_or_default()}
+            </div>
+        </Show>
+
+        <Show when=move || {
+            trip.get()
+                .as_ref()
+                .and_then(|t| t.traffic.as_ref())
+                .map(|tr| tr.status == "ready")
+                .unwrap_or(false)
+        }>
+            {
+                move || {
+                    let Some(tr) = trip
+                        .get()
+                        .as_ref()
+                        .and_then(|t| t.traffic.clone())
+                    else {
+                        return view! { <></> }.into_any();
+                    };
+                    if tr.status != "ready" {
+                        return view! { <></> }.into_any();
+                    }
+                    let idx = tr.overall_index.unwrap_or(0.0);
+                    let heavy = tr
+                        .time_share
+                        .as_ref()
+                        .map(|s| s.heavy + s.jam)
+                        .unwrap_or(0.0);
+                    let signal = tr
+                        .time_share
+                        .as_ref()
+                        .map(|s| s.signal_stop)
+                        .unwrap_or(0.0);
+                    view! {
+                        <div class="context-chip-row traffic-chip-row" aria-label="Traffic estimate">
+                            <div class="context-chip">
+                                <span class="context-chip-label">"Traffic index"</span>
+                                <span class="context-chip-num">{format!("{idx:.2}")}</span>
+                                <span class="context-chip-delta muted">"0 = free flow"</span>
+                            </div>
+                            <div class="context-chip">
+                                <span class="context-chip-label">"Heavy + jam"</span>
+                                <span class="context-chip-num">{format!("{:.0}% time", heavy * 100.0)}</span>
+                            </div>
+                            <div class="context-chip">
+                                <span class="context-chip-label">"Signal stops"</span>
+                                <span class="context-chip-num">{format!("{:.0}% time", signal * 100.0)}</span>
+                            </div>
+                        </div>
+                    }
+                    .into_any()
+                }
+            }
+        </Show>
+    }
+}
+
+fn friendly_traffic_status(status: &str, analyzed: bool, busy: bool) -> (&'static str, &'static str) {
+    if busy || status == "pending" {
+        return ("Estimating…", "ai-status-badge is-running");
+    }
+    match status {
+        "ready" => ("Ready", "ai-status-badge is-done"),
+        "failed" => ("Failed", "ai-status-badge is-failed"),
+        "skipped" | "skipped_vault" => ("Skipped", "ai-status-badge is-idle"),
+        _ if analyzed => ("Ready", "ai-status-badge is-done"),
+        _ => ("Not analyzed", "ai-status-badge is-idle"),
     }
 }
 

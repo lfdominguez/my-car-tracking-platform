@@ -392,5 +392,19 @@ async fn upsert_summary(
     .bind(error)
     .execute(pool)
     .await?;
+
+    // Denormalized trip flag: true only after a successful ready estimate.
+    sqlx::query(
+        r#"
+        UPDATE tracks
+        SET traffic_analyzed = ($2 = 'ready')
+        WHERE id = $1
+        "#,
+    )
+    .bind(track_id)
+    .bind(status)
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

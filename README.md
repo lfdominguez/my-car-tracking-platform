@@ -246,6 +246,7 @@ Header: `Authorization: Basic <device_token>`. External track id = Android start
 | `POST` | `/api/cars/{id}/devices/{id}/provisioning` | JSON `{ "token": "…" }` → QR payload |
 | `GET` / `POST` | `/api/cars/{id}/shares` | sharing (unknown email → uniform 200) |
 | `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` · `…/traffic/frames` | trips (points/map capped); traffic frames when ready |
+| `POST` | `/api/trips/{id}/traffic/analyze` | owner: run/retry traffic guessing (`traffic_analyzed` when ready) |
 | `POST` / `GET` | `/api/trips/{id}/analyze` · `…/analysis` | AI (owner) |
 | `GET` | `/api/dashboard/summary` | globals + per-car cards |
 | `GET` / `POST` | `/api/route-optimization/…` | corridors, map, recompute |
@@ -282,6 +283,7 @@ QR payload keys align with Android `AppSettings` (`apiToken`, absolute track URL
 - Free-flow from OSM `maxspeed` / highway class via **Overpass** (`OVERPASS_URL`, default public interpreter) + optional own off-peak history
 - Levels: free → jam; short stationary then leave → `signal_stop` (not counted as queue)
 - Trip detail chips + map polyline colors; vault trips skipped in v1
+- `tracks.traffic_analyzed` is true only when status is **ready**; trip detail shows **Analyze traffic** (owner) when false — `POST /api/trips/{id}/traffic/analyze`
 - Env: `OVERPASS_URL`
 
 </details>

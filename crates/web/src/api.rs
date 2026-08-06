@@ -123,6 +123,8 @@ pub struct Trip {
     #[serde(default)]
     pub analyzed: bool,
     #[serde(default)]
+    pub traffic_analyzed: bool,
+    #[serde(default)]
     pub vault_sealed: bool,
     #[serde(default)]
     pub traffic: Option<TripTrafficSummary>,
@@ -451,6 +453,20 @@ pub async fn trip_points(id: &str) -> Result<Vec<TripPoint>, ApiError> {
 
 pub async fn trip_traffic_frames(id: &str) -> Result<Vec<TripTrafficFrame>, ApiError> {
     send_json(Request::get(&format!("/api/trips/{id}/traffic/frames"))).await
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrafficAnalyzeAccepted {
+    pub status: String,
+}
+
+pub async fn start_trip_traffic_analyze(id: &str) -> Result<TrafficAnalyzeAccepted, ApiError> {
+    let body = serde_json::json!({});
+    let req = with_creds(Request::post(&format!("/api/trips/{id}/traffic/analyze")))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
 }
 
 pub async fn trip_map(id: &str) -> Result<serde_json::Value, ApiError> {
