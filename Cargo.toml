@@ -5,6 +5,7 @@ members = [
     "crates/web",
     "crates/shared",
     "crates/ai",
+    "crates/vault_crypto",
 ]
 default-members = ["crates/server"]
 
@@ -16,6 +17,7 @@ license = "AGPL-3.0-only"
 [workspace.dependencies]
 shared = { path = "crates/shared" }
 ai = { path = "crates/ai" }
+vault_crypto = { path = "crates/vault_crypto" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }

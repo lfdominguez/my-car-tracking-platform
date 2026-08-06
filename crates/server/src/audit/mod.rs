@@ -15,6 +15,12 @@ pub mod actions {
     pub const SHARE_REVOKED: &str = "share.revoked";
     pub const DEVICE_CREATED: &str = "device.created";
     pub const DEVICE_REVOKED: &str = "device.revoked";
+    pub const VAULT_ENABLED: &str = "vault.enabled";
+    pub const VAULT_ACTIVATED: &str = "vault.activated";
+    pub const VAULT_WRAP_ADDED: &str = "vault.wrap_added";
+    pub const VAULT_WRAP_REMOVED: &str = "vault.wrap_removed";
+    pub const VAULT_MIGRATION_CLEAR_CAR: &str = "vault.migration_clear_car";
+    pub const VAULT_JOB_SUBMITTED: &str = "vault.job_submitted";
 }
 
 pub struct AuditEvent<'a> {

@@ -5,7 +5,14 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
-use crate::api::{fetch_trip_analysis, get_trip, list_trips, start_trip_analysis, trip_map, trip_points, Trip, TripAnalysis, TripPoint};
+use crate::api::{
+    fetch_trip_analysis, get_trip, list_trips, start_trip_analysis, trip_map, trip_points,
+    vault_create_job, Trip, TripAnalysis, TripPoint,
+};
+use crate::vault::{
+    build_analysis_context_json, decrypt_ai_report, decrypt_track_meta, decrypt_track_points,
+    seal_ai_report, use_vault_session, VaultUnlockGate,
+};
 use crate::components::charts::TripTelemetryDashboard;
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
@@ -78,11 +85,24 @@ pub fn TripsPage() -> impl IntoView {
     let error = RwSignal::new(Option::<String>::None);
     let loading = RwSignal::new(true);
 
+    let vault = use_vault_session();
+
     Effect::new(move |_| {
+        let sess = vault.clone();
         leptos::task::spawn_local(async move {
             loading.set(true);
             match list_trips(None).await {
-                Ok(t) => {
+                Ok(mut t) => {
+                    let unlocked = sess.is_unlocked();
+                    for trip in t.iter_mut() {
+                        if trip.vault_sealed && trip.car_name.is_empty() {
+                            trip.car_name = if unlocked {
+                                "🔒 Vault trip".into()
+                            } else {
+                                "🔒 Locked".into()
+                            };
+                        }
+                    }
                     trips.set(t);
                     error.set(None);
                 }
@@ -229,6 +249,7 @@ pub fn TripDetailPage() -> impl IntoView {
     let analysis = RwSignal::new(Option::<TripAnalysis>::None);
     let analysis_busy = RwSignal::new(false);
     let analysis_err = RwSignal::new(Option::<String>::None);
+    let vault = use_vault_session();
 
     Effect::new(move |_| {
         let id = params.with(|p| p.get("id").map(|s| s.to_string()).unwrap_or_default());
@@ -250,6 +271,7 @@ pub fn TripDetailPage() -> impl IntoView {
 
         let alive_fetch = Arc::clone(&alive);
         let id_fetch = id.clone();
+        let sess = vault.clone();
         leptos::task::spawn_local(async move {
             let mut err: Option<String> = None;
             match get_trip(&id_fetch).await {
@@ -263,37 +285,120 @@ pub fn TripDetailPage() -> impl IntoView {
             if !alive_fetch.load(Ordering::SeqCst) {
                 return;
             }
-            match trip_points(&id_fetch).await {
-                Ok(p) => {
-                    if alive_fetch.load(Ordering::SeqCst) {
-                        points.set(p);
+            // Snapshot trip for vault branch (signal may already hold it).
+            let sealed = trip
+                .try_get_untracked()
+                .flatten()
+                .map(|t| t.vault_sealed)
+                .unwrap_or(false);
+            let car_id = trip
+                .try_get_untracked()
+                .flatten()
+                .map(|t| t.car_id.clone())
+                .unwrap_or_default();
+
+            if sealed {
+                if sess.is_unlocked() {
+                    match decrypt_track_points(&sess, &car_id, &id_fetch).await {
+                        Ok(p) => {
+                            if alive_fetch.load(Ordering::SeqCst) {
+                                let coords: Vec<[f64; 2]> =
+                                    p.iter().map(|pt| [pt.lon, pt.lat]).collect();
+                                geojson.set(Some(serde_json::json!({
+                                    "type": "LineString",
+                                    "coordinates": coords,
+                                })));
+                                if let Ok(Some(meta)) =
+                                    decrypt_track_meta(&sess, &car_id, &id_fetch).await
+                                {
+                                    if let Some(mut t) = trip.try_get_untracked().flatten() {
+                                        t.point_count = meta.point_count;
+                                        t.distance_m = meta.distance_m;
+                                        t.duration_s = meta.duration_s;
+                                        t.avg_speed_kph = meta.avg_speed_kph;
+                                        t.max_speed_kph = meta.max_speed_kph;
+                                        t.fuel_used_l = meta.fuel_used_l;
+                                        if let Some(n) = meta.started_at {
+                                            // keep skeleton started_at if empty
+                                            let _ = n;
+                                        }
+                                        trip.set(Some(t));
+                                    }
+                                }
+                                points.set(p);
+                            }
+                        }
+                        Err(e) => err = Some(format!("vault decrypt: {e}")),
                     }
-                }
-                Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
-            }
-            if !alive_fetch.load(Ordering::SeqCst) {
-                return;
-            }
-            match trip_map(&id_fetch).await {
-                Ok(g) => {
-                    if alive_fetch.load(Ordering::SeqCst) {
-                        geojson.set(Some(g));
+                    match decrypt_ai_report(&sess, &car_id, &id_fetch).await {
+                        Ok(Some(report)) => {
+                            if alive_fetch.load(Ordering::SeqCst) {
+                                analysis.set(Some(TripAnalysis {
+                                    analyzed: true,
+                                    analysis_status: "completed".into(),
+                                    analyzed_at: None,
+                                    analysis_model: None,
+                                    analysis_error: None,
+                                    can_analyze: true,
+                                    report: Some(report),
+                                }));
+                            }
+                        }
+                        Ok(None) => {
+                            if alive_fetch.load(Ordering::SeqCst) {
+                                analysis.set(Some(TripAnalysis {
+                                    analyzed: false,
+                                    analysis_status: "none".into(),
+                                    analyzed_at: None,
+                                    analysis_model: None,
+                                    analysis_error: None,
+                                    can_analyze: true,
+                                    report: None,
+                                }));
+                            }
+                        }
+                        Err(e) => {
+                            if alive_fetch.load(Ordering::SeqCst) {
+                                analysis_err.set(Some(e));
+                            }
+                        }
                     }
+                } else if alive_fetch.load(Ordering::SeqCst) {
+                    err = Some("Unlock the vault to decrypt this trip.".into());
                 }
-                Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
-            }
-            if !alive_fetch.load(Ordering::SeqCst) {
-                return;
-            }
-            match fetch_trip_analysis(&id_fetch).await {
-                Ok(a) => {
-                    if alive_fetch.load(Ordering::SeqCst) {
-                        analysis.set(Some(a));
+            } else {
+                match trip_points(&id_fetch).await {
+                    Ok(p) => {
+                        if alive_fetch.load(Ordering::SeqCst) {
+                            points.set(p);
+                        }
                     }
+                    Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
                 }
-                Err(e) => {
-                    if alive_fetch.load(Ordering::SeqCst) {
-                        analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                if !alive_fetch.load(Ordering::SeqCst) {
+                    return;
+                }
+                match trip_map(&id_fetch).await {
+                    Ok(g) => {
+                        if alive_fetch.load(Ordering::SeqCst) {
+                            geojson.set(Some(g));
+                        }
+                    }
+                    Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
+                }
+                if !alive_fetch.load(Ordering::SeqCst) {
+                    return;
+                }
+                match fetch_trip_analysis(&id_fetch).await {
+                    Ok(a) => {
+                        if alive_fetch.load(Ordering::SeqCst) {
+                            analysis.set(Some(a));
+                        }
+                    }
+                    Err(e) => {
+                        if alive_fetch.load(Ordering::SeqCst) {
+                            analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                        }
                     }
                 }
             }
@@ -480,8 +585,14 @@ pub fn TripDetailPage() -> impl IntoView {
         </Show>
 
 
+        <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !use_vault_session().is_unlocked()>
+            <VaultUnlockGate message="Unlock the vault to decrypt trip points and AI reports.".to_string()/>
+        </Show>
+
         <TripAiPanel
             trip_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
+            trip=trip
+            points=points
             analysis=analysis
             analysis_busy=analysis_busy
             analysis_err=analysis_err
@@ -606,6 +717,8 @@ fn download_markdown_report(filename: &str, markdown: &str) {
 #[component]
 fn TripAiPanel(
     trip_id: Signal<String>,
+    trip: RwSignal<Option<Trip>>,
+    points: RwSignal<Vec<TripPoint>>,
     analysis: RwSignal<Option<TripAnalysis>>,
     analysis_busy: RwSignal<bool>,
     analysis_err: RwSignal<Option<String>>,
@@ -616,9 +729,11 @@ fn TripAiPanel(
     on_cleanup(move || {
         panel_alive_cleanup.store(false, Ordering::SeqCst);
     });
+    let vault = use_vault_session();
 
     let run = Callback::new({
         let panel_alive = Arc::clone(&panel_alive);
+        let vault = vault.clone();
         move |_| {
             let Some(id) = trip_id.try_get() else {
                 return;
@@ -630,35 +745,112 @@ fn TripAiPanel(
             analysis_err.set(None);
 
             let alive_job = Arc::clone(&panel_alive);
+            let sealed = trip
+                .try_get_untracked()
+                .flatten()
+                .map(|t| t.vault_sealed)
+                .unwrap_or(false);
+            let trip_snap = trip.try_get_untracked().flatten();
+            let pts = points.try_get_untracked().unwrap_or_default();
+            let sess = vault.clone();
             leptos::task::spawn_local(async move {
-                match start_trip_analysis(&id).await {
-                    Ok(_) => loop {
-                        if !alive_job.load(Ordering::SeqCst) {
-                            break;
+                if sealed {
+                    let Some(t) = trip_snap else {
+                        if alive_job.load(Ordering::SeqCst) {
+                            analysis_err.set(Some("Trip not loaded".into()));
+                            analysis_busy.set(false);
                         }
-                        match fetch_trip_analysis(&id).await {
-                            Ok(a) => {
-                                if !alive_job.load(Ordering::SeqCst) {
-                                    break;
-                                }
-                                let st = a.analysis_status.clone();
-                                analysis.set(Some(a));
-                                if st != "pending" && st != "running" {
-                                    break;
-                                }
+                        return;
+                    };
+                    if !sess.is_unlocked() {
+                        if alive_job.load(Ordering::SeqCst) {
+                            analysis_err.set(Some(
+                                "Unlock vault and consent to send a temporary analysis bundle.".into(),
+                            ));
+                            analysis_busy.set(false);
+                        }
+                        return;
+                    }
+                    if pts.is_empty() {
+                        if alive_job.load(Ordering::SeqCst) {
+                            analysis_err.set(Some("No decrypted points to analyze".into()));
+                            analysis_busy.set(false);
+                        }
+                        return;
+                    }
+                    let ctx = build_analysis_context_json(&t, &t.car_name, &pts);
+                    let bundle = serde_json::json!({
+                        "track_id": id,
+                        "context": ctx,
+                    });
+                    match vault_create_job("ai_analysis", bundle).await {
+                        Ok(job) => {
+                            if !alive_job.load(Ordering::SeqCst) {
+                                return;
                             }
-                            Err(e) => {
-                                if alive_job.load(Ordering::SeqCst) {
-                                    analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                            if job.status != "done" {
+                                analysis_err.set(Some(
+                                    job.error.unwrap_or_else(|| "Vault analysis failed".into()),
+                                ));
+                            } else if let Some(report) = job.result {
+                                if let Err(e) =
+                                    seal_ai_report(&sess, &t.car_id, &id, &report).await
+                                {
+                                    analysis_err.set(Some(format!(
+                                        "Analysis ok but seal failed: {e}"
+                                    )));
                                 }
+                                analysis.set(Some(TripAnalysis {
+                                    analyzed: true,
+                                    analysis_status: "completed".into(),
+                                    analyzed_at: None,
+                                    analysis_model: None,
+                                    analysis_error: None,
+                                    can_analyze: true,
+                                    report: Some(report),
+                                }));
+                            }
+                        }
+                        Err(e) => {
+                            if alive_job.load(Ordering::SeqCst) {
+                                analysis_err
+                                    .set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                            }
+                        }
+                    }
+                } else {
+                    match start_trip_analysis(&id).await {
+                        Ok(_) => loop {
+                            if !alive_job.load(Ordering::SeqCst) {
                                 break;
                             }
-                        }
-                        gloo_timers::future::TimeoutFuture::new(3000).await;
-                    },
-                    Err(e) => {
-                        if alive_job.load(Ordering::SeqCst) {
-                            analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                            match fetch_trip_analysis(&id).await {
+                                Ok(a) => {
+                                    if !alive_job.load(Ordering::SeqCst) {
+                                        break;
+                                    }
+                                    let st = a.analysis_status.clone();
+                                    analysis.set(Some(a));
+                                    if st != "pending" && st != "running" {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    if alive_job.load(Ordering::SeqCst) {
+                                        analysis_err.set(Some(sanitize_analysis_ui_error(
+                                            &e.to_string(),
+                                        )));
+                                    }
+                                    break;
+                                }
+                            }
+                            gloo_timers::future::TimeoutFuture::new(3000).await;
+                        },
+                        Err(e) => {
+                            if alive_job.load(Ordering::SeqCst) {
+                                analysis_err
+                                    .set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                            }
                         }
                     }
                 }
@@ -678,6 +870,11 @@ fn TripAiPanel(
                 </h2>
                 <span class="muted">"Mechanic + efficiency coach via your OpenRouter key"</span>
             </div>
+            {move || trip.get().map(|tr| tr.vault_sealed).unwrap_or(false).then(|| view! {
+                <p class="muted" style="margin:0.5rem 0">
+                    "Vault mode: analysis sends a temporary decrypted bundle to the server. Results are sealed client-side; nothing durable is stored in plaintext."
+                </p>
+            })}
 
             <div class="ai-analysis-toolbar">
                 <div class="ai-status-block">

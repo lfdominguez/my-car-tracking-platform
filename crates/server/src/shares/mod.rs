@@ -39,6 +39,10 @@ pub struct ShareRow {
     pub name: String,
     pub role: String,
     pub created_at: DateTime<Utc>,
+    /// Recipient has published a vault identity pubkey (owner can wrap DEK).
+    pub vault_has_pubkey: bool,
+    /// Base64 X25519 pubkey when present (for client-side DEK wrap).
+    pub vault_identity_pubkey_b64: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,7 +64,11 @@ async fn list_shares(
     can_read_car(&state.pool, user.id, car_id).await?;
     let rows = sqlx::query_as::<_, ShareRow>(
         r#"
-        SELECT cs.car_id, cs.user_id, u.email, u.name, cs.role, cs.created_at
+        SELECT cs.car_id, cs.user_id, u.email, u.name, cs.role, cs.created_at,
+               (u.vault_identity_pubkey IS NOT NULL) AS vault_has_pubkey,
+               CASE WHEN u.vault_identity_pubkey IS NOT NULL
+                    THEN encode(u.vault_identity_pubkey, 'base64')
+                    ELSE NULL END AS vault_identity_pubkey_b64
         FROM car_shares cs
         JOIN users u ON u.id = cs.user_id
         WHERE cs.car_id = $1
@@ -124,7 +132,11 @@ async fn create_share(
         RETURNING car_id, user_id,
           (SELECT email FROM users WHERE id = user_id) AS email,
           (SELECT name FROM users WHERE id = user_id) AS name,
-          role, created_at
+          role, created_at,
+          (SELECT vault_identity_pubkey IS NOT NULL FROM users WHERE id = user_id) AS vault_has_pubkey,
+          (SELECT CASE WHEN vault_identity_pubkey IS NOT NULL
+                       THEN encode(vault_identity_pubkey, 'base64')
+                       ELSE NULL END FROM users WHERE id = user_id) AS vault_identity_pubkey_b64
         "#,
     )
     .bind(car_id)
@@ -186,7 +198,11 @@ async fn update_share(
         RETURNING car_id, user_id,
           (SELECT email FROM users WHERE id = user_id) AS email,
           (SELECT name FROM users WHERE id = user_id) AS name,
-          role, created_at
+          role, created_at,
+          (SELECT vault_identity_pubkey IS NOT NULL FROM users WHERE id = user_id) AS vault_has_pubkey,
+          (SELECT CASE WHEN vault_identity_pubkey IS NOT NULL
+                       THEN encode(vault_identity_pubkey, 'base64')
+                       ELSE NULL END FROM users WHERE id = user_id) AS vault_identity_pubkey_b64
         "#,
     )
     .bind(car_id)
@@ -214,6 +230,33 @@ async fn delete_share(
         .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
+    }
+
+    // v1 revoke: drop DEK wrap (does not re-encrypt history / wipe offline copies).
+    let wrap_res = sqlx::query(
+        "DELETE FROM vault_car_deks WHERE car_id = $1 AND recipient_user_id = $2",
+    )
+    .bind(car_id)
+    .bind(target_user_id)
+    .execute(&state.pool)
+    .await;
+    if wrap_res.map(|r| r.rows_affected() > 0).unwrap_or(false) {
+        let car_id_str = car_id.to_string();
+        let shared_user_id = target_user_id.to_string();
+        audit::record(
+            &state.pool,
+            AuditEvent {
+                user_id: Some(user.id),
+                actor_session_id: Some(&user.session_id),
+                action: actions::VAULT_WRAP_REMOVED,
+                resource_type: Some("car"),
+                resource_id: Some(&car_id_str),
+                ip: None,
+                user_agent: None,
+                meta: serde_json::json!({ "shared_user_id": shared_user_id }),
+            },
+        )
+        .await;
     }
 
     let ip = client_ip(

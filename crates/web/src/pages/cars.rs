@@ -9,6 +9,42 @@ use crate::api::{
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::vault::{
+    decrypt_car_profile, load_car_dek, put_car_profile, use_vault_session, wrap_and_upload_dek,
+    CarProfileV1, VaultUnlockGate,
+};
+
+fn placeholder_vault_names(sess: &crate::vault::VaultSession, mut c: Vec<Car>) -> Vec<Car> {
+    let unlocked = sess.is_unlocked();
+    for car in c.iter_mut() {
+        if car.vault_sealed && car.name.is_empty() {
+            car.name = if unlocked {
+                "🔒 Vault car".into()
+            } else {
+                "🔒 Locked vault car".into()
+            };
+        }
+    }
+    c
+}
+
+async fn decrypt_vault_car_names(sess: &crate::vault::VaultSession, mut c: Vec<Car>) -> Vec<Car> {
+    if !sess.is_unlocked() {
+        return c;
+    }
+    for car in c.iter_mut() {
+        if !car.vault_sealed {
+            continue;
+        }
+        if let Ok(Some(p)) = decrypt_car_profile(sess, &car.id).await {
+            car.name = p.name;
+            car.make_model = p.make_model;
+            car.fuel_type = p.fuel_type;
+            car.notes = p.notes;
+        }
+    }
+    c
+}
 
 #[component]
 pub fn CarsPage() -> impl IntoView {
@@ -16,17 +52,30 @@ pub fn CarsPage() -> impl IntoView {
     let error = RwSignal::new(Option::<String>::None);
     let name = RwSignal::new(String::new());
     let make_model = RwSignal::new(String::new());
+    // Capture vault session in the reactive owner — not inside spawn_local after await.
+    let vault = use_vault_session();
 
-    let reload = move || {
-        leptos::task::spawn_local(async move {
-            match list_cars().await {
-                Ok(c) => cars.set(c),
-                Err(e) => error.set(Some(e.to_string())),
-            }
-        });
-    };
-
-    Effect::new(move |_| reload());
+    Effect::new({
+        let vault = vault.clone();
+        move |_| {
+            let sess = vault.clone();
+            leptos::task::spawn_local(async move {
+                match list_cars().await {
+                    Ok(c) => {
+                        // Show rows immediately; decrypt names only after the list is visible.
+                        let labeled = placeholder_vault_names(&sess, c);
+                        cars.set(labeled.clone());
+                        error.set(None);
+                        if sess.is_unlocked() {
+                            let decrypted = decrypt_vault_car_names(&sess, labeled).await;
+                            cars.set(decrypted);
+                        }
+                    }
+                    Err(e) => error.set(Some(e.to_string())),
+                }
+            });
+        }
+    });
 
     view! {
         <div class="topbar">
@@ -90,7 +139,14 @@ pub fn CarsPage() -> impl IntoView {
                                                     }.into_any()
                                                 }}
                                             </td>
-                                            <td>{c.name.clone()}</td>
+                                            <td>
+                                                {c.name.clone()}
+                                                {if c.vault_sealed {
+                                                    " 🔒".to_string()
+                                                } else {
+                                                    String::new()
+                                                }}
+                                            </td>
                                             <td>{c.make_model.clone()}</td>
                                             <td>
                                                 <span class="icon-label">
@@ -139,14 +195,44 @@ pub fn CarsPage() -> impl IntoView {
                 <button class="btn primary" on:click=move |_| {
                     let n = name.get();
                     let m = make_model.get();
+                    let sess = vault.clone();
                     leptos::task::spawn_local(async move {
                         let body = serde_json::json!({ "name": n, "make_model": m });
                         match create_car(&body).await {
-                            Ok(_) => {
+                            Ok(created) => {
+                                if created.vault_sealed {
+                                    if sess.is_unlocked() {
+                                        let profile = CarProfileV1 {
+                                            name: n.clone(),
+                                            make_model: m.clone(),
+                                            fuel_type: created.fuel_type.clone(),
+                                            stoich_afr: created.stoich_afr,
+                                            density_gl: created.density_gl,
+                                            displacement_l: created.displacement_l,
+                                            ve: created.ve,
+                                            notes: created.notes.clone(),
+                                        };
+                                        if let Err(e) = put_car_profile(&sess, &created.id, &profile).await {
+                                            error.set(Some(format!("Car created but vault seal failed: {e}")));
+                                        }
+                                    } else {
+                                        error.set(Some(
+                                            "Car created under vault — unlock and edit to seal profile.".into(),
+                                        ));
+                                    }
+                                }
                                 name.set(String::new());
                                 make_model.set(String::new());
                                 match list_cars().await {
-                                    Ok(c) => cars.set(c),
+                                    Ok(c) => {
+                                        let labeled = placeholder_vault_names(&sess, c);
+                                        cars.set(labeled.clone());
+                                        if sess.is_unlocked() {
+                                            let decrypted =
+                                                decrypt_vault_car_names(&sess, labeled).await;
+                                            cars.set(decrypted);
+                                        }
+                                    }
                                     Err(e) => error.set(Some(e.to_string())),
                                 }
                             }
@@ -186,15 +272,40 @@ pub fn CarDetailPage() -> impl IntoView {
     // Cache-buster so the browser reloads the image after upload.
     let photo_rev = RwSignal::new(0u32);
 
-    Effect::new(move |_| {
+    let vault = use_vault_session();
+
+    Effect::new({
+        let vault = vault.clone();
+        move |_| {
         let id = params.with(|p| p.get("id").unwrap_or_default());
         if id.is_empty() {
             return;
         }
         let id2 = id.clone();
+        let sess = vault.clone();
         leptos::task::spawn_local(async move {
             match get_car(&id2).await {
-                Ok(c) => {
+                Ok(mut c) => {
+                    if c.vault_sealed && sess.is_unlocked() {
+                        match decrypt_car_profile(&sess, &id2).await {
+                            Ok(Some(p)) => {
+                                c.name = p.name.clone();
+                                c.make_model = p.make_model.clone();
+                                c.fuel_type = p.fuel_type.clone();
+                                c.stoich_afr = p.stoich_afr;
+                                c.density_gl = p.density_gl;
+                                c.displacement_l = p.displacement_l;
+                                c.ve = p.ve;
+                                c.notes = p.notes.clone();
+                            }
+                            Ok(None) => {
+                                error.set(Some(
+                                    "Vault car has no sealed profile yet.".into(),
+                                ));
+                            }
+                            Err(e) => error.set(Some(e)),
+                        }
+                    }
                     name.set(c.name.clone());
                     make_model.set(c.make_model.clone());
                     fuel_type.set(c.fuel_type.clone());
@@ -215,7 +326,7 @@ pub fn CarDetailPage() -> impl IntoView {
                 Err(e) => error.set(Some(e.to_string())),
             }
         });
-    });
+    }});
 
     view! {
         <div class="topbar">
@@ -237,6 +348,10 @@ pub fn CarDetailPage() -> impl IntoView {
         <Show when=move || error.get().is_some()>
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
+        <Show when=move || car.get().map(|c| c.vault_sealed).unwrap_or(false) && !use_vault_session().is_unlocked()>
+            <VaultUnlockGate message="Unlock the vault to view or edit this sealed car profile.".to_string()/>
+        </Show>
+
 
         <div class="grid two">
             <div class="card stack">
@@ -332,24 +447,69 @@ pub fn CarDetailPage() -> impl IntoView {
                     <input prop:value=move || displacement.get() on:input=move |ev| displacement.set(event_target_value(&ev))/></div>
                 <div class="form-row"><label>"VE"</label>
                     <input prop:value=move || ve.get() on:input=move |ev| ve.set(event_target_value(&ev))/></div>
-                <button class="btn primary" on:click=move |_| {
+                <button class="btn primary" on:click={
+                    let vault = vault.clone();
+                    move |_| {
                     let id = params.with(|p| p.get("id").unwrap_or_default());
+                    let sealed = car.get().map(|c| c.vault_sealed).unwrap_or(false);
+                    let profile = CarProfileV1 {
+                        name: name.get(),
+                        make_model: make_model.get(),
+                        fuel_type: fuel_type.get(),
+                        stoich_afr: stoich.get().parse::<f64>().unwrap_or(14.08),
+                        density_gl: density.get().parse::<f64>().unwrap_or(745.0),
+                        displacement_l: displacement.get().parse::<f64>().unwrap_or(1.0),
+                        ve: ve.get().parse::<f64>().unwrap_or(0.85),
+                        notes: None,
+                    };
                     let body = serde_json::json!({
-                        "name": name.get(),
-                        "make_model": make_model.get(),
-                        "fuel_type": fuel_type.get(),
-                        "stoich_afr": stoich.get().parse::<f64>().unwrap_or(14.08),
-                        "density_gl": density.get().parse::<f64>().unwrap_or(745.0),
-                        "displacement_l": displacement.get().parse::<f64>().unwrap_or(1.0),
-                        "ve": ve.get().parse::<f64>().unwrap_or(0.85),
+                        "name": profile.name,
+                        "make_model": profile.make_model,
+                        "fuel_type": profile.fuel_type,
+                        "stoich_afr": profile.stoich_afr,
+                        "density_gl": profile.density_gl,
+                        "displacement_l": profile.displacement_l,
+                        "ve": profile.ve,
                     });
+                    let sess = vault.clone();
                     leptos::task::spawn_local(async move {
-                        match update_car(&id, &body).await {
-                            Ok(c) => car.set(Some(c)),
-                            Err(e) => error.set(Some(e.to_string())),
+                        if sealed {
+                            if !sess.is_unlocked() {
+                                error.set(Some("Unlock vault to save sealed car profile.".into()));
+                                return;
+                            }
+                            if let Err(e) = put_car_profile(&sess, &id, &profile).await {
+                                error.set(Some(e));
+                                return;
+                            }
+                            // Keep server skeleton non-sensitive.
+                            let blank = serde_json::json!({
+                                "name": "",
+                                "make_model": "",
+                                "fuel_type": profile.fuel_type,
+                                "stoich_afr": profile.stoich_afr,
+                                "density_gl": profile.density_gl,
+                                "displacement_l": profile.displacement_l,
+                                "ve": profile.ve,
+                            });
+                            match update_car(&id, &blank).await {
+                                Ok(mut c) => {
+                                    c.name = profile.name;
+                                    c.make_model = profile.make_model;
+                                    c.fuel_type = profile.fuel_type;
+                                    c.vault_sealed = true;
+                                    car.set(Some(c));
+                                }
+                                Err(e) => error.set(Some(e.to_string())),
+                            }
+                        } else {
+                            match update_car(&id, &body).await {
+                                Ok(c) => car.set(Some(c)),
+                                Err(e) => error.set(Some(e.to_string())),
+                            }
                         }
                     });
-                }>
+                }}>
                     <Icon name="floppy-disk" />
                     "Save"
                 </button>
@@ -530,13 +690,53 @@ pub fn CarDetailPage() -> impl IntoView {
                     <option value="viewer">"viewer"</option>
                     <option value="editor">"editor"</option>
                 </select>
-                <button class="btn" on:click=move |_| {
+                <button class="btn" on:click={
+                    let vault = vault.clone();
+                    move |_| {
                     let id = params.with(|p| p.get("id").unwrap_or_default());
                     let email = share_email.get();
                     let role = share_role.get();
+                    let sealed = car.get().map(|c| c.vault_sealed).unwrap_or(false);
+                    let sess = vault.clone();
                     leptos::task::spawn_local(async move {
                         match create_share(&id, &email, &role).await {
-                            Ok(_) => {
+                            Ok(resp) => {
+                                if sealed {
+                                    if let Some(share) = resp.share.as_ref() {
+                                        if let Some(pk) = share.vault_identity_pubkey_b64.as_ref() {
+                                            if sess.is_unlocked() {
+                                                match load_car_dek(&sess, &id).await {
+                                                    Ok(dek) => {
+                                                        if let Err(e) = wrap_and_upload_dek(
+                                                            &sess,
+                                                            &id,
+                                                            &share.user_id,
+                                                            pk,
+                                                            &dek,
+                                                        )
+                                                        .await
+                                                        {
+                                                            error.set(Some(format!(
+                                                                "Share added but DEK wrap failed: {e}"
+                                                            )));
+                                                        }
+                                                    }
+                                                    Err(e) => error.set(Some(format!(
+                                                        "Share added but could not load DEK: {e}"
+                                                    ))),
+                                                }
+                                            } else {
+                                                error.set(Some(
+                                                    "Share added — unlock vault to wrap the car key for the recipient.".into(),
+                                                ));
+                                            }
+                                        } else {
+                                            error.set(Some(
+                                                "Share added — recipient has no vault pubkey yet (pending wrap).".into(),
+                                            ));
+                                        }
+                                    }
+                                }
                                 share_email.set(String::new());
                                 match list_shares(&id).await {
                                     Ok(s) => shares.set(s),
@@ -546,7 +746,7 @@ pub fn CarDetailPage() -> impl IntoView {
                             Err(e) => error.set(Some(e.to_string())),
                         }
                     });
-                }>
+                }}>
                     <Icon name="user-plus" />
                     "Invite"
                 </button>
@@ -562,10 +762,15 @@ pub fn CarDetailPage() -> impl IntoView {
                                 "editor" => "pencil-simple",
                                 _ => "eye",
                             };
+                            let vault_hint = if s.vault_has_pubkey {
+                                ""
+                            } else {
+                                " · no vault key"
+                            };
                             view! {
                                 <tr>
                                     <td>{s.name.clone()}</td>
-                                    <td>{s.email.clone()}</td>
+                                    <td>{s.email.clone()}{vault_hint}</td>
                                     <td>
                                         <span class=format!("badge {}", s.role)>
                                             <span class="icon-label">

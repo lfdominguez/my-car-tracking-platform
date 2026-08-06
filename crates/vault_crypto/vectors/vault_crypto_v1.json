@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "description": "Golden vectors for CTP zero-knowledge vault crypto v1 (Rust + Kotlin parity)",
+  "algorithms": {
+    "recovery_display": "crockford-base32",
+    "identity_kdf": "HKDF-SHA256",
+    "identity_kdf_info": "ctp-vault-id-x25519-v1",
+    "identity_curve": "X25519",
+    "dek_wrap": "ephemeral-X25519-ECDH + HKDF-SHA256(info=ctp-vault-dek-wrap-v1) + AES-256-GCM",
+    "wrap_blob": "eph_pk(32) || nonce(12) || ciphertext_and_tag",
+    "wrap_alg": "x25519-hkdf-sha256-aes256gcm-v1",
+    "object": "AES-256-GCM nonce(12)",
+    "aad": "aad_v1 framing (see crate docs)"
+  },
+  "recovery_key_bytes_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+  "recovery_key_b32": "040G2081040G2081040G2081040G2081040G2081040G2081040G",
+  "identity_secret_hex": "fc427b897d960853f645e1a6341988d89d452935ea52c5b69d639ca08ad09d13",
+  "identity_public_hex": "c205b4e5a2f58e916fe4eb38c5099d3f4c155b31703bce2bbd4088b6ea28d059",
+  "dek_hex": "abababababababababababababababababababababababababababababababab",
+  "wrap": {
+    "eph_sk_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "nonce_hex": "111111111111111111111111",
+    "blob_hex": "b5bea823d9c9ff576091c54b7c596c0ae296884f0e150290e88455d7fba6126f11111111111111111111111153c826b4ba0ca273fea42e0a1bf6a44823a4ff8e6e80cf8dfd29ccf4da1e2cc6ae27475437c7854a1e657f9994f86977"
+  },
+  "object": {
+    "car_id": "11111111-2222-3333-4444-555555555555",
+    "object_type": "track_points_chunk",
+    "logical_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "chunk_index": 0,
+    "schema_version": 1,
+    "aad_hex": "01111111112222333344445555555555550012747261636b5f706f696e74735f6368756e6baaaaaaaabbbbccccddddeeeeeeeeeeee010000000000000001",
+    "plaintext_utf8": "{\"lat\":1.0,\"lon\":2.0}",
+    "plaintext_hex": "7b226c6174223a312e302c226c6f6e223a322e307d",
+    "nonce_hex": "222222222222222222222222",
+    "ciphertext_hex": "ba6118ec8deedc0eaa9cddeb4d5e6e8edf4cc0c4ab535ae20dfa335fb765a90349c30a9db2"
+  }
+}

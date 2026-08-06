@@ -300,6 +300,32 @@ Integration tests need `DATABASE_URL` + PostGIS.
 
 <br/>
 
+
+
+## Zero-knowledge vault (optional)
+
+Opt-in **client-side E2E encryption** so trip/GPS/OBD and personal payloads are stored as ciphertext the operator cannot read.
+
+- **Enable:** Settings → Zero-knowledge vault. Generate a one-time **recovery key**, store it offline, acknowledge permanent loss if key + devices are gone. Support cannot recover vault data.
+- **Clients:** Web (Leptos + `vault_crypto` WASM) unlocks with the recovery key and caches a device-local identity secret (best-effort `localStorage`). Android (external app) must enroll the same identity before tracking vault cars.
+- **Ingest:** For vault-active owners, `/api/track/sample` and `/samples` return **409**. Upload encrypted chunks to `POST /api/track/vault/chunk` with Basic device auth:
+
+```json
+{
+  "track_id": "<uuid>",
+  "chunk_index": 0,
+  "schema_version": 1,
+  "nonce": "<base64 12 bytes>",
+  "ciphertext": "<base64 AES-GCM>"
+}
+```
+
+- **Crypto parity:** Golden vectors live at `crates/vault_crypto/vectors/vault_crypto_v1.json` for Kotlin tests.
+- **Sharing:** Owner wraps each car DEK to the recipient pubkey (`PUT /api/vault/cars/{id}/deks`). Share list includes `vault_has_pubkey`. Revoke deletes the wrap (v1 does **not** re-encrypt history).
+- **AI / route-opt:** Use `POST /api/vault/jobs` with an explicit client-prepared bundle; results must be sealed client-side into `vault_objects`. No durable plaintext job payload in Postgres.
+- **Honest limits:** Metadata (share graph, timestamps, ciphertext sizes) remains visible. XSS on an unlocked browser can still steal keys — use Lock and keep CSP tight. Env: `VAULT_UI_ENABLED`, `VAULT_JOB_TTL_SECS`, `VAULT_MAX_OBJECT_BYTES`.
+
+
 **Built with Rust · PostGIS · Leptos · ❤️ for real cars on real roads**
 
 `⭐` If this helps your garage — star the repo

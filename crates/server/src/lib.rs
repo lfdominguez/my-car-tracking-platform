@@ -16,6 +16,7 @@ pub mod shares;
 pub mod state;
 pub mod trips;
 pub mod units;
+pub mod vault;
 pub mod web;
 
 use axum::extract::DefaultBodyLimit;
@@ -56,6 +57,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(analytics::router())
         .merge(analysis::router())
         .merge(route_opt::router())
+        .merge(vault::router())
         .merge(web::spa_router())
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .layer(axum_mw::from_fn_with_state(

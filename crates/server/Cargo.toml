@@ -46,6 +46,7 @@ governor = "0.8"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 serde_json = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
+base64 = "0.22"

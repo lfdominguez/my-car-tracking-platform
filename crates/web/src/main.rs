@@ -2,6 +2,7 @@ mod api;
 mod units;
 mod components;
 mod pages;
+mod vault;
 
 use leptos::prelude::*;
 use leptos_router::components::{ParentRoute, Route, Router, Routes};
@@ -16,10 +17,12 @@ use crate::pages::login::LoginPage;
 use crate::pages::not_found::NotFoundPage;
 use crate::pages::routes::{RouteCorridorPage, RoutesPage};
 use crate::pages::trips::{TripDetailPage, TripsPage};
+use crate::vault::provide_vault_session;
 
 fn main() {
     console_error_panic_hook::set_once();
     mount_to_body(|| {
+        provide_vault_session();
         view! {
             <Router>
                 <Routes fallback=|| view! { <NotFoundPage/> }>

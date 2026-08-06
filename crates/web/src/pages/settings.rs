@@ -6,6 +6,7 @@ use crate::api::{
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{use_unit_prefs, UnitPrefs, UnitSystem};
+use crate::vault::VaultSettingsCard;
 
 #[component]
 pub fn SettingsPage() -> impl IntoView {
@@ -379,6 +380,8 @@ pub fn SettingsPage() -> impl IntoView {
                 </p>
             </Show>
         </div>
+
+        <VaultSettingsCard/>
 
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">

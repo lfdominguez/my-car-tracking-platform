@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/track/stop", post(track_stop))
         .route("/api/track/sample", post(track_sample))
         .route("/api/track/samples", post(track_samples))
+        .route("/api/track/vault/chunk", post(track_vault_chunk))
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -210,12 +211,33 @@ fn map_sample_error(e: SampleError) -> AppError {
     }
 }
 
+async fn owner_vault_active_for_car(pool: &sqlx::PgPool, car_id: Uuid) -> AppResult<bool> {
+    let active = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT u.vault_status = 'active'
+        FROM cars c
+        JOIN users u ON u.id = c.owner_user_id
+        WHERE c.id = $1
+        "#,
+    )
+    .bind(car_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(false);
+    Ok(active)
+}
+
 async fn track_sample(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<TrackSampleRequest>,
 ) -> AppResult<StatusCode> {
     let device = auth_device(&state, &headers).await?;
+    if owner_vault_active_for_car(&state.pool, device.car_id).await? {
+        return Err(AppError::Conflict(
+            "vault car requires encrypted chunk upload (/api/track/vault/chunk); plaintext samples rejected".into(),
+        ));
+    }
     insert_sample(&state, device.car_id, &body)
         .await
         .map_err(map_sample_error)?;
@@ -228,6 +250,11 @@ async fn track_samples(
     Json(body): Json<TrackSamplesBatchRequest>,
 ) -> AppResult<Json<TrackSamplesBatchResponse>> {
     let device = auth_device(&state, &headers).await?;
+    if owner_vault_active_for_car(&state.pool, device.car_id).await? {
+        return Err(AppError::Conflict(
+            "vault car requires encrypted chunk upload (/api/track/vault/chunk); plaintext samples rejected".into(),
+        ));
+    }
     if body.samples.len() > MAX_BATCH_SAMPLES {
         return Err(AppError::BadRequest(format!(
             "batch too large: max {MAX_BATCH_SAMPLES} samples"
@@ -405,6 +432,113 @@ struct CarFuelSnap {
     density_gl: f64,
     displacement_l: f64,
     ve: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VaultChunkRequest {
+    pub track_id: Uuid,
+    pub chunk_index: i32,
+    pub schema_version: Option<i32>,
+    /// Base64 AES-GCM nonce (12 bytes).
+    pub nonce: String,
+    /// Base64 ciphertext.
+    pub ciphertext: String,
+}
+
+/// Device-authenticated encrypted point-chunk upload for vault cars.
+async fn track_vault_chunk(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VaultChunkRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+
+    let device = auth_device(&state, &headers).await?;
+    if !owner_vault_active_for_car(&state.pool, device.car_id).await? {
+        return Err(AppError::Conflict(
+            "vault chunk upload only allowed when car owner vault is active".into(),
+        ));
+    }
+
+    let track_car = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
+        .bind(body.track_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("unknown track_id".into()))?;
+    if track_car != device.car_id {
+        return Err(AppError::Forbidden);
+    }
+
+    let nonce = B64
+        .decode(body.nonce.trim())
+        .map_err(|_| AppError::BadRequest("invalid nonce base64".into()))?;
+    let ciphertext = B64
+        .decode(body.ciphertext.trim())
+        .map_err(|_| AppError::BadRequest("invalid ciphertext base64".into()))?;
+    if nonce.len() != 12 {
+        return Err(AppError::BadRequest("nonce must be 12 bytes".into()));
+    }
+    if ciphertext.is_empty() || ciphertext.len() > state.config.vault_max_object_bytes {
+        return Err(AppError::BadRequest("ciphertext size invalid".into()));
+    }
+
+    let schema_version = body.schema_version.unwrap_or(1);
+    let byte_size = ciphertext.len() as i32;
+    let id = Uuid::new_v4();
+
+    let existing = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT id FROM vault_objects
+        WHERE car_id = $1 AND object_type = 'track_points_chunk'
+          AND logical_id = $2 AND chunk_index IS NOT DISTINCT FROM $3
+        "#,
+    )
+    .bind(device.car_id)
+    .bind(body.track_id)
+    .bind(body.chunk_index)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if let Some(existing_id) = existing {
+        sqlx::query(
+            r#"
+            UPDATE vault_objects
+            SET schema_version = $2, nonce = $3, ciphertext = $4,
+                byte_size = $5, updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(existing_id)
+        .bind(schema_version)
+        .bind(&nonce)
+        .bind(&ciphertext)
+        .bind(byte_size)
+        .execute(&state.pool)
+        .await?;
+        return Ok(Json(serde_json::json!({ "ok": true, "id": existing_id, "updated": true })));
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO vault_objects (
+            id, car_id, object_type, logical_id, chunk_index, schema_version,
+            nonce, ciphertext, byte_size, content_version
+        ) VALUES ($1,$2,'track_points_chunk',$3,$4,$5,$6,$7,$8,1)
+        "#,
+    )
+    .bind(id)
+    .bind(device.car_id)
+    .bind(body.track_id)
+    .bind(body.chunk_index)
+    .bind(schema_version)
+    .bind(&nonce)
+    .bind(&ciphertext)
+    .bind(byte_size)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Json(serde_json::json!({ "ok": true, "id": id, "updated": false })))
 }
 
 #[cfg(test)]

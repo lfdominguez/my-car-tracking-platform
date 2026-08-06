@@ -133,12 +133,14 @@ h1, h2, h3 { margin: 0 0 0.75rem; }
   padding: 0.3rem 0.65rem;
   font-size: 0.8rem;
 }
-.btn.btn-ghost {
+.btn.btn-ghost,
+.btn.ghost {
   background: transparent;
   border-color: #24314a;
   color: var(--muted);
 }
-.btn.btn-ghost:hover {
+.btn.btn-ghost:hover,
+.btn.ghost:hover {
   color: var(--text);
   border-color: #3b82f6;
 }

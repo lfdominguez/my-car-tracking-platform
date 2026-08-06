@@ -129,6 +129,19 @@ pub struct CarRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub role: String,
+    /// Owner has active vault; sensitive fields may be placeholders.
+    pub vault_sealed: bool,
+}
+
+
+fn seal_car_if_vault(mut car: CarRow) -> CarRow {
+    if car.vault_sealed {
+        car.name = String::new();
+        car.make_model = String::new();
+        car.notes = None;
+        car.photo_path = None;
+    }
+    car
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,16 +177,20 @@ async fn list_cars(
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
                c.notes, c.created_at, c.updated_at,
-               'owner'::text AS role
+               'owner'::text AS role,
+               (u.vault_status = 'active') AS vault_sealed
         FROM cars c
+        JOIN users u ON u.id = c.owner_user_id
         WHERE c.owner_user_id = $1
         UNION ALL
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
                c.notes, c.created_at, c.updated_at,
-               cs.role
+               cs.role,
+               (u.vault_status = 'active') AS vault_sealed
         FROM cars c
         JOIN car_shares cs ON cs.car_id = c.id
+        JOIN users u ON u.id = c.owner_user_id
         WHERE cs.user_id = $1
         ORDER BY name
         "#,
@@ -181,7 +198,7 @@ async fn list_cars(
     .bind(user.id)
     .fetch_all(&state.pool)
     .await?;
-    Ok(Json(rows))
+    Ok(Json(rows.into_iter().map(seal_car_if_vault).collect()))
 }
 
 async fn create_car(
@@ -201,7 +218,8 @@ async fn create_car(
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role
+                  notes, created_at, updated_at, 'owner'::text AS role,
+                  FALSE AS vault_sealed
         "#,
     )
     .bind(id)
@@ -216,7 +234,31 @@ async fn create_car(
     .bind(body.notes)
     .fetch_one(&state.pool)
     .await?;
-    Ok(Json(row))
+
+    // When owner vault is already active, do not retain sensitive plaintext columns.
+    let vault_on = crate::vault::owner_vault_active(&state.pool, user.id).await?;
+    let row = if vault_on {
+        sqlx::query_as::<_, CarRow>(
+            r#"
+            UPDATE cars SET
+                name = '',
+                make_model = '',
+                notes = NULL,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING id, owner_user_id, name, make_model, photo_path,
+                      fuel_type, stoich_afr, density_gl, displacement_l, ve,
+                      notes, created_at, updated_at, 'owner'::text AS role,
+                      TRUE AS vault_sealed
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?
+    } else {
+        row
+    };
+    Ok(Json(seal_car_if_vault(row)))
 }
 
 async fn get_car(
@@ -232,17 +274,20 @@ async fn get_car(
     };
     let row = sqlx::query_as::<_, CarRow>(
         r#"
-        SELECT id, owner_user_id, name, make_model, photo_path,
-               fuel_type, stoich_afr, density_gl, displacement_l, ve,
-               notes, created_at, updated_at, $2::text AS role
-        FROM cars WHERE id = $1
+        SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
+               c.fuel_type, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
+               c.notes, c.created_at, c.updated_at, $2::text AS role,
+               (u.vault_status = 'active') AS vault_sealed
+        FROM cars c
+        JOIN users u ON u.id = c.owner_user_id
+        WHERE c.id = $1
         "#,
     )
     .bind(id)
     .bind(role)
     .fetch_one(&state.pool)
     .await?;
-    Ok(Json(row))
+    Ok(Json(seal_car_if_vault(row)))
 }
 
 async fn update_car(
@@ -254,10 +299,13 @@ async fn update_car(
     can_edit_car(&state.pool, user.id, id).await?;
     let current = sqlx::query_as::<_, CarRow>(
         r#"
-        SELECT id, owner_user_id, name, make_model, photo_path,
-               fuel_type, stoich_afr, density_gl, displacement_l, ve,
-               notes, created_at, updated_at, 'owner'::text AS role
-        FROM cars WHERE id = $1
+        SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
+               c.fuel_type, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
+               c.notes, c.created_at, c.updated_at, 'owner'::text AS role,
+               (u.vault_status = 'active') AS vault_sealed
+        FROM cars c
+        JOIN users u ON u.id = c.owner_user_id
+        WHERE c.id = $1
         "#,
     )
     .bind(id)
@@ -279,7 +327,8 @@ async fn update_car(
         WHERE id = $1
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role
+                  notes, created_at, updated_at, 'owner'::text AS role,
+                  FALSE AS vault_sealed
         "#,
     )
     .bind(id)
@@ -293,7 +342,9 @@ async fn update_car(
     .bind(body.notes.or(current.notes))
     .fetch_one(&state.pool)
     .await?;
-    Ok(Json(row))
+    let mut row = row;
+    row.vault_sealed = current.vault_sealed;
+    Ok(Json(seal_car_if_vault(row)))
 }
 
 async fn delete_car(
@@ -419,14 +470,15 @@ async fn upload_photo(
         WHERE id = $1
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role
+                  notes, created_at, updated_at, 'owner'::text AS role,
+                  FALSE AS vault_sealed
         "#,
     )
     .bind(id)
     .bind(&rel)
     .fetch_one(&state.pool)
     .await?;
-    Ok(Json(row))
+    Ok(Json(seal_car_if_vault(row)))
 }
 
 #[cfg(test)]

@@ -134,6 +134,12 @@ async fn start_analysis(
     let owner_id: Uuid = meta.get("owner_user_id");
     require_owner(&state.pool, user.id, car_id).await?;
 
+    if crate::vault::owner_vault_active(&state.pool, owner_id).await? {
+        return Err(AppError::Conflict(
+            "Vault car: use POST /api/vault/jobs with a client-prepared analysis bundle".into(),
+        ));
+    }
+
     let status: String = meta.get("analysis_status");
     if status == "pending" || status == "running" {
         return Err(AppError::Conflict(

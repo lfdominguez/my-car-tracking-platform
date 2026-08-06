@@ -50,6 +50,8 @@ pub struct TripSummary {
     pub analysis_status: String,
     pub analyzed_at: Option<DateTime<Utc>>,
     pub analyzed: bool,
+    /// Owner vault active — client should load ciphertext objects instead of points.
+    pub vault_sealed: bool,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -79,6 +81,18 @@ pub struct TripPoint {
     pub atmospheric_pressure: Option<f64>,
     pub intake_air_temperature: Option<f64>,
     pub mass_air_flow: Option<f64>,
+}
+
+fn seal_trip_if_vault(mut t: TripSummary) -> TripSummary {
+    if t.vault_sealed {
+        t.car_name = String::new();
+        t.point_count = 0;
+        t.distance_m = None;
+        t.avg_speed_kph = None;
+        t.max_speed_kph = None;
+        t.fuel_used_l = None;
+    }
+    t
 }
 
 #[derive(Debug, Serialize)]
@@ -163,9 +177,11 @@ async fn list_trips(
             stats.fuel_used_l,
             t.analysis_status,
             t.analyzed_at,
-            (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed
+            (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
+            (ou.vault_status = 'active') AS vault_sealed
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
+        JOIN users ou ON ou.id = c.owner_user_id
         LEFT JOIN LATERAL (
             SELECT
                 COUNT(*)::bigint AS point_count,
@@ -209,7 +225,8 @@ async fn list_trips(
     let system = user.unit_system;
     let rows = rows
         .into_iter()
-        .map(|t| apply_trip_summary_units(t, system))
+        .map(seal_trip_if_vault)
+        .map(|trip| apply_trip_summary_units(trip, system))
         .collect();
     Ok(Json(rows))
 }
@@ -241,9 +258,11 @@ async fn get_trip(
             stats.avg_speed_kph, stats.max_speed_kph, stats.fuel_used_l,
             t.analysis_status,
             t.analyzed_at,
-            (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed
+            (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
+            (ou.vault_status = 'active') AS vault_sealed
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
+        JOIN users ou ON ou.id = c.owner_user_id
         LEFT JOIN LATERAL (
             SELECT
                 COUNT(*)::bigint AS point_count,
@@ -270,7 +289,10 @@ async fn get_trip(
     .fetch_one(&state.pool)
     .await?;
 
-    Ok(Json(apply_trip_summary_units(row, user.unit_system)))
+    Ok(Json(apply_trip_summary_units(
+        seal_trip_if_vault(row),
+        user.unit_system,
+    )))
 }
 
 const DEFAULT_TRIP_POINTS_LIMIT: i64 = 2000;
@@ -294,6 +316,14 @@ async fn trip_points(
         .await?
         .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
+
+    let owner_id = sqlx::query_scalar::<_, Uuid>("SELECT owner_user_id FROM cars WHERE id = $1")
+        .bind(car_id)
+        .fetch_one(&state.pool)
+        .await?;
+    if crate::vault::owner_vault_active(&state.pool, owner_id).await? {
+        return Ok(Json(vec![]));
+    }
 
     let limit = q
         .limit
@@ -357,6 +387,17 @@ async fn trip_map(
         .await?
         .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
+
+    let owner_id = sqlx::query_scalar::<_, Uuid>("SELECT owner_user_id FROM cars WHERE id = $1")
+        .bind(car_id)
+        .fetch_one(&state.pool)
+        .await?;
+    if crate::vault::owner_vault_active(&state.pool, owner_id).await? {
+        return Ok(Json(serde_json::json!({
+            "type": "LineString",
+            "coordinates": []
+        })));
+    }
 
     let coords = sqlx::query_as::<_, (f64, f64)>(
         r#"

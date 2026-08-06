@@ -35,8 +35,15 @@ web-sys = { version = "0.3", features = [
     "Navigator",
     "console",
     "RequestCredentials",
+    "Storage",
+    "HtmlTextAreaElement",
 ] }
 shared = { workspace = true }
+vault_crypto = { workspace = true }
+base64 = "0.22"
+getrandom = { version = "0.2", features = ["js"] }
+thiserror = { workspace = true }
+zeroize = "1"
 
 [features]
 default = []

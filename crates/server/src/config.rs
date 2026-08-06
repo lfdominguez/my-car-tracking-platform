@@ -32,6 +32,12 @@ pub struct Config {
     pub is_local_dev: bool,
     /// When true, trust `X-Forwarded-For` / `X-Real-IP` for client IP (rate limits).
     pub trust_forwarded_headers: bool,
+    /// When true, vault enable UI/API is available.
+    pub vault_ui_enabled: bool,
+    /// Ephemeral vault job bundle TTL (seconds).
+    pub vault_job_ttl_secs: u64,
+    /// Max ciphertext bytes per vault object upload.
+    pub vault_max_object_bytes: usize,
 }
 
 #[derive(Debug, Error)]
@@ -144,6 +150,15 @@ impl Config {
         }
 
         let trust_forwarded_headers = env_flag("TRUST_FORWARDED_HEADERS", false);
+        let vault_ui_enabled = env_flag("VAULT_UI_ENABLED", is_local_dev);
+        let vault_job_ttl_secs = env::var("VAULT_JOB_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+        let vault_max_object_bytes = env::var("VAULT_MAX_OBJECT_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512 * 1024);
 
         if is_local_dev {
             if session_secret == DEFAULT_SESSION_SECRET
@@ -179,6 +194,9 @@ impl Config {
             allow_dev_login,
             is_local_dev,
             trust_forwarded_headers,
+            vault_ui_enabled,
+            vault_job_ttl_secs,
+            vault_max_object_bytes,
         })
     }
 }
@@ -271,6 +289,9 @@ mod tests {
             env::remove_var("SESSION_ABSOLUTE_DAYS");
             env::remove_var("SECRETS_KEY_PREVIOUS");
             env::remove_var("SECRETS_KEY_VERSION");
+            env::remove_var("VAULT_UI_ENABLED");
+            env::remove_var("VAULT_JOB_TTL_SECS");
+            env::remove_var("VAULT_MAX_OBJECT_BYTES");
         }
     }
 
