@@ -5,11 +5,13 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::audit::{self, actions, AuditEvent};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use crate::shares::access::can_read_car;
+use crate::shares::access::{can_read_car, require_owner};
 use crate::state::AppState;
 use crate::units::{
     convert_distance_m, convert_fuel_l, convert_fuel_rate_lph, convert_odometer_km,
@@ -19,9 +21,80 @@ use crate::units::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/trips", get(list_trips))
-        .route("/api/trips/{id}", get(get_trip))
+        .route("/api/trips/{id}", get(get_trip).delete(delete_trip))
         .route("/api/trips/{id}/points", get(trip_points))
         .route("/api/trips/{id}/map", get(trip_map))
+}
+
+/// Delete vault ciphertext for this track and the track row (cascades points/assignments).
+pub async fn purge_track(pool: &PgPool, track_id: Uuid) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM vault_objects WHERE logical_id = $1")
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM tracks WHERE id = $1")
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// True when trip should be discarded after stop: no vault point chunks and ≤1 plaintext point.
+pub async fn is_empty_trip_for_auto_remove(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
+    let plaintext: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM track_points WHERE track_id = $1",
+    )
+    .bind(track_id)
+    .fetch_one(pool)
+    .await?;
+
+    let vault_chunks: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::bigint FROM vault_objects
+        WHERE logical_id = $1 AND object_type = 'track_points_chunk'
+        "#,
+    )
+    .bind(track_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(vault_chunks == 0 && plaintext <= 1)
+}
+
+async fn delete_trip(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    let car_id: Uuid = sqlx::query_scalar("SELECT car_id FROM tracks WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    require_owner(&state.pool, user.id, car_id).await?;
+    purge_track(&state.pool, id).await?;
+
+    let id_str = id.to_string();
+    let car_str = car_id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(user.session_id.as_str()),
+            action: actions::TRIP_DELETED,
+            resource_type: Some("trip"),
+            resource_id: Some(&id_str),
+            ip: None,
+            user_agent: None,
+            meta: serde_json::json!({ "car_id": car_str }),
+        },
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(Debug, Deserialize)]

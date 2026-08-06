@@ -377,6 +377,33 @@ pub async fn get_trip(id: &str) -> Result<Trip, ApiError> {
     send_json(Request::get(&format!("/api/trips/{id}"))).await
 }
 
+pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
+    if id.is_empty() {
+        return Err(ApiError::Message("missing trip id".into()));
+    }
+    let url = format!("/api/trips/{id}");
+    let resp = with_creds(Request::delete(&url))
+        .send()
+        .await
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    if resp.status() == 401 {
+        return Err(ApiError::Unauthorized);
+    }
+    if resp.status() == 404 {
+        return Err(ApiError::Message("Trip not found".into()));
+    }
+    if resp.status() == 403 {
+        return Err(ApiError::Message(
+            "Not allowed to delete this trip".into(),
+        ));
+    }
+    if !resp.ok() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+    }
+    Ok(())
+}
+
 pub async fn trip_points(id: &str) -> Result<Vec<TripPoint>, ApiError> {
     send_json(Request::get(&format!("/api/trips/{id}/points"))).await
 }

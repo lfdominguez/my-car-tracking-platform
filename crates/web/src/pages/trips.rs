@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use leptos_router::components::A;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::api::{
-    fetch_trip_analysis, get_trip, list_trips, start_trip_analysis, trip_map, trip_points,
-    vault_create_job, Trip, TripAnalysis, TripPoint,
+    delete_trip, fetch_trip_analysis, get_trip, list_trips, start_trip_analysis, trip_map,
+    trip_points, vault_create_job, Trip, TripAnalysis, TripPoint,
 };
 use crate::vault::{
     build_analysis_context_json, decrypt_ai_report, decrypt_track_meta, decrypt_track_points,
@@ -78,12 +78,19 @@ fn pretty_started(s: &str) -> String {
     }
 }
 
+fn confirm(msg: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| w.confirm_with_message(msg).ok())
+        .unwrap_or(false)
+}
+
 #[component]
 pub fn TripsPage() -> impl IntoView {
     let prefs = use_unit_prefs();
     let trips = RwSignal::new(Vec::<Trip>::new());
     let error = RwSignal::new(Option::<String>::None);
     let loading = RwSignal::new(true);
+    let deleting = RwSignal::new(Option::<String>::None);
 
     let vault = use_vault_session();
 
@@ -147,6 +154,7 @@ pub fn TripsPage() -> impl IntoView {
                 key=|t| t.id.clone()
                 children=move |t| {
                     let id = t.id.clone();
+                    let id_del = t.id.clone();
                     let href = format!("/app/trips/{id}");
                     let finished = t.finished;
                     let car = t.car_name.clone();
@@ -158,9 +166,34 @@ pub fn TripsPage() -> impl IntoView {
                     let max = fmt_speed(t.max_speed_kph, &p);
                     let fuel = fmt_fuel(t.fuel_used_l, &p);
                     let points = t.point_count;
+                    let trips_sig = trips;
+                    let err_sig = error;
+                    let deleting_sig = deleting;
+                    let on_delete = move |ev: web_sys::MouseEvent| {
+                        ev.prevent_default();
+                        ev.stop_propagation();
+                        if deleting_sig.get_untracked().is_some() {
+                            return;
+                        }
+                        if !confirm("Delete this trip permanently? This cannot be undone.") {
+                            return;
+                        }
+                        let id = id_del.clone();
+                        deleting_sig.set(Some(id.clone()));
+                        leptos::task::spawn_local(async move {
+                            match delete_trip(&id).await {
+                                Ok(()) => {
+                                    trips_sig.update(|v| v.retain(|x| x.id != id));
+                                    err_sig.set(None);
+                                }
+                                Err(e) => err_sig.set(Some(e.to_string())),
+                            }
+                            deleting_sig.set(None);
+                        });
+                    };
                     view! {
-                        <A href=href>
-                            <article class="trip-card">
+                        <article class="trip-card">
+                            <A href=href.clone()>
                                 <div class="trip-card-top">
                                     <div>
                                         <div class="trip-card-title">{car}</div>
@@ -211,14 +244,27 @@ pub fn TripsPage() -> impl IntoView {
                                         <span class="metric-chip-value">{points}</span>
                                     </div>
                                 </div>
-                                <div class="trip-card-footer">
+                            </A>
+                            <div class="trip-card-footer trip-card-actions">
+                                <A href=href>
                                     <span class="icon-label muted">
                                         "Open analytics"
                                         <Icon name="caret-right" size=IconSize::Sm />
                                     </span>
-                                </div>
-                            </article>
-                        </A>
+                                </A>
+                                <button
+                                    type="button"
+                                    class="btn ghost sm err trip-delete-btn"
+                                    prop:disabled=move || deleting.get().as_ref() == Some(&id)
+                                    on:click=on_delete
+                                >
+                                    <span class="icon-label">
+                                        <Icon name="trash" size=IconSize::Sm />
+                                        "Delete"
+                                    </span>
+                                </button>
+                            </div>
+                        </article>
                     }
                 }
             />
@@ -241,6 +287,7 @@ fn KpiCard(label: &'static str, value: String, hint: Option<String>) -> impl Int
 pub fn TripDetailPage() -> impl IntoView {
     let prefs = use_unit_prefs();
     let params = use_params_map();
+    let navigate = use_navigate();
     let trip = RwSignal::new(Option::<Trip>::None);
     let points = RwSignal::new(Vec::<TripPoint>::new());
     let geojson = RwSignal::new(Option::<serde_json::Value>::None);
@@ -249,6 +296,7 @@ pub fn TripDetailPage() -> impl IntoView {
     let analysis = RwSignal::new(Option::<TripAnalysis>::None);
     let analysis_busy = RwSignal::new(false);
     let analysis_err = RwSignal::new(Option::<String>::None);
+    let deleting = RwSignal::new(false);
     let vault = use_vault_session();
 
     Effect::new(move |_| {
@@ -476,14 +524,51 @@ pub fn TripDetailPage() -> impl IntoView {
                     }}
                 </p>
             </div>
-            <A href="/app/trips">
-                <span class="btn">
+            <div class="trip-detail-actions">
+                <button
+                    type="button"
+                    class="btn ghost sm err"
+                    prop:disabled=move || deleting.get() || trip.get().is_none()
+                    on:click=move |_| {
+                        let Some(t) = trip.get_untracked() else {
+                            return;
+                        };
+                        if deleting.get_untracked() {
+                            return;
+                        }
+                        if !confirm("Delete this trip permanently? This cannot be undone.") {
+                            return;
+                        }
+                        let id = t.id.clone();
+                        let nav = navigate.clone();
+                        deleting.set(true);
+                        leptos::task::spawn_local(async move {
+                            match delete_trip(&id).await {
+                                Ok(()) => {
+                                    nav("/app/trips", Default::default());
+                                }
+                                Err(e) => {
+                                    error.set(Some(e.to_string()));
+                                    deleting.set(false);
+                                }
+                            }
+                        });
+                    }
+                >
                     <span class="icon-label">
-                        <Icon name="arrow-left" size=IconSize::Sm />
-                        "All trips"
+                        <Icon name="trash" size=IconSize::Sm />
+                        {move || if deleting.get() { "Deleting…" } else { "Delete" }}
                     </span>
-                </span>
-            </A>
+                </button>
+                <A href="/app/trips">
+                    <span class="btn">
+                        <span class="icon-label">
+                            <Icon name="arrow-left" size=IconSize::Sm />
+                            "All trips"
+                        </span>
+                    </span>
+                </A>
+            </div>
         </div>
 
         <Show when=move || error.get().is_some()>

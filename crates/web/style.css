@@ -259,6 +259,27 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   border-top: 1px solid rgba(36, 49, 74, 0.7);
   padding-top: 0.65rem;
 }
+.trip-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.trip-card-actions a {
+  text-decoration: none;
+  color: inherit;
+}
+.trip-card > a {
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+.trip-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
 .pill {
   display: inline-flex;
   align-items: center;

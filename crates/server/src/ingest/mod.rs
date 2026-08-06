@@ -179,7 +179,7 @@ async fn track_stop(
         return Err(AppError::NotFound);
     }
 
-    // Best-effort routes optimization (non-blocking).
+    // Auto-remove empty/noise trips; otherwise best-effort route optimization.
     if let Ok(Some(track_id)) = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2",
     )
@@ -188,14 +188,36 @@ async fn track_stop(
     .fetch_optional(&state.pool)
     .await
     {
-        let pool = state.pool.clone();
-        let keyring = state.keyring.clone();
-        tokio::spawn(async move {
-            if let Err(e) = crate::route_opt::process_finished_track(&pool, &keyring, track_id).await
-            {
-                tracing::warn!(%track_id, error = %e, "route optimization job failed");
+        match crate::trips::is_empty_trip_for_auto_remove(&state.pool, track_id).await {
+            Ok(true) => {
+                if let Err(e) = crate::trips::purge_track(&state.pool, track_id).await {
+                    tracing::warn!(%track_id, error = %e, "empty trip purge failed");
+                }
             }
-        });
+            Ok(false) => {
+                let pool = state.pool.clone();
+                let keyring = state.keyring.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::route_opt::process_finished_track(&pool, &keyring, track_id).await
+                    {
+                        tracing::warn!(%track_id, error = %e, "route optimization job failed");
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::warn!(%track_id, error = %e, "empty trip check failed");
+                let pool = state.pool.clone();
+                let keyring = state.keyring.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::route_opt::process_finished_track(&pool, &keyring, track_id).await
+                    {
+                        tracing::warn!(%track_id, error = %e, "route optimization job failed");
+                    }
+                });
+            }
+        }
     }
 
     Ok(StatusCode::OK)

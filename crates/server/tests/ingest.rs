@@ -5,13 +5,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::json;
+use server::build_router;
 use server::config::Config;
 use server::db;
 use server::devices::{hash_token, issue_plaintext_token};
 use server::state::AppState;
-use server::build_router;
 use uuid::Uuid;
 
 fn test_config(database_url: String) -> Config {
@@ -39,7 +39,7 @@ fn test_config(database_url: String) -> Config {
     }
 }
 
-async fn setup() -> Option<(String, reqwest::Client, String, Uuid)> {
+async fn setup() -> Option<(String, reqwest::Client, String, Uuid, sqlx::PgPool)> {
     let database_url = std::env::var("DATABASE_URL").ok()?;
     let config = test_config(database_url.clone());
     let _ = std::fs::create_dir_all(&config.upload_dir);
@@ -88,6 +88,7 @@ async fn setup() -> Option<(String, reqwest::Client, String, Uuid)> {
     .await
     .ok()?;
 
+    let pool_for_tests = pool.clone();
     let state = AppState::new(pool, config);
     let app = build_router(state, std::env::temp_dir().join("ctp-test-uploads"));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
@@ -103,12 +104,37 @@ async fn setup() -> Option<(String, reqwest::Client, String, Uuid)> {
 
     let base = format!("http://{}", addr);
     let client = reqwest::Client::new();
-    Some((base, client, token, car_id))
+    Some((base, client, token, car_id, pool_for_tests))
+}
+
+async fn track_count(pool: &sqlx::PgPool, car_id: Uuid, started_at: DateTime<Utc>) -> i64 {
+    sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::bigint FROM tracks
+        WHERE car_id = $1 AND legacy_key = $2
+        "#,
+    )
+    .bind(car_id)
+    .bind(started_at)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1)
+}
+
+async fn latest_track_id(pool: &sqlx::PgPool, car_id: Uuid) -> Option<Uuid> {
+    sqlx::query_scalar(
+        "SELECT id FROM tracks WHERE car_id = $1 ORDER BY started_at DESC LIMIT 1",
+    )
+    .bind(car_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
 }
 
 #[tokio::test]
 async fn health_is_public() {
-    let Some((base, client, _, _)) = setup().await else {
+    let Some((base, client, _, _, _)) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
         return;
     };
@@ -120,7 +146,7 @@ async fn health_is_public() {
 
 #[tokio::test]
 async fn ingest_happy_path_and_duplicate() {
-    let Some((base, client, token, _)) = setup().await else {
+    let Some((base, client, token, car_id, pool)) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
         return;
     };
@@ -146,11 +172,20 @@ async fn ingest_happy_path_and_duplicate() {
         "vehicle_speed_kph": 40.0,
         "vehicle_engine_rpm": 2000.0
     });
+    let sample2 = json!({
+        "tracking_id": tracking_id,
+        "recorded_at": start.timestamp_millis() + 1000,
+        "lat": -23.501,
+        "lon": -46.6,
+        "acc": 5.0,
+        "vehicle_speed_kph": 42.0,
+        "vehicle_engine_rpm": 2100.0
+    });
 
     let resp = client
         .post(format!("{base}/api/track/samples"))
         .header("Authorization", format!("Basic {token}"))
-        .json(&json!({ "samples": [sample, sample] }))
+        .json(&json!({ "samples": [sample.clone(), sample] }))
         .send()
         .await
         .unwrap();
@@ -158,6 +193,16 @@ async fn ingest_happy_path_and_duplicate() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["accepted"], 1);
     assert_eq!(body["rejected"][0]["reason"], "duplicate");
+
+    // Second distinct point so the trip is not auto-purged as empty (≤1 point).
+    let resp = client
+        .post(format!("{base}/api/track/sample"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&sample2)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
 
     let resp = client
         .post(format!("{base}/api/track/stop"))
@@ -167,11 +212,17 @@ async fn ingest_happy_path_and_duplicate() {
         .await
         .unwrap();
     assert!(resp.status().is_success());
+
+    assert_eq!(
+        track_count(&pool, car_id, start).await,
+        1,
+        "multi-point trip must remain after stop"
+    );
 }
 
 #[tokio::test]
 async fn bad_token_rejected() {
-    let Some((base, client, _, _)) = setup().await else {
+    let Some((base, client, _, _, _)) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
         return;
     };
@@ -190,7 +241,7 @@ async fn bad_token_rejected() {
 
 #[tokio::test]
 async fn unknown_tracking_id_rejected_in_batch() {
-    let Some((base, client, token, _)) = setup().await else {
+    let Some((base, client, token, _, _)) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
         return;
     };
@@ -216,7 +267,7 @@ async fn unknown_tracking_id_rejected_in_batch() {
 
 #[tokio::test]
 async fn batch_over_max_rejected() {
-    let Some((base, client, token, _)) = setup().await else {
+    let Some((base, client, token, _, _)) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
         return;
     };
@@ -247,7 +298,7 @@ async fn batch_over_max_rejected() {
 
 #[tokio::test]
 async fn finished_track_samples_rejected() {
-    let Some((base, client, token, _)) = setup().await else {
+    let Some((base, client, token, _, _)) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
         return;
     };
@@ -264,6 +315,25 @@ async fn finished_track_samples_rejected() {
         .unwrap();
     assert!(start.status().is_success(), "start: {}", start.status());
 
+    // Need ≥2 points so auto-remove does not purge the finished track.
+    for i in 0..2 {
+        let sample = json!({
+            "tracking_id": tracking_id,
+            "recorded_at": started_at.timestamp_millis() + i * 1000,
+            "lat": 48.1 + (i as f64) * 0.001,
+            "lon": 11.5,
+            "acc": 3.0
+        });
+        let resp = client
+            .post(format!("{base}/api/track/sample"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&sample)
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "sample {i}: {}", resp.status());
+    }
+
     let stop = client
         .post(format!("{base}/api/track/stop"))
         .header("Authorization", format!("Basic {token}"))
@@ -275,7 +345,7 @@ async fn finished_track_samples_rejected() {
 
     let sample = json!({
         "tracking_id": tracking_id,
-        "recorded_at": started_at.timestamp_millis(),
+        "recorded_at": started_at.timestamp_millis() + 5000,
         "lat": 48.1,
         "lon": 11.5,
         "acc": 3.0
@@ -291,6 +361,219 @@ async fn finished_track_samples_rejected() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["accepted"], 0);
     assert_eq!(body["rejected"][0]["reason"], "track_finished");
+}
+
+#[tokio::test]
+async fn stop_with_zero_points_purges_track() {
+    let Some((base, client, token, car_id, pool)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let start = Utc::now();
+    let tracking_id = start.to_rfc3339();
+
+    let resp = client
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": start }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    assert_eq!(track_count(&pool, car_id, start).await, 1);
+
+    let resp = client
+        .post(format!("{base}/api/track/stop"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "id": tracking_id }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    assert_eq!(
+        track_count(&pool, car_id, start).await,
+        0,
+        "empty trip must be purged on stop"
+    );
+}
+
+#[tokio::test]
+async fn stop_with_one_point_purges_track() {
+    let Some((base, client, token, car_id, pool)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let start = Utc::now();
+    let tracking_id = start.to_rfc3339();
+
+    assert!(client
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": start }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+
+    let sample = json!({
+        "tracking_id": tracking_id,
+        "recorded_at": start.timestamp_millis(),
+        "lat": -23.5,
+        "lon": -46.6,
+        "acc": 5.0,
+        "vehicle_speed_kph": 10.0
+    });
+    assert!(client
+        .post(format!("{base}/api/track/sample"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&sample)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+
+    assert!(client
+        .post(format!("{base}/api/track/stop"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "id": tracking_id }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+
+    assert_eq!(
+        track_count(&pool, car_id, start).await,
+        0,
+        "single-point trip must be purged on stop"
+    );
+}
+
+#[tokio::test]
+async fn stop_with_two_points_keeps_finished_track() {
+    let Some((base, client, token, car_id, pool)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let start = Utc::now();
+    let tracking_id = start.to_rfc3339();
+
+    assert!(client
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": start }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+
+    for i in 0..2 {
+        let sample = json!({
+            "tracking_id": tracking_id,
+            "recorded_at": start.timestamp_millis() + i * 1000,
+            "lat": -23.5 + (i as f64) * 0.001,
+            "lon": -46.6,
+            "acc": 5.0,
+            "vehicle_speed_kph": 40.0
+        });
+        assert!(client
+            .post(format!("{base}/api/track/sample"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&sample)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+    }
+
+    assert!(client
+        .post(format!("{base}/api/track/stop"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "id": tracking_id }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+
+    let row: Option<(bool, i64)> = sqlx::query_as(
+        r#"
+        SELECT t.finished, (SELECT COUNT(*)::bigint FROM track_points p WHERE p.track_id = t.id)
+        FROM tracks t
+        WHERE t.car_id = $1 AND t.legacy_key = $2
+        "#,
+    )
+    .bind(car_id)
+    .bind(start)
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    let (finished, pts) = row.expect("track must remain");
+    assert!(finished);
+    assert_eq!(pts, 2);
+}
+
+#[tokio::test]
+async fn stop_with_vault_chunk_keeps_track_even_without_plaintext_points() {
+    let Some((base, client, token, car_id, pool)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let start = Utc::now();
+    let tracking_id = start.to_rfc3339();
+
+    assert!(client
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": start }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+
+    let track_id = latest_track_id(&pool, car_id)
+        .await
+        .expect("track after start");
+
+    sqlx::query(
+        r#"
+        INSERT INTO vault_objects (
+            id, car_id, object_type, logical_id, chunk_index, schema_version,
+            nonce, ciphertext, byte_size, content_version
+        ) VALUES ($1, $2, 'track_points_chunk', $3, 0, 1, $4, $5, 4, 1)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(car_id)
+    .bind(track_id)
+    .bind(vec![0u8; 12])
+    .bind(vec![1u8, 2, 3, 4])
+    .execute(&pool)
+    .await
+    .expect("insert vault chunk");
+
+    assert!(client
+        .post(format!("{base}/api/track/stop"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "id": tracking_id }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+
+    assert_eq!(
+        track_count(&pool, car_id, start).await,
+        1,
+        "vault point chunks must prevent auto-purge"
+    );
 }
 
 // silence unused warnings in skip path

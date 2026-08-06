@@ -21,6 +21,7 @@ pub mod actions {
     pub const VAULT_WRAP_REMOVED: &str = "vault.wrap_removed";
     pub const VAULT_MIGRATION_CLEAR_CAR: &str = "vault.migration_clear_car";
     pub const VAULT_JOB_SUBMITTED: &str = "vault.job_submitted";
+    pub const TRIP_DELETED: &str = "trip.deleted";
 }
 
 pub struct AuditEvent<'a> {
