@@ -10,6 +10,7 @@ pub mod devices;
 pub mod error;
 pub mod http_client;
 pub mod ingest;
+pub mod mcp;
 pub mod middleware;
 pub mod route_opt;
 pub mod shares;
@@ -50,6 +51,8 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
     let mut app = Router::new()
         .merge(ingest::router())
         .merge(auth::router())
+        .merge(mcp::settings_router())
+        .merge(mcp::router(state.clone()))
         .merge(cars::router())
         .merge(photo_routes)
         .merge(devices::router())

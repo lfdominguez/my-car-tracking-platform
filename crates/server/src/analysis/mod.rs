@@ -1,6 +1,6 @@
 //! Trip AI analysis HTTP API + background worker.
 
-mod context;
+pub mod context;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

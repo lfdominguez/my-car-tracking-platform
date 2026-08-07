@@ -1,8 +1,9 @@
 use leptos::prelude::*;
 
 use crate::api::{
-    get_audit, get_me, get_sessions, revoke_all_sessions, revoke_other_sessions, revoke_session,
-    update_me_preferences, update_me_unit_system, AuditEvent, SessionInfo,
+    get_audit, get_me, get_sessions, revoke_all_sessions, revoke_mcp_token, revoke_other_sessions,
+    revoke_session, rotate_mcp_token, update_me_preferences, update_me_unit_system, AuditEvent,
+    SessionInfo,
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{use_unit_prefs, UnitPrefs, UnitSystem};
@@ -22,6 +23,10 @@ pub fn SettingsPage() -> impl IntoView {
     let ors_key = RwSignal::new(String::new());
     let ors_key_set = RwSignal::new(false);
     let ors_key_hint = RwSignal::new(Option::<String>::None);
+    let mcp_token_set = RwSignal::new(false);
+    let mcp_token_hint = RwSignal::new(Option::<String>::None);
+    let mcp_plaintext = RwSignal::new(Option::<String>::None);
+    let mcp_url = RwSignal::new(String::new());
     let sessions = RwSignal::new(Vec::<SessionInfo>::new());
     let audit = RwSignal::new(Vec::<AuditEvent>::new());
     let loaded = RwSignal::new(false);
@@ -38,6 +43,11 @@ pub fn SettingsPage() -> impl IntoView {
                     key_hint.set(me.openrouter_api_key_hint.clone());
                     ors_key_set.set(me.ors_api_key_set);
                     ors_key_hint.set(me.ors_api_key_hint.clone());
+                    mcp_token_set.set(me.mcp_token_set);
+                    mcp_token_hint.set(me.mcp_token_hint.clone());
+                    if let Some(origin) = web_sys::window().and_then(|w| w.location().origin().ok()) {
+                        mcp_url.set(format!("{origin}/mcp"));
+                    }
                     prefs.set(UnitPrefs::from_me(&me));
                     if let Ok(s) = get_sessions().await {
                         sessions.set(s);
@@ -379,6 +389,102 @@ pub fn SettingsPage() -> impl IntoView {
                     "Key on file: " {move || ors_key_hint.get().unwrap_or_else(|| "…".into())}
                 </p>
             </Show>
+        </div>
+
+        <div class="card settings-card" style="margin-top:1rem">
+            <h2 class="section-title">
+                <Icon name="plugs-connected" color=IconColor::Accent />
+                "MCP access (AI agents)"
+            </h2>
+            <p class="muted">
+                "Generate a personal Bearer token so external AI agents can query your cars and trips "
+                "over MCP. Access is read-only; vault-encrypted data is never exposed. "
+                "The full token is shown only once when you generate or rotate it."
+            </p>
+            <p class="muted">
+                "Endpoint: "
+                <code>{move || {
+                    let u = mcp_url.get();
+                    if u.is_empty() { "/mcp".into() } else { u }
+                }}</code>
+            </p>
+            <Show when=move || mcp_token_set.get()>
+                <p class="muted">
+                    "Token on file: " {move || mcp_token_hint.get().unwrap_or_else(|| "…".into())}
+                </p>
+            </Show>
+            <Show when=move || mcp_plaintext.get().is_some()>
+                <div class="banner ok" style="margin-top:0.75rem">
+                    <div>"Copy this token now — it will not be shown again:"</div>
+                    <code style="display:block;margin-top:0.5rem;word-break:break-all">
+                        {move || mcp_plaintext.get().unwrap_or_default()}
+                    </code>
+                </div>
+            </Show>
+            <div class="row-actions" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem">
+                <button
+                    type="button"
+                    class="btn primary"
+                    prop:disabled=move || saving.get()
+                    on:click=move |_| {
+                        saving.set(true);
+                        message.set(None);
+                        error.set(None);
+                        leptos::task::spawn_local(async move {
+                            match rotate_mcp_token().await {
+                                Ok(resp) => {
+                                    mcp_token_set.set(true);
+                                    mcp_token_hint.set(Some(resp.hint.clone()));
+                                    mcp_plaintext.set(Some(resp.token));
+                                    if !resp.mcp_url.is_empty() {
+                                        mcp_url.set(resp.mcp_url);
+                                    }
+                                    message.set(Some(
+                                        "MCP token generated. Copy it now; it won't be shown again."
+                                            .into(),
+                                    ));
+                                }
+                                Err(e) => error.set(Some(e.to_string())),
+                            }
+                            saving.set(false);
+                        });
+                    }
+                >
+                    {move || {
+                        if mcp_token_set.get() {
+                            "Rotate token"
+                        } else {
+                            "Generate token"
+                        }
+                    }}
+                </button>
+                <Show when=move || mcp_token_set.get()>
+                    <button
+                        type="button"
+                        class="btn ghost"
+                        prop:disabled=move || saving.get()
+                        on:click=move |_| {
+                            saving.set(true);
+                            message.set(None);
+                            error.set(None);
+                            leptos::task::spawn_local(async move {
+                                match revoke_mcp_token().await {
+                                    Ok(()) => {
+                                        mcp_token_set.set(false);
+                                        mcp_token_hint.set(None);
+                                        mcp_plaintext.set(None);
+                                        message.set(Some("MCP token revoked.".into()));
+                                    }
+                                    Err(e) => error.set(Some(e.to_string())),
+                                }
+                                saving.set(false);
+                            });
+                        }
+                    >
+                        "Revoke token"
+                    </button>
+                </Show>
+            </div>
         </div>
 
         <VaultSettingsCard/>

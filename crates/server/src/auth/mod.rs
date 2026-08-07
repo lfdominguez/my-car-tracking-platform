@@ -50,6 +50,8 @@ pub struct MeResponse {
     pub openrouter_api_key_hint: Option<String>,
     pub ors_api_key_set: bool,
     pub ors_api_key_hint: Option<String>,
+    pub mcp_token_set: bool,
+    pub mcp_token_hint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +122,8 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
             openrouter_key_hint,
             (ors_api_key_enc IS NOT NULL) AS ors_api_key_set,
             ors_key_hint,
+            (mcp_token_hash IS NOT NULL) AS mcp_token_set,
+            mcp_token_hint,
             unit_system
         FROM users
         WHERE id = $1
@@ -143,6 +147,8 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
         openrouter_api_key_hint: row.openrouter_key_hint,
         ors_api_key_set: row.ors_api_key_set,
         ors_api_key_hint: row.ors_key_hint,
+        mcp_token_set: row.mcp_token_set,
+        mcp_token_hint: row.mcp_token_hint,
     })
 }
 
@@ -153,6 +159,8 @@ struct MeOpenRouterRow {
     openrouter_key_hint: Option<String>,
     ors_api_key_set: bool,
     ors_key_hint: Option<String>,
+    mcp_token_set: bool,
+    mcp_token_hint: Option<String>,
     unit_system: String,
 }
 

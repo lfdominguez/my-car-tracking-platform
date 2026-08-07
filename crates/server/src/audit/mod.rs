@@ -11,6 +11,8 @@ pub mod actions {
     pub const SESSION_REVOKE_ALL: &str = "session.revoke_all";
     pub const SETTINGS_OPENROUTER: &str = "settings.openrouter_updated";
     pub const SETTINGS_ORS: &str = "settings.ors_updated";
+    pub const SETTINGS_MCP_TOKEN_ROTATE: &str = "settings.mcp_token_rotated";
+    pub const SETTINGS_MCP_TOKEN_REVOKE: &str = "settings.mcp_token_revoked";
     pub const SHARE_CREATED: &str = "share.created";
     pub const SHARE_REVOKED: &str = "share.revoked";
     pub const DEVICE_CREATED: &str = "device.created";

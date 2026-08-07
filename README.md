@@ -35,6 +35,7 @@
 | 📈 **Telemetry suite** | Drive · engine · fuel · thermal/electrical — all stored OBD fields when present |
 | 🧭 **Routes Optimization** | Cluster similar OD corridors, path variants, OpenRouteService alts + elevation (**no LLM**) |
 | 🤖 **AI route analysis** | Owner OpenRouter key · Rig agent · structured findings + downloadable markdown |
+| 🔌 **MCP access** | Per-user Bearer token in Settings · Streamable HTTP at `/mcp` · read-only tools for agents |
 | 👥 **Sharing** | Direct Owner / Editor / Viewer roles across friends & family |
 | 📱 **QR bootstrap** | One-time device token + absolute URLs + fuel math for the phone |
 | 🌍 **Units** | Metric or Imperial — converted on the API; DB stays SI/raw |
@@ -49,8 +50,10 @@ flowchart TD
     Phone[Android GPSCarTracking] -->|Basic device token| Ingest[Ingest API]
     Browser[Leptos SPA] -->|Session cookie| Platform[Platform API]
     Browser -->|OAuth| Google[Google]
+    Agent[External AI agent] -->|Bearer MCP token| MCP["/mcp Streamable HTTP"]
     Ingest --> Tracks[(PostGIS tracks)]
     Platform --> Tracks
+    MCP --> Platform
     Platform --> AI[AI analysis]
     Platform --> Routes[Routes optimization]
     Platform --> Traffic[Traffic guessing]
@@ -211,7 +214,7 @@ To rotate the primary encryption key without losing access to existing encrypted
 | 🚘 **`/app/cars`** | CRUD, photo, shares, devices, QR provisioning |
 | 🛣️ **`/app/trips`** | Analytics cockpit · map · AI analyze / re-analyze |
 | 🔀 **`/app/routes`** | Corridors, variants vs ORS, time-of-day insights |
-| ⚙️ **`/app/settings`** | Metric / Imperial · OpenRouter · OpenRouteService keys |
+| ⚙️ **`/app/settings`** | Metric / Imperial · OpenRouter · OpenRouteService · MCP agent token |
 
 ---
 
@@ -237,7 +240,9 @@ Header: `Authorization: Basic <device_token>`. External track id = Android start
 
 | Method | Path | Notes |
 |--------|------|--------|
-| `GET` / `PATCH` | `/api/me` | profile, units, API key flags |
+| `GET` / `PATCH` | `/api/me` | profile, units, API key flags, MCP token status |
+| `POST` / `DELETE` | `/api/me/mcp-token` | rotate (plaintext once) / revoke MCP Bearer token |
+| MCP | `/mcp` | Streamable HTTP MCP · `Authorization: Bearer <token>` · read-only tools |
 | `POST` | `/auth/logout` | clear session |
 | `GET` / `POST` | `/api/cars` | list / create |
 | `GET` / `PATCH` / `DELETE` | `/api/cars/{id}` | car CRUD |

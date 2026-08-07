@@ -35,6 +35,17 @@ pub struct Me {
     pub ors_api_key_set: bool,
     #[serde(default)]
     pub ors_api_key_hint: Option<String>,
+    #[serde(default)]
+    pub mcp_token_set: bool,
+    #[serde(default)]
+    pub mcp_token_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpTokenResponse {
+    pub token: String,
+    pub hint: String,
+    pub mcp_url: String,
 }
 
 fn default_openrouter_model() -> String {
@@ -347,6 +358,29 @@ pub async fn update_me_preferences(body: serde_json::Value) -> Result<Me, ApiErr
         .json(&body)
         .map_err(|e| ApiError::Message(e.to_string()))?;
     send_body_json(req).await
+}
+
+pub async fn rotate_mcp_token() -> Result<McpTokenResponse, ApiError> {
+    let req = with_creds(Request::post("/api/me/mcp-token"))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({}))
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
+}
+
+pub async fn revoke_mcp_token() -> Result<(), ApiError> {
+    let resp = with_creds(Request::delete("/api/me/mcp-token"))
+        .send()
+        .await
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    if resp.status() == 401 {
+        return Err(ApiError::Unauthorized);
+    }
+    if !resp.ok() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+    }
+    Ok(())
 }
 
 pub async fn fetch_trip_analysis(id: &str) -> Result<TripAnalysis, ApiError> {
