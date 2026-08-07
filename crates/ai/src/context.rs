@@ -133,6 +133,30 @@ pub struct SamplePoint {
     pub engine_on_time_s: Option<f64>,
 }
 
+/// Road congestion summary if traffic analysis was already run for the trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficSummary {
+    pub available: bool,
+    pub status: String,
+    pub overall_index: Option<f64>,
+    pub time_share: Option<serde_json::Value>,
+    pub distance_share: Option<serde_json::Value>,
+    pub frame_count: u32,
+}
+
+impl Default for TrafficSummary {
+    fn default() -> Self {
+        Self {
+            available: false,
+            status: "none".into(),
+            overall_index: None,
+            time_share: None,
+            distance_share: None,
+            frame_count: 0,
+        }
+    }
+}
+
 /// Everything the Rig tools may read. Built by the server; no DB access here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TripAnalysisContext {
@@ -146,4 +170,7 @@ pub struct TripAnalysisContext {
     /// Downsampled chronological samples for window queries.
     pub samples: Vec<SamplePoint>,
     pub prior_markdown: Option<String>,
+    /// Congestion summary when traffic analysis exists; else `available: false`.
+    #[serde(default)]
+    pub traffic: TrafficSummary,
 }

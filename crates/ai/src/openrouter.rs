@@ -6,6 +6,13 @@
 //! yields:
 //! `CompletionError: JsonError: data did not match any variant of untagged enum ApiResponse`
 //! even on HTTP 200. This module parses `serde_json::Value` flexibly instead.
+//!
+//! Transport note: reqwest's Display for body failures is often just
+//! `"error decoding response body"` while the real cause (timeout, reset, incomplete
+//! chunk) lives in the source chain — we surface the full chain and retry transients.
+
+use std::error::Error as StdError;
+use std::time::Duration;
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -15,6 +22,15 @@ use crate::error::AiError;
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MAX_BODY_LOG: usize = 800;
+/// Connect budget only (DNS/TLS/TCP).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Full request budget including model generation. Slow reasoning models + tools
+/// regularly exceed 60s; that used to surface as a vague body-decode error.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+/// Extra attempts after the first try for transient transport failures.
+/// Keep low: each attempt may run up to REQUEST_TIMEOUT.
+const MAX_TRANSIENT_RETRIES: u32 = 1;
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(1000);
 
 #[derive(Debug, Clone)]
 pub struct ToolCall {
@@ -41,8 +57,9 @@ impl OpenRouterClient {
     pub fn new(api_key: impl Into<String>) -> Result<Self, AiError> {
         let http = reqwest::Client::builder()
             .user_agent("car-tracking-platform-ai/0.1")
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(60))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .pool_max_idle_per_host(2)
             .build()
             .map_err(|e| AiError::Agent(format!("http client: {e}")))?;
         Ok(Self {
@@ -63,33 +80,144 @@ impl OpenRouterClient {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
+            // Explicit non-stream: we always read a full JSON body.
+            "stream": false,
         });
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
             body["tool_choice"] = json!("auto");
         }
 
+        let attempts = 1 + MAX_TRANSIENT_RETRIES;
+        let mut last_err = None;
+
+        for attempt in 1..=attempts {
+            match self.chat_completion_once(&body).await {
+                Ok(turn) => return Ok(turn),
+                Err(err) => {
+                    let retryable = err.transient;
+                    let msg = err.message;
+                    if retryable && attempt < attempts {
+                        let delay = RETRY_BASE_DELAY.saturating_mul(attempt);
+                        warn!(
+                            attempt,
+                            attempts,
+                            delay_ms = delay.as_millis() as u64,
+                            error = %msg,
+                            "openrouter transient failure; retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                        last_err = Some(msg);
+                        continue;
+                    }
+                    return Err(AiError::Agent(msg));
+                }
+            }
+        }
+
+        Err(AiError::Agent(last_err.unwrap_or_else(|| {
+            "openrouter request failed after retries".into()
+        })))
+    }
+
+    async fn chat_completion_once(&self, body: &Value) -> Result<AssistantTurn, TransportErr> {
         let response = self
             .http
             .post(OPENROUTER_URL)
             .bearer_auth(&self.api_key)
             .header("Content-Type", "application/json")
             // OpenRouter optional ranking headers
-            .header("HTTP-Referer", "https://github.com/lfdominguez/my-car-tracking-platform")
+            .header(
+                "HTTP-Referer",
+                "https://github.com/lfdominguez/my-car-tracking-platform",
+            )
             .header("X-Title", "Car Tracking Platform")
-            .json(&body)
+            .json(body)
             .send()
             .await
-            .map_err(|e| AiError::Agent(format!("openrouter request failed: {e}")))?;
+            .map_err(|e| TransportErr::from_reqwest("openrouter request failed", e))?;
 
         let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let content_length = response.content_length();
+
         let text = response
             .text()
             .await
-            .map_err(|e| AiError::Agent(format!("openrouter read body: {e}")))?;
+            .map_err(|e| TransportErr::from_reqwest("openrouter read body", e))?;
 
-        parse_chat_response(status, &text)
+        if text.trim().is_empty() {
+            return Err(TransportErr {
+                message: format!(
+                    "openrouter empty body (HTTP {status}, content-type={content_type}, content-length={content_length:?})"
+                ),
+                // Empty body on success is unusual; treat as transient (proxy glitch).
+                transient: status.is_success() || status.is_server_error(),
+            });
+        }
+
+        parse_chat_response(status, &text).map_err(|e| TransportErr {
+            message: e.to_string().replacen("openrouter/agent error: ", "", 1),
+            // 429 / 5xx already folded into AiError strings; allow retry on rate limits.
+            transient: status.as_u16() == 429
+                || status.is_server_error()
+                || status == StatusCode::REQUEST_TIMEOUT
+                || status == StatusCode::GATEWAY_TIMEOUT,
+        })
     }
+}
+
+struct TransportErr {
+    message: String,
+    transient: bool,
+}
+
+impl TransportErr {
+    fn from_reqwest(prefix: &str, e: reqwest::Error) -> Self {
+        let transient = is_transient_reqwest(&e);
+        Self {
+            message: format!("{prefix}: {}", format_reqwest_error(&e)),
+            transient,
+        }
+    }
+}
+
+fn is_transient_reqwest(e: &reqwest::Error) -> bool {
+    e.is_timeout()
+        || e.is_connect()
+        || e.is_request()
+        || e.is_body()
+        || e.is_decode()
+        || e.status().is_some_and(|s| s.as_u16() == 429 || s.is_server_error())
+}
+
+/// reqwest Display often stops at "error decoding response body"; chain sources.
+pub(crate) fn format_reqwest_error(e: &reqwest::Error) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(e.to_string());
+    if e.is_timeout() {
+        parts.push("timed out".into());
+    }
+    if e.is_connect() {
+        parts.push("connect".into());
+    }
+    if e.is_decode() {
+        parts.push("decode/body-read".into());
+    }
+    let mut src = e.source();
+    while let Some(cause) = src {
+        let s = cause.to_string();
+        if parts.last().map(|p| p != &s).unwrap_or(true) {
+            parts.push(s);
+        }
+        src = cause.source();
+    }
+    parts.join(" | ")
 }
 
 pub(crate) fn parse_chat_response(status: StatusCode, text: &str) -> Result<AssistantTurn, AiError> {
@@ -406,5 +534,13 @@ mod tests {
         let body = r#"{"id":"x","choices":[],"error":{"message":"Provider down","code":502}}"#;
         let err = parse_chat_response(StatusCode::OK, body).unwrap_err();
         assert!(err.to_string().contains("Provider down"), "{err}");
+    }
+
+    #[test]
+    fn non_json_body_mentions_snippet() {
+        let err = parse_chat_response(StatusCode::OK, "<html>gateway timeout</html>").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("non-JSON"), "{msg}");
+        assert!(msg.contains("gateway"), "{msg}");
     }
 }

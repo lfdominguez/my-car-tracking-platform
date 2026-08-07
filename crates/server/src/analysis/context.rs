@@ -2,7 +2,7 @@
 
 use ai::{
     EngineStats, FuelMixtureStats, SamplePoint, SpeedProfile, StopEvent, StopSummary,
-    ThermalElectricalStats, TripAnalysisContext, TripOverview, UnitLabels,
+    ThermalElectricalStats, TrafficSummary, TripAnalysisContext, TripOverview, UnitLabels,
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -198,6 +198,38 @@ pub async fn build_trip_analysis_context(
     let stops = compute_stops(&points);
     let samples = downsample_samples(&points, 400);
 
+    let traffic_row = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<f64>,
+            Option<serde_json::Value>,
+            Option<serde_json::Value>,
+            i32,
+        ),
+    >(
+        r#"
+        SELECT status, overall_index, time_share, distance_share, frame_count
+        FROM trip_traffic_summaries
+        WHERE track_id = $1
+        "#,
+    )
+    .bind(track_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let traffic = match traffic_row {
+        Some((status, overall_index, time_share, distance_share, frame_count)) => TrafficSummary {
+            available: true,
+            status,
+            overall_index,
+            time_share,
+            distance_share,
+            frame_count: frame_count.max(0) as u32,
+        },
+        None => TrafficSummary::default(),
+    };
+
     let labels = unit_system.labels();
     let units = UnitLabels {
         distance: labels.distance.to_string(),
@@ -217,6 +249,7 @@ pub async fn build_trip_analysis_context(
         stops,
         samples,
         prior_markdown: track.prior_markdown,
+        traffic,
     })
 }
 

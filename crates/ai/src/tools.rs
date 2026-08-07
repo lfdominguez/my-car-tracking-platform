@@ -210,6 +210,32 @@ impl Tool for GetStopSummary {
     }
 }
 
+// --- get_traffic_summary ---
+
+#[derive(Clone)]
+pub struct GetTrafficSummary {
+    pub ctx: CtxHandle,
+}
+
+impl Tool for GetTrafficSummary {
+    const NAME: &'static str = "get_traffic_summary";
+    type Error = ToolErr;
+    type Args = EmptyArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Road congestion / traffic analysis summary for this trip if it was already analyzed (overall index, time and distance shares by congestion class, frame count). If unavailable, available=false.".into(),
+            parameters: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        dump(&self.ctx.0.traffic)
+    }
+}
+
 // --- get_point_window ---
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -454,7 +480,28 @@ mod tests {
                 engine_on_time_s: None,
             }],
             prior_markdown: None,
+            traffic: TrafficSummary::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn traffic_summary_tool_returns_payload() {
+        let mut ctx = sample_ctx();
+        ctx.traffic = TrafficSummary {
+            available: true,
+            status: "ready".into(),
+            overall_index: Some(0.42),
+            time_share: Some(serde_json::json!({ "free": 0.5, "heavy": 0.2 })),
+            distance_share: Some(serde_json::json!({ "free": 0.6, "heavy": 0.1 })),
+            frame_count: 12,
+        };
+        let tool = GetTrafficSummary {
+            ctx: CtxHandle(Arc::new(ctx)),
+        };
+        let out = tool.call(EmptyArgs {}).await.unwrap();
+        assert!(out.contains("\"available\": true") || out.contains("\"available\":true"));
+        assert!(out.contains("0.42"));
+        assert!(out.contains("ready"));
     }
 
     #[tokio::test]
