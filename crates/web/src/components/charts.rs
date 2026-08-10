@@ -346,6 +346,8 @@ enum PanelKind {
 struct PanelDef {
     id: &'static str,
     title: &'static str,
+    blurb: &'static str,
+    primary: bool,
     y_left: String,
     y_right: Option<String>,
     series: Vec<ChartSeriesSpec>,
@@ -357,6 +359,30 @@ const FUEL_TRIM_HEALTHY_PCT: f64 = 10.0;
 
 /// Target candle count for mixture panel (bucket STFT/LTFT into OHLC windows).
 const MIXTURE_CANDLE_TARGET: usize = 160;
+
+/// EMA span (~samples) for Smooth mode on line series after downsample.
+/// Large on purpose: default charts are trend-first; Raw keeps full jagged detail.
+const SMOOTH_SPAN: f64 = 28.0;
+
+/// Second EMA pass span (slightly shorter) for a butter-smooth trend without
+/// adding another control. Combined with SMOOTH_SPAN this is much calmer than a
+/// single light EMA.
+const SMOOTH_SPAN_PASS2: f64 = 18.0;
+
+/// ECharts bezier factor when Smooth is on (0 = polyline).
+const LINE_SMOOTH_VISUAL: f64 = 0.62;
+
+const CATEGORY_STORAGE_KEY: &str = "trip-tel-category";
+
+/// Filter tabs for progressive disclosure (analytics-style, not accordion walls).
+const CATEGORY_TABS: &[(&str, &str)] = &[
+    ("overview", "Overview"),
+    ("drive", "Drive"),
+    ("engine", "Engine"),
+    ("fuel", "Fuel"),
+    ("thermal", "Thermal"),
+    ("all", "All"),
+];
 
 fn series_has_data(data: &[Option<f64>]) -> bool {
     data.iter().any(|v| v.is_some())
@@ -386,6 +412,127 @@ fn downsample_points(points: &[TripPoint], max_n: usize) -> Vec<TripPoint> {
         out.push(points[idx].clone());
     }
     out
+}
+
+/// Null-aware EMA: gaps stay gaps and restart the filter after nulls.
+fn ema_series(data: &[Option<f64>], span: f64) -> Vec<Option<f64>> {
+    let alpha = 2.0 / (span.max(1.0) + 1.0);
+    let mut out = Vec::with_capacity(data.len());
+    let mut prev: Option<f64> = None;
+    for v in data {
+        match (*v, prev) {
+            (None, _) => {
+                out.push(None);
+                prev = None;
+            }
+            (Some(x), None) => {
+                out.push(Some(x));
+                prev = Some(x);
+            }
+            (Some(x), Some(p)) => {
+                let y = alpha * x + (1.0 - alpha) * p;
+                out.push(Some(y));
+                prev = Some(y);
+            }
+        }
+    }
+    out
+}
+
+fn maybe_smooth_series(data: &[Option<f64>], smooth: bool) -> Vec<Option<f64>> {
+    if smooth {
+        // Two-pass null-aware EMA: first kills high-frequency OBD noise, second
+        // settles the trend. Raw mode skips this entirely.
+        let once = ema_series(data, SMOOTH_SPAN);
+        ema_series(&once, SMOOTH_SPAN_PASS2)
+    } else {
+        data.to_vec()
+    }
+}
+
+fn mean_finite(vals: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    for v in vals {
+        if v.is_finite() {
+            sum += v;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        None
+    } else {
+        Some(sum / n as f64)
+    }
+}
+
+fn max_finite(vals: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut m: Option<f64> = None;
+    for v in vals {
+        if !v.is_finite() {
+            continue;
+        }
+        m = Some(match m {
+            Some(cur) if cur >= v => cur,
+            _ => v,
+        });
+    }
+    m
+}
+
+fn min_finite(vals: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut m: Option<f64> = None;
+    for v in vals {
+        if !v.is_finite() {
+            continue;
+        }
+        m = Some(match m {
+            Some(cur) if cur <= v => cur,
+            _ => v,
+        });
+    }
+    m
+}
+
+fn last_finite(vals: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut last = None;
+    for v in vals {
+        if v.is_finite() {
+            last = Some(v);
+        }
+    }
+    last
+}
+
+fn load_category_filter() -> String {
+    let default = "overview".to_string();
+    let Some(win) = web_sys::window() else {
+        return default;
+    };
+    let Ok(Some(storage)) = win.session_storage() else {
+        return default;
+    };
+    match storage.get_item(CATEGORY_STORAGE_KEY) {
+        Ok(Some(raw)) => {
+            let key = raw.trim().to_ascii_lowercase();
+            if CATEGORY_TABS.iter().any(|(k, _)| *k == key) {
+                key
+            } else {
+                default
+            }
+        }
+        _ => default,
+    }
+}
+
+fn save_category_filter(key: &str) {
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = win.session_storage() else {
+        return;
+    };
+    let _ = storage.set_item(CATEGORY_STORAGE_KEY, key);
 }
 
 fn time_labels(points: &[TripPoint]) -> Vec<String> {
@@ -475,22 +622,15 @@ fn mixture_bucket_size(n: usize) -> usize {
 }
 
 fn shared_chart_chrome(
-    title: &str,
     use_right: bool,
     boundary_gap: bool,
 ) -> (
     serde_json::Value,
     serde_json::Value,
     serde_json::Value,
-    serde_json::Value,
     Vec<serde_json::Value>,
 ) {
-    let title = serde_json::json!({
-        "text": title,
-        "left": 8,
-        "top": 4,
-        "textStyle": { "color": "#e8eefc", "fontSize": 13, "fontWeight": 600 }
-    });
+    // Title lives in HTML panel chrome — keep plot area for data.
     let tooltip = serde_json::json!({
         "trigger": "axis",
         "axisPointer": {
@@ -504,15 +644,15 @@ fn shared_chart_chrome(
         "textStyle": { "color": "#e8eefc", "fontSize": 12 }
     });
     let legend = serde_json::json!({
-        "top": 28,
+        "top": 6,
         "right": 8,
-        "left": 160,
+        "left": 8,
         "orient": "horizontal",
-        "align": "right",
-        "itemGap": 14,
+        "align": "left",
+        "itemGap": 12,
         "itemWidth": 14,
         "itemHeight": 8,
-        "padding": [2, 4, 2, 8],
+        "padding": [2, 4, 2, 4],
         "textStyle": { "color": "#93a0b8", "fontSize": 11 },
         "type": "scroll",
         "pageIconColor": "#93a0b8",
@@ -521,7 +661,7 @@ fn shared_chart_chrome(
     let grid = serde_json::json!({
         "left": 62,
         "right": if use_right { 62 } else { 28 },
-        "top": 72,
+        "top": 42,
         "bottom": 58,
         "containLabel": false
     });
@@ -554,22 +694,22 @@ fn shared_chart_chrome(
         }),
     ];
     let _ = boundary_gap;
-    (title, tooltip, legend, grid, data_zoom)
+    (tooltip, legend, grid, data_zoom)
 }
 
 fn build_option(
-    title: &str,
     labels: &[String],
     times: &[String],
     series: &[ChartSeriesSpec],
     y_left_name: &str,
     y_right_name: Option<&str>,
+    line_smooth: f64,
 ) -> serde_json::Value {
     let colors = [
         "#3b82f6", "#22c55e", "#f59e0b", "#a78bfa", "#22d3ee", "#f472b6", "#eab308",
     ];
     let use_right = y_right_name.is_some() && series.iter().any(|s| s.y_axis_index == 1);
-    let (title_j, tooltip, legend, grid, data_zoom) = shared_chart_chrome(title, use_right, false);
+    let (tooltip, legend, grid, data_zoom) = shared_chart_chrome(use_right, false);
 
     // Axis unit names sit mid-axis so they never collide with clickable legend items.
     let mut y_axis = vec![serde_json::json!({
@@ -607,7 +747,7 @@ fn build_option(
             let mut obj = serde_json::json!({
                 "name": s.name,
                 "type": "line",
-                "smooth": 0.25,
+                "smooth": line_smooth,
                 "showSymbol": false,
                 "connectNulls": false,
                 "animation": false,
@@ -639,7 +779,6 @@ fn build_option(
         "backgroundColor": "transparent",
         "animation": false,
         "color": colors,
-        "title": title_j,
         "tooltip": tooltip,
         "legend": legend,
         "grid": grid,
@@ -663,10 +802,10 @@ fn build_option(
 /// Mixture & trims: STFT/LTFT as time-bucketed candlesticks + lambda line.
 /// Green band marks the healthy ±10% trim window.
 fn build_mixture_option(
-    title: &str,
     labels: &[String],
     times: &[String],
     series: &[ChartSeriesSpec],
+    line_smooth: f64,
 ) -> serde_json::Value {
     let bucket = mixture_bucket_size(labels.len().max(times.len()));
     let x_labels = bucket_labels(labels, bucket);
@@ -677,7 +816,7 @@ fn build_mixture_option(
     let lambda = series.iter().find(|s| s.name.to_ascii_lowercase().contains("lambda"));
 
     let use_right = lambda.map(|s| series_has_data(&s.data)).unwrap_or(false);
-    let (title_j, _tooltip, legend, grid, data_zoom) = shared_chart_chrome(title, use_right, true);
+    let (_tooltip, legend, grid, data_zoom) = shared_chart_chrome(use_right, true);
 
     let band = FUEL_TRIM_HEALTHY_PCT;
     let y_axis = {
@@ -802,7 +941,7 @@ fn build_mixture_option(
                 "name": "Lambda cmd",
                 "type": "line",
                 "yAxisIndex": if use_right { 1 } else { 0 },
-                "smooth": 0.2,
+                "smooth": line_smooth,
                 "showSymbol": false,
                 "connectNulls": false,
                 "animation": false,
@@ -817,7 +956,6 @@ fn build_mixture_option(
         "backgroundColor": "transparent",
         "animation": false,
         "color": ["#22c55e", "#38bdf8", "#a78bfa"],
-        "title": title_j,
         "tooltip": {
             "trigger": "axis",
             "axisPointer": {
@@ -852,17 +990,16 @@ fn build_mixture_option(
 #[component]
 fn TelemetryChart(
     chart_id: String,
-    title: String,
     labels: Vec<String>,
     times: Vec<String>,
     series: Vec<ChartSeriesSpec>,
     y_left_name: String,
     y_right_name: Option<String>,
     kind: PanelKind,
+    line_smooth: f64,
 ) -> impl IntoView {
     let el_id = chart_id.clone();
     let el_id_dispose = chart_id.clone();
-    let title_c = title.clone();
     let labels_c = labels.clone();
     let times_c = times.clone();
     let series_c = series.clone();
@@ -875,15 +1012,15 @@ fn TelemetryChart(
         }
         let option = match kind {
             PanelKind::MixtureCandles => {
-                build_mixture_option(&title_c, &labels_c, &times_c, &series_c)
+                build_mixture_option(&labels_c, &times_c, &series_c, line_smooth)
             }
             PanelKind::Lines => build_option(
-                &title_c,
                 &labels_c,
                 &times_c,
                 &series_c,
                 &y_left_c,
                 y_right_c.as_deref(),
+                line_smooth,
             ),
         };
         if let Ok(s) = serde_json::to_string(&option) {
@@ -906,14 +1043,115 @@ fn filter_panels(mut panels: Vec<PanelDef>) -> Vec<PanelDef> {
     panels
 }
 
+fn apply_smooth_to_panels(panels: &mut [PanelDef], smooth: bool) {
+    for p in panels.iter_mut() {
+        match p.kind {
+            PanelKind::Lines => {
+                for s in p.series.iter_mut() {
+                    s.data = maybe_smooth_series(&s.data, smooth);
+                }
+            }
+            PanelKind::MixtureCandles => {
+                // Candles stay bucketed; only the lambda line follows Smooth/Raw.
+                for s in p.series.iter_mut() {
+                    if s.name.to_ascii_lowercase().contains("lambda") {
+                        s.data = maybe_smooth_series(&s.data, smooth);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct SignalChip {
+    label: String,
+    value: String,
+}
+
+fn build_signal_chips(raw: &[TripPoint], prefs: &crate::units::UnitPrefs) -> Vec<SignalChip> {
+    let mut chips = Vec::new();
+    let speeds: Vec<f64> = raw.iter().filter_map(coalesce_speed).collect();
+    if let (Some(avg), Some(max)) = (
+        mean_finite(speeds.iter().copied()),
+        max_finite(speeds.iter().copied()),
+    ) {
+        chips.push(SignalChip {
+            label: "Speed".into(),
+            value: format!(
+                "avg {:.0} · max {:.0} {}",
+                avg, max, prefs.labels.speed
+            ),
+        });
+    }
+    if let Some(peak) = max_finite(raw.iter().filter_map(coalesce_rpm)) {
+        chips.push(SignalChip {
+            label: "RPM".into(),
+            value: format!("peak {:.0}", peak),
+        });
+    }
+    if let Some(avg_rate) = mean_finite(raw.iter().filter_map(|p| p.fuel_consumption_rate)) {
+        chips.push(SignalChip {
+            label: "Fuel rate".into(),
+            value: format!("{avg_rate:.2} {}", prefs.labels.fuel_rate),
+        });
+    }
+    let eco_vals: Vec<f64> = raw
+        .iter()
+        .filter_map(|p| {
+            instant_economy_point(coalesce_speed(p), p.fuel_consumption_rate, prefs.system)
+        })
+        .collect();
+    if let Some(avg_eco) = mean_finite(eco_vals.into_iter()) {
+        chips.push(SignalChip {
+            label: "Economy".into(),
+            value: format!("{avg_eco:.1} {}", prefs.labels.fuel_economy),
+        });
+    }
+    let coolants: Vec<f64> = raw.iter().filter_map(|p| p.engine_coolant_temp_c).collect();
+    if let (Some(last), Some(max)) = (
+        last_finite(coolants.iter().copied()),
+        max_finite(coolants.iter().copied()),
+    ) {
+        chips.push(SignalChip {
+            label: "Coolant".into(),
+            value: format!("last {:.0}° · max {:.0}°C", last, max),
+        });
+    }
+    let volts: Vec<f64> = raw.iter().filter_map(|p| p.control_module_voltage).collect();
+    if let (Some(min_v), Some(max_v)) = (
+        min_finite(volts.iter().copied()),
+        max_finite(volts.iter().copied()),
+    ) {
+        chips.push(SignalChip {
+            label: "Voltage".into(),
+            value: format!("{min_v:.1}–{max_v:.1} V"),
+        });
+    }
+    chips
+}
+
 /// Sectioned trip telemetry charts built from full OBD point payloads.
 #[component]
 pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
     let prefs = use_unit_prefs();
+    let smooth = RwSignal::new(true);
+    let category = RwSignal::new(load_category_filter());
+
+    let chips = Memo::new(move |_| {
+        let unit_prefs = prefs.get();
+        let raw = points.get();
+        if raw.is_empty() {
+            return Vec::new();
+        }
+        build_signal_chips(&raw, &unit_prefs)
+    });
+
     let model = Memo::new(move |_| {
         let unit_prefs = prefs.get();
         let system = unit_prefs.system;
         let ul = &unit_prefs.labels;
+        let want_smooth = smooth.get();
         let raw = points.get();
         if raw.is_empty() {
             return None;
@@ -957,14 +1195,20 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
         let voltage: Vec<_> = pts.iter().map(|p| p.control_module_voltage).collect();
         let atm: Vec<_> = pts.iter().map(|p| p.atmospheric_pressure).collect();
 
-        let mut sections: Vec<(&'static str, &'static str, &'static str, Vec<PanelDef>)> =
-            Vec::new();
+        let mut sections: Vec<(
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            Vec<PanelDef>,
+        )> = Vec::new();
 
-        // Drive dynamics
-        let drive = filter_panels(vec![
+        let mut drive = filter_panels(vec![
             PanelDef {
                 id: "drive-speed",
                 title: "Speed & pedal",
+                blurb: "Road speed versus how hard you pressed the accelerator — demand and pace without opening the hood.",
+                primary: true,
                 y_left: ul.speed.to_string(),
                 y_right: Some("%".to_string()),
                 kind: PanelKind::Lines,
@@ -986,6 +1230,8 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
             PanelDef {
                 id: "drive-gps",
                 title: "GPS accuracy",
+                blurb: "Position uncertainty in meters. Spikes explain map wiggles or unreliable GPS-derived speed.",
+                primary: false,
                 y_left: "m".to_string(),
                 y_right: None,
                 kind: PanelKind::Lines,
@@ -997,15 +1243,23 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                 }],
             },
         ]);
+        apply_smooth_to_panels(&mut drive, want_smooth);
         if !drive.is_empty() {
-            sections.push(("Drive dynamics", "path", "drive", drive));
+            sections.push((
+                "Drive dynamics",
+                "path",
+                "drive",
+                "Pace, pedal, and positioning quality.",
+                drive,
+            ));
         }
 
-        // Engine
-        let engine = filter_panels(vec![
+        let mut engine = filter_panels(vec![
             PanelDef {
                 id: "engine-rpm-load",
                 title: "RPM & load",
+                blurb: "Engine speed plus calculated and absolute load — how hard the engine worked and in which gear-ish range.",
+                primary: true,
                 y_left: "RPM".to_string(),
                 y_right: Some("%".to_string()),
                 kind: PanelKind::Lines,
@@ -1033,6 +1287,8 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
             PanelDef {
                 id: "engine-air",
                 title: "Airflow & MAP",
+                blurb: "Mass air flow and manifold absolute pressure — how the engine was breathing (vacuum, load, or boost).",
+                primary: false,
                 y_left: "g/s".to_string(),
                 y_right: Some("kPa".to_string()),
                 kind: PanelKind::Lines,
@@ -1052,15 +1308,23 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                 ],
             },
         ]);
+        apply_smooth_to_panels(&mut engine, want_smooth);
         if !engine.is_empty() {
-            sections.push(("Engine", "cpu", "engine", engine));
+            sections.push((
+                "Engine",
+                "cpu",
+                "engine",
+                "Rotation, load, and air intake.",
+                engine,
+            ));
         }
 
-        // Fuel & mixture
-        let fuel = filter_panels(vec![
+        let mut fuel = filter_panels(vec![
             PanelDef {
                 id: "fuel-rate",
                 title: "Fuel rate & economy",
+                blurb: "Instant burn rate and efficiency. Economy is noisy at idle or crawl speeds — Smooth mode helps the trend.",
+                primary: true,
                 y_left: ul.fuel_rate.to_string(),
                 y_right: Some(ul.fuel_economy.to_string()),
                 kind: PanelKind::Lines,
@@ -1080,21 +1344,10 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                 ],
             },
             PanelDef {
-                id: "fuel-level",
-                title: "Fuel level",
-                y_left: "%".to_string(),
-                y_right: None,
-                kind: PanelKind::Lines,
-                series: vec![ChartSeriesSpec {
-                    name: "Fuel level (%)".to_string(),
-                    data: fuel_level,
-                    y_axis_index: 0,
-                    area: true,
-                }],
-            },
-            PanelDef {
                 id: "fuel-mixture",
                 title: "Mixture & trims",
+                blurb: "Short- and long-term fuel trims plus commanded lambda. Green band marks a healthy closed-loop ±10% window.",
+                primary: true,
                 y_left: "%".to_string(),
                 y_right: Some("λ".to_string()),
                 kind: PanelKind::MixtureCandles,
@@ -1119,16 +1372,39 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                     },
                 ],
             },
+            PanelDef {
+                id: "fuel-level",
+                title: "Fuel level",
+                blurb: "Tank percentage over the trip. Expect slow drift plus step noise from the sender.",
+                primary: false,
+                y_left: "%".to_string(),
+                y_right: None,
+                kind: PanelKind::Lines,
+                series: vec![ChartSeriesSpec {
+                    name: "Fuel level (%)".to_string(),
+                    data: fuel_level,
+                    y_axis_index: 0,
+                    area: true,
+                }],
+            },
         ]);
+        apply_smooth_to_panels(&mut fuel, want_smooth);
         if !fuel.is_empty() {
-            sections.push(("Fuel & mixture", "drop", "fuel", fuel));
+            sections.push((
+                "Fuel & mixture",
+                "drop",
+                "fuel",
+                "Burn rate, tank level, and closed-loop mixture.",
+                fuel,
+            ));
         }
 
-        // Thermal & electrical
-        let thermal = filter_panels(vec![
+        let mut thermal = filter_panels(vec![
             PanelDef {
                 id: "thermal-temps",
                 title: "Temperatures",
+                blurb: "Coolant warm-up and overheat risk; intake and ambient air for density and heat soak context.",
+                primary: false,
                 y_left: "°C".to_string(),
                 y_right: None,
                 kind: PanelKind::Lines,
@@ -1156,6 +1432,8 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
             PanelDef {
                 id: "thermal-elec",
                 title: "Electrical & pressure",
+                blurb: "Control-module voltage (charging health) with manifold and atmospheric pressure for altitude/load context.",
+                primary: false,
                 y_left: "V".to_string(),
                 y_right: Some("kPa".to_string()),
                 kind: PanelKind::Lines,
@@ -1166,7 +1444,6 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                         y_axis_index: 0,
                         area: true,
                     },
-                    // MAP is the pressure series phones already upload; baro is optional.
                     ChartSeriesSpec {
                         name: "MAP (kPa)".to_string(),
                         data: map_kpa,
@@ -1182,8 +1459,15 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                 ],
             },
         ]);
+        apply_smooth_to_panels(&mut thermal, want_smooth);
         if !thermal.is_empty() {
-            sections.push(("Thermal & electrical", "lightning", "thermal", thermal));
+            sections.push((
+                "Thermal & electrical",
+                "lightning",
+                "thermal",
+                "Heat and electrical health.",
+                thermal,
+            ));
         }
 
         let has_obd = raw.iter().any(|p| {
@@ -1208,7 +1492,12 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                 || p.mass_air_flow.is_some()
         });
 
-        Some((labels, times, sections, has_obd))
+        let line_smooth = if want_smooth {
+            LINE_SMOOTH_VISUAL
+        } else {
+            0.0
+        };
+        Some((labels, times, sections, has_obd, line_smooth))
     });
 
     view! {
@@ -1221,15 +1510,71 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                             <div>"No samples for this trip yet."</div>
                         </div>
                     }.into_any(),
-                    Some((_, _, sections, _)) if sections.is_empty() => view! {
+                    Some((_, _, sections, _, _)) if sections.is_empty() => view! {
                         <div class="empty-state compact">
                             <Icon name="chart-line" size=IconSize::Lg color=IconColor::Accent />
                             <div>"No chartable telemetry in these samples."</div>
                         </div>
                     }.into_any(),
-                    Some((labels, times, sections, has_obd)) => {
+                    Some((labels, times, sections, has_obd, line_smooth)) => {
                         let labels = labels.clone();
                         let times = times.clone();
+                        let smooth_tag = if line_smooth > 0.0 { "s" } else { "r" };
+                        let chip_list = chips.get();
+                        let show_chips = !chip_list.is_empty();
+                        // Flatten panels with section key for category filtering.
+                        let flat: Vec<(
+                            String,
+                            String,
+                            String,
+                            bool,
+                            String,
+                            Option<String>,
+                            Vec<ChartSeriesSpec>,
+                            PanelKind,
+                            String,
+                        )> = sections
+                            .iter()
+                            .flat_map(|(_title, _icon, key, _blurb, panels)| {
+                                panels.iter().map(|p| {
+                                    (
+                                        p.id.to_string(),
+                                        p.title.to_string(),
+                                        p.blurb.to_string(),
+                                        p.primary,
+                                        p.y_left.to_string(),
+                                        p.y_right.clone(),
+                                        p.series.clone(),
+                                        p.kind,
+                                        (*key).to_string(),
+                                    )
+                                })
+                            })
+                            .collect();
+                        let available_keys: std::collections::HashSet<String> = sections
+                            .iter()
+                            .map(|s| s.2.to_string())
+                            .collect();
+                        let cat_now = category.get();
+                        let filtered: Vec<_> = flat
+                            .into_iter()
+                            .filter(|(_, _, _, primary, _, _, _, _, sec)| match cat_now.as_str() {
+                                "overview" => *primary,
+                                "all" => true,
+                                other => sec == other,
+                            })
+                            .collect();
+                        let filter_empty = filtered.is_empty();
+                        let cat_note = match cat_now.as_str() {
+                            "overview" => "Key trends for this trip",
+                            "all" => "Every available metric",
+                            "drive" => "Pace, pedal, and GPS quality",
+                            "engine" => "RPM, load, and airflow",
+                            "fuel" => "Burn rate, tank, and mixture",
+                            "thermal" => "Temps, voltage, and pressure",
+                            _ => "Trip charts",
+                        };
+
                         view! {
                             <Show when=move || !has_obd>
                                 <div class="info-banner">
@@ -1237,81 +1582,201 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
                                     <span>"GPS track only — no OBD telemetry was recorded for this trip."</span>
                                 </div>
                             </Show>
-                            <For
-                                each=move || {
-                                    sections
+
+                            {if show_chips {
+                                view! {
+                                    <div class="telemetry-signal-strip" role="group" aria-label="Trip signal summary">
+                                        <For
+                                            each=move || chip_list.clone()
+                                            key=|c| c.label.clone()
+                                            children=move |chip| {
+                                                view! {
+                                                    <div class="telemetry-signal-chip">
+                                                        <span class="telemetry-signal-label">{chip.label}</span>
+                                                        <span class="telemetry-signal-value">{chip.value}</span>
+                                                    </div>
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                }.into_any()
+                            } else {
+                                view! { <></> }.into_any()
+                            }}
+
+                            <div class="telemetry-toolbar">
+                                <div class="telemetry-cat-scroll" role="tablist" aria-label="Telemetry category">
+                                    {CATEGORY_TABS
                                         .iter()
-                                        .enumerate()
-                                        .map(|(i, (title, icon, key, panels))| {
-                                            (
-                                                i,
-                                                (*title).to_string(),
-                                                (*icon).to_string(),
-                                                (*key).to_string(),
-                                                panels
-                                                    .iter()
-                                                    .map(|p| {
-                                                        (
-                                                            p.id.to_string(),
-                                                            p.title.to_string(),
-                                                            p.y_left.to_string(),
-                                                            p.y_right.clone(),
-                                                            p.series.clone(),
-                                                            p.kind,
-                                                        )
-                                                    })
-                                                    .collect::<Vec<_>>(),
-                                            )
+                                        .filter(|(key, _)| {
+                                            *key == "overview"
+                                                || *key == "all"
+                                                || available_keys.contains(*key)
                                         })
-                                        .collect::<Vec<_>>()
-                                }
-                                key=|s| s.3.clone()
-                                children=move |(idx, title, icon, key, panels)| {
-                                    let labels = labels.clone();
-                                    let times = times.clone();
-                                    view! {
-                                        <section class="telemetry-section" data-section=key>
-                                            <div class="telemetry-section-head">
-                                                <h2 class="section-title">
-                                                    <Icon name=icon color=IconColor::Accent />
-                                                    {title}
-                                                </h2>
-                                                <span class="muted section-index">{format!("{:02}", idx + 1)}</span>
-                                            </div>
-                                            <div class="telemetry-panels">
-                                                <For
-                                                    each=move || panels.clone()
-                                                    key=|p| p.0.clone()
-                                                    children=move |(id, panel_title, y_left, y_right, series, kind)| {
-                                                        let labels = labels.clone();
-                                                        let times = times.clone();
-                                                        let chart_id = format!("tel-{id}");
-                                                        view! {
-                                                            <div class="card telemetry-panel">
-                                                                <TelemetryChart
-                                                                    chart_id=chart_id
-                                                                    title=panel_title
-                                                                    labels=labels
-                                                                    times=times
-                                                                    series=series
-                                                                    y_left_name=y_left
-                                                                    y_right_name=y_right
-                                                                    kind=kind
-                                                                />
-                                                            </div>
+                                        .map(|(key, label)| {
+                                            let key_s = (*key).to_string();
+                                            let key_active = key_s.clone();
+                                            let key_click = key_s.clone();
+                                            let label_s = (*label).to_string();
+                                            view! {
+                                                <button
+                                                    type="button"
+                                                    role="tab"
+                                                    class=move || {
+                                                        if category.get() == key_active {
+                                                            "telemetry-cat-btn is-active"
+                                                        } else {
+                                                            "telemetry-cat-btn"
                                                         }
                                                     }
-                                                />
-                                            </div>
-                                        </section>
-                                    }
-                                }
-                            />
+                                                    prop:aria-selected=move || category.get() == key_s
+                                                    on:click=move |_| {
+                                                        category.set(key_click.clone());
+                                                        save_category_filter(&key_click);
+                                                    }
+                                                >
+                                                    {label_s}
+                                                </button>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </div>
+                                <div class="telemetry-toolbar-right">
+                                    <div class="seg-control" role="group" aria-label="Chart smoothing">
+                                        <button
+                                            type="button"
+                                            class=move || {
+                                                if smooth.get() {
+                                                    "seg-btn is-active"
+                                                } else {
+                                                    "seg-btn"
+                                                }
+                                            }
+                                            prop:aria-pressed=move || smooth.get()
+                                            on:click=move |_| smooth.set(true)
+                                        >
+                                            "Smooth"
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class=move || {
+                                                if !smooth.get() {
+                                                    "seg-btn is-active"
+                                                } else {
+                                                    "seg-btn"
+                                                }
+                                            }
+                                            prop:aria-pressed=move || !smooth.get()
+                                            on:click=move |_| smooth.set(false)
+                                        >
+                                            "Raw"
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <p class="muted telemetry-toolbar-note">
+                                {format!("{cat_note} · zoom slider · click map or chart to pin time")}
+                            </p>
+
+                            {if filter_empty {
+                                view! {
+                                    <div class="empty-state compact">
+                                        <div>"No charts in this category for this trip."</div>
+                                    </div>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <div class="telemetry-panels">
+                                        <For
+                                            each=move || filtered.clone()
+                                            key=move |p| format!("{}-{}-{smooth_tag}", p.0, category.get_untracked())
+                                            children=move |(id, panel_title, blurb, primary, y_left, y_right, series, kind, _sec)| {
+                                                let labels = labels.clone();
+                                                let times = times.clone();
+                                                let chart_id = format!("tel-{id}-{smooth_tag}");
+                                                let panel_class = if primary {
+                                                    "card telemetry-panel telemetry-panel-primary"
+                                                } else {
+                                                    "card telemetry-panel"
+                                                };
+                                                view! {
+                                                    <div class=panel_class>
+                                                        <div class="telemetry-panel-head">
+                                                            <h3 class="telemetry-panel-title">{panel_title}</h3>
+                                                            <details class="telemetry-help">
+                                                                <summary title="About this metric" aria-label="About this metric">"ⓘ"</summary>
+                                                                <p>{blurb}</p>
+                                                            </details>
+                                                        </div>
+                                                        <TelemetryChart
+                                                            chart_id=chart_id
+                                                            labels=labels
+                                                            times=times
+                                                            series=series
+                                                            y_left_name=y_left
+                                                            y_right_name=y_right
+                                                            kind=kind
+                                                            line_smooth=line_smooth
+                                                        />
+                                                    </div>
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                }.into_any()
+                            }}
                         }.into_any()
                     }
                 }
             }}
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ema_empty() {
+        assert!(ema_series(&[], SMOOTH_SPAN).is_empty());
+    }
+
+    #[test]
+    fn ema_preserves_first_and_len() {
+        let data = vec![Some(10.0), Some(20.0), Some(30.0)];
+        let out = ema_series(&data, SMOOTH_SPAN);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], Some(10.0));
+        assert!(out[2].unwrap() < 30.0);
+        assert!(out[2].unwrap() > 10.0);
+    }
+
+    #[test]
+    fn ema_resets_after_null_gap() {
+        let data = vec![Some(10.0), Some(20.0), None, Some(100.0), Some(100.0)];
+        let out = ema_series(&data, SMOOTH_SPAN);
+        assert_eq!(out[2], None);
+        assert_eq!(out[3], Some(100.0));
+    }
+
+    #[test]
+    fn maybe_smooth_is_stronger_than_single_ema() {
+        let mut data = Vec::new();
+        for i in 0..80 {
+            // Square-ish noise: alternate high/low bursts
+            let v = if (i / 3) % 2 == 0 { 10.0 } else { 40.0 };
+            data.push(Some(v));
+        }
+        let single = ema_series(&data, SMOOTH_SPAN);
+        let double = maybe_smooth_series(&data, true);
+        let raw = maybe_smooth_series(&data, false);
+        assert_eq!(raw, data);
+        // Double pass should sit closer to the mid-band than a single pass late in series.
+        let s = single[70].unwrap();
+        let d = double[70].unwrap();
+        let mid = 25.0;
+        assert!((d - mid).abs() <= (s - mid).abs() + 1e-9);
     }
 }
 

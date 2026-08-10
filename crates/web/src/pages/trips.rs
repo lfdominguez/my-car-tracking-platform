@@ -788,7 +788,7 @@ pub fn TripDetailPage() -> impl IntoView {
                     <Icon name="pulse" color=IconColor::Accent />
                     "Telemetry"
                 </h2>
-                <p class="muted">"Separated drive, engine, fuel, and thermal signals. Zoom any chart with the slider."</p>
+                <p class="muted">"Summary badges, overview charts by default, category filters, and smooth trends — expand ⓘ on any chart for what it means."</p>
             </div>
             <TripTelemetryDashboard points=points.into()/>
         </div>
@@ -1103,6 +1103,8 @@ fn TripAiPanel(
         panel_alive_cleanup.store(false, Ordering::SeqCst);
     });
     let vault = use_vault_session();
+    // Collapsed by default — status stays visible in the header.
+    let ai_open = RwSignal::new(false);
 
     let run = Callback::new({
         let panel_alive = Arc::clone(&panel_alive);
@@ -1116,6 +1118,7 @@ fn TripAiPanel(
             }
             analysis_busy.set(true);
             analysis_err.set(None);
+            ai_open.set(true);
 
             let alive_job = Arc::clone(&panel_alive);
             let sealed = trip
@@ -1235,39 +1238,31 @@ fn TripAiPanel(
     });
 
     view! {
-        <div class="card ai-analysis-card">
-            <div class="telemetry-block-head">
-                <h2 class="section-title">
-                    <Icon name="robot" color=IconColor::Accent />
-                    "AI route analysis"
-                </h2>
-                <span class="muted">"Mechanic + efficiency coach via your OpenRouter key"</span>
-            </div>
-            {move || trip.get().map(|tr| tr.vault_sealed).unwrap_or(false).then(|| view! {
-                <p class="muted" style="margin:0.5rem 0">
-                    "Vault mode: analysis sends a temporary decrypted bundle to the server. Results are sealed client-side; nothing durable is stored in plaintext."
-                </p>
-            })}
-
-            <div class="ai-analysis-toolbar">
-                <div class="ai-status-block">
-                    <span class=move || {
-                        let a = analysis.get();
-                        let status = a
-                            .as_ref()
-                            .map(|x| x.analysis_status.as_str())
-                            .unwrap_or("none");
-                        let analyzed = a.as_ref().map(|x| x.analyzed).unwrap_or(false);
-                        let busy = analysis_busy.get()
-                            || status == "pending"
-                            || status == "running";
-                        if busy {
-                            "ai-status-badge is-running".into()
-                        } else {
-                            friendly_analysis_status(status, analyzed).1.to_string()
-                        }
-                    }>
-                        {move || {
+        <div
+            class=move || {
+                if ai_open.get() {
+                    "card ai-analysis-card is-open"
+                } else {
+                    "card ai-analysis-card"
+                }
+            }
+        >
+            <button
+                type="button"
+                class="ai-analysis-toggle"
+                prop:aria-expanded=move || ai_open.get()
+                on:click=move |_| ai_open.update(|v| *v = !*v)
+            >
+                <div class="ai-analysis-head">
+                    <div class="ai-analysis-head-main">
+                        <h2 class="section-title">
+                            <Icon name="robot" color=IconColor::Accent />
+                            "AI route analysis"
+                        </h2>
+                        <span class="muted">"Mechanic + efficiency coach · tap to expand"</span>
+                    </div>
+                    <div class="ai-analysis-head-meta">
+                        <span class=move || {
                             let a = analysis.get();
                             let status = a
                                 .as_ref()
@@ -1278,257 +1273,321 @@ fn TripAiPanel(
                                 || status == "pending"
                                 || status == "running";
                             if busy {
-                                "Analyzing…".to_string()
+                                "ai-status-badge is-running".into()
                             } else {
-                                friendly_analysis_status(status, analyzed).0.to_string()
+                                friendly_analysis_status(status, analyzed).1.to_string()
                             }
-                        }}
-                    </span>
-                    <Show when=move || {
-                        analysis
-                            .get()
-                            .and_then(|a| a.analysis_model)
-                            .is_some()
-                    }>
-                        <span class="ai-status-meta muted">
+                        }>
                             {move || {
-                                analysis
-                                    .get()
-                                    .and_then(|a| a.analysis_model)
-                                    .map(|m| format!("Model · {m}"))
-                                    .unwrap_or_default()
-                            }}
-                        </span>
-                    </Show>
-                </div>
-                <div class="ai-toolbar-actions">
-                    <Show when=move || {
-                        analysis_busy.get()
-                            || analysis.get().map(|a| {
-                                a.analysis_status == "pending" || a.analysis_status == "running"
-                            }).unwrap_or(false)
-                    }>
-                        <span class="ai-running-hint muted">
-                            <Icon name="spinner-gap" size=IconSize::Sm color=IconColor::Accent />
-                            " Working in background"
-                        </span>
-                    </Show>
-                    <Show when=move || {
-                        let a = analysis.get();
-                        let busy = analysis_busy.get();
-                        a.as_ref().map(|x| x.can_analyze).unwrap_or(false)
-                            && !busy
-                            && a.as_ref()
-                                .map(|x| x.analysis_status != "pending" && x.analysis_status != "running")
-                                .unwrap_or(true)
-                    }>
-                        <button type="button" class="btn primary ai-run-btn" on:click=move |_| run.run(())>
-                            {move || {
-                                if analysis.get().map(|a| a.analyzed || a.analysis_status == "completed").unwrap_or(false) {
-                                    "Re-analyze"
+                                let a = analysis.get();
+                                let status = a
+                                    .as_ref()
+                                    .map(|x| x.analysis_status.as_str())
+                                    .unwrap_or("none");
+                                let analyzed = a.as_ref().map(|x| x.analyzed).unwrap_or(false);
+                                let busy = analysis_busy.get()
+                                    || status == "pending"
+                                    || status == "running";
+                                if busy {
+                                    "Analyzing…".to_string()
                                 } else {
-                                    "Analyze route"
+                                    friendly_analysis_status(status, analyzed).0.to_string()
                                 }
                             }}
-                        </button>
-                    </Show>
+                        </span>
+                    </div>
+                    <span class="ai-analysis-chevron" aria-hidden="true">"▾"</span>
                 </div>
-            </div>
+            </button>
 
-            <Show when=move || analysis_err.get().is_some()>
-                <div class="banner err">
-                    {move || analysis_err.get().unwrap_or_else(|| "System Error".into())}
-                </div>
-            </Show>
+            <div class="ai-analysis-body">
+                {move || trip.get().map(|tr| tr.vault_sealed).unwrap_or(false).then(|| view! {
+                    <p class="muted" style="margin:0">
+                        "Vault mode: analysis sends a temporary decrypted bundle to the server. Results are sealed client-side; nothing durable is stored in plaintext."
+                    </p>
+                })}
 
-            <Show when=move || {
-                analysis
-                    .get()
-                    .map(|a| {
-                        a.analysis_status == "failed"
-                            || a.analysis_error.as_ref().is_some_and(|e| !e.is_empty())
-                    })
-                    .unwrap_or(false)
-            }>
-                <div class="banner err">
-                    "System Error"
-                    <span class="banner-hint">" — details are in the server logs."</span>
-                </div>
-            </Show>
-
-            <Show when=move || analysis.get().and_then(|a| a.report).is_some()>
-                {move || {
-                    let report = analysis
-                        .get()
-                        .and_then(|a| a.report)
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    let summary = report
-                        .get("summary")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let markdown = report
-                        .get("markdown")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let confidence = report
-                        .get("confidence")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let findings = report
-                        .get("mechanical_findings")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    let driving = report
-                        .get("driving_style")
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    let financial = report
-                        .get("financial")
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    let assessment = driving
-                        .get("assessment")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let positives = driving
-                        .get("positives")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    let improvements = driving
-                        .get("improvements")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    let fuel_note = financial
-                        .get("fuel_used_note")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let efficiency = financial
-                        .get("efficiency_notes")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let savings = financial
-                        .get("potential_savings")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let download_name = {
-                        let id = trip_id.get_untracked();
-                        let short = id.get(..8).unwrap_or(id.as_str());
-                        format!("trip-{short}-analysis.md")
-                    };
-                    let can_download = !markdown.trim().is_empty();
-                    let download_btn = if can_download {
-                        let name = download_name.clone();
-                        let md = markdown.clone();
-                        view! {
-                            <button
-                                type="button"
-                                class="btn btn-ghost btn-sm ai-download-btn"
-                                on:click=move |_| {
-                                    download_markdown_report(&name, &md);
+                <div class="ai-analysis-toolbar">
+                    <div class="ai-status-block">
+                        <span class=move || {
+                            let a = analysis.get();
+                            let status = a
+                                .as_ref()
+                                .map(|x| x.analysis_status.as_str())
+                                .unwrap_or("none");
+                            let analyzed = a.as_ref().map(|x| x.analyzed).unwrap_or(false);
+                            let busy = analysis_busy.get()
+                                || status == "pending"
+                                || status == "running";
+                            if busy {
+                                "ai-status-badge is-running".into()
+                            } else {
+                                friendly_analysis_status(status, analyzed).1.to_string()
+                            }
+                        }>
+                            {move || {
+                                let a = analysis.get();
+                                let status = a
+                                    .as_ref()
+                                    .map(|x| x.analysis_status.as_str())
+                                    .unwrap_or("none");
+                                let analyzed = a.as_ref().map(|x| x.analyzed).unwrap_or(false);
+                                let busy = analysis_busy.get()
+                                    || status == "pending"
+                                    || status == "running";
+                                if busy {
+                                    "Analyzing…".to_string()
+                                } else {
+                                    friendly_analysis_status(status, analyzed).0.to_string()
                                 }
-                            >
-                                "Download markdown report"
+                            }}
+                        </span>
+                        <Show when=move || {
+                            analysis
+                                .get()
+                                .and_then(|a| a.analysis_model)
+                                .is_some()
+                        }>
+                            <span class="ai-status-meta muted">
+                                {move || {
+                                    analysis
+                                        .get()
+                                        .and_then(|a| a.analysis_model)
+                                        .map(|m| format!("Model · {m}"))
+                                        .unwrap_or_default()
+                                }}
+                            </span>
+                        </Show>
+                    </div>
+                    <div class="ai-toolbar-actions">
+                        <Show when=move || {
+                            analysis_busy.get()
+                                || analysis.get().map(|a| {
+                                    a.analysis_status == "pending" || a.analysis_status == "running"
+                                }).unwrap_or(false)
+                        }>
+                            <span class="ai-running-hint muted">
+                                <Icon name="spinner-gap" size=IconSize::Sm color=IconColor::Accent />
+                                " Working in background"
+                            </span>
+                        </Show>
+                        <Show when=move || {
+                            let a = analysis.get();
+                            let busy = analysis_busy.get();
+                            a.as_ref().map(|x| x.can_analyze).unwrap_or(false)
+                                && !busy
+                                && a.as_ref()
+                                    .map(|x| x.analysis_status != "pending" && x.analysis_status != "running")
+                                    .unwrap_or(true)
+                        }>
+                            <button type="button" class="btn primary ai-run-btn" on:click=move |_| run.run(())>
+                                {move || {
+                                    if analysis.get().map(|a| a.analyzed || a.analysis_status == "completed").unwrap_or(false) {
+                                        "Re-analyze"
+                                    } else {
+                                        "Analyze route"
+                                    }
+                                }}
                             </button>
-                        }
-                        .into_any()
-                    } else {
-                        view! { <></> }.into_any()
-                    };
+                        </Show>
+                    </div>
+                </div>
 
-                    view! {
-                        <div class="ai-report">
-                            <div class="ai-summary">
-                                <div class="ai-summary-head">
-                                    <strong>"Summary"</strong>
-                                    {download_btn}
-                                </div>
-                                <p>{summary}</p>
-                                <span class="muted">{format!("Confidence: {confidence}")}</span>
-                            </div>
-                            <div class="ai-columns">
-                                <div class="ai-block">
-                                    <h3>"Mechanical findings"</h3>
-                                    <ul class="ai-findings">
-                                        {findings.into_iter().map(|f| {
-                                            let title = f.get("title").and_then(|v| v.as_str()).unwrap_or("Finding").to_string();
-                                            let evidence = f.get("evidence").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            let severity = f.get("severity").and_then(|v| v.as_str()).unwrap_or("low").to_string();
-                                            let rec = f.get("recommendation").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            let sev_class = format!("pill severity-{severity}");
-                                            view! {
-                                                <li>
-                                                    <div class="ai-finding-head">
-                                                        <strong>{title}</strong>
-                                                        <span class=sev_class>{severity}</span>
-                                                    </div>
-                                                    <p class="muted">{evidence}</p>
-                                                    <p>{rec}</p>
-                                                </li>
-                                            }
-                                        }).collect_view()}
-                                    </ul>
-                                </div>
-                                <div class="ai-block">
-                                    <h3>"Driving style"</h3>
-                                    <p>{assessment}</p>
-                                    <p class="muted">"Positives"</p>
-                                    <ul>
-                                        {positives.into_iter().map(|x| {
-                                            let s = x.as_str().unwrap_or("").to_string();
-                                            view! { <li>{s}</li> }
-                                        }).collect_view()}
-                                    </ul>
-                                    <p class="muted">"Improvements"</p>
-                                    <ul>
-                                        {improvements.into_iter().map(|x| {
-                                            let s = x.as_str().unwrap_or("").to_string();
-                                            view! { <li>{s}</li> }
-                                        }).collect_view()}
-                                    </ul>
-                                </div>
-                                <div class="ai-block">
-                                    <h3>"Financial / efficiency"</h3>
-                                    <p>{fuel_note}</p>
-                                    <p>{efficiency}</p>
-                                    <p class="muted">{savings}</p>
-                                </div>
-                            </div>
-                        </div>
-                    }
-                }}
-            </Show>
+                <Show when=move || analysis_err.get().is_some()>
+                    <div class="banner err">
+                        {move || analysis_err.get().unwrap_or_else(|| "System Error".into())}
+                    </div>
+                </Show>
 
-            <Show when=move || {
-                let a = analysis.get();
-                let busy = analysis_busy.get();
-                !busy
-                    && a.as_ref().map(|x| x.report.is_none()).unwrap_or(true)
-                    && a.as_ref().map(|x| {
-                        x.analysis_status != "pending"
-                            && x.analysis_status != "running"
-                            && x.analysis_status != "completed"
-                    }).unwrap_or(true)
-            }>
-                <p class="muted">
+                <Show when=move || {
+                    analysis
+                        .get()
+                        .map(|a| {
+                            a.analysis_status == "failed"
+                                || a.analysis_error.as_ref().is_some_and(|e| !e.is_empty())
+                        })
+                        .unwrap_or(false)
+                }>
+                    <div class="banner err">
+                        "System Error"
+                        <span class="banner-hint">" — details are in the server logs."</span>
+                    </div>
+                </Show>
+
+                <Show when=move || analysis.get().and_then(|a| a.report).is_some()>
                     {move || {
-                        if analysis.get().map(|a| a.can_analyze).unwrap_or(false) {
-                            "No analysis yet. Configure OpenRouter in Settings, then click Analyze route."
+                        let report = analysis
+                            .get()
+                            .and_then(|a| a.report)
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        let summary = report
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let markdown = report
+                            .get("markdown")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let confidence = report
+                            .get("confidence")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let findings = report
+                            .get("mechanical_findings")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let driving = report
+                            .get("driving_style")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        let financial = report
+                            .get("financial")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        let assessment = driving
+                            .get("assessment")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let positives = driving
+                            .get("positives")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let improvements = driving
+                            .get("improvements")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let fuel_note = financial
+                            .get("fuel_used_note")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let efficiency = financial
+                            .get("efficiency_notes")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let savings = financial
+                            .get("potential_savings")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let download_name = {
+                            let id = trip_id.get_untracked();
+                            let short = id.get(..8).unwrap_or(id.as_str());
+                            format!("trip-{short}-analysis.md")
+                        };
+                        let can_download = !markdown.trim().is_empty();
+                        let download_btn = if can_download {
+                            let name = download_name.clone();
+                            let md = markdown.clone();
+                            view! {
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost btn-sm ai-download-btn"
+                                    on:click=move |_| {
+                                        download_markdown_report(&name, &md);
+                                    }
+                                >
+                                    "Download markdown report"
+                                </button>
+                            }
+                            .into_any()
                         } else {
-                            "Only the car owner can run analysis. Shared users can read completed reports."
+                            view! { <></> }.into_any()
+                        };
+
+                        view! {
+                            <div class="ai-report">
+                                <div class="ai-summary">
+                                    <div class="ai-summary-head">
+                                        <strong>"Summary"</strong>
+                                        {download_btn}
+                                    </div>
+                                    <p>{summary}</p>
+                                    <span class="muted">{format!("Confidence: {confidence}")}</span>
+                                </div>
+                                <div class="ai-columns">
+                                    <div class="ai-block">
+                                        <h3>"Mechanical findings"</h3>
+                                        <ul class="ai-findings">
+                                            {findings.into_iter().map(|f| {
+                                                let title = f.get("title").and_then(|v| v.as_str()).unwrap_or("Finding").to_string();
+                                                let evidence = f.get("evidence").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                let severity = f.get("severity").and_then(|v| v.as_str()).unwrap_or("low").to_string();
+                                                let rec = f.get("recommendation").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                let sev_class = format!("pill severity-{severity}");
+                                                view! {
+                                                    <li>
+                                                        <div class="ai-finding-head">
+                                                            <strong>{title}</strong>
+                                                            <span class=sev_class>{severity}</span>
+                                                        </div>
+                                                        <p class="muted">{evidence}</p>
+                                                        <p>{rec}</p>
+                                                    </li>
+                                                }
+                                            }).collect_view()}
+                                        </ul>
+                                    </div>
+                                    <div class="ai-block">
+                                        <h3>"Driving style"</h3>
+                                        <p>{assessment}</p>
+                                        <p class="muted">"Positives"</p>
+                                        <ul>
+                                            {positives.into_iter().map(|x| {
+                                                let s = x.as_str().unwrap_or("").to_string();
+                                                view! { <li>{s}</li> }
+                                            }).collect_view()}
+                                        </ul>
+                                        <p class="muted">"Improvements"</p>
+                                        <ul>
+                                            {improvements.into_iter().map(|x| {
+                                                let s = x.as_str().unwrap_or("").to_string();
+                                                view! { <li>{s}</li> }
+                                            }).collect_view()}
+                                        </ul>
+                                    </div>
+                                    <div class="ai-block">
+                                        <h3>"Financial / efficiency"</h3>
+                                        <p>{fuel_note}</p>
+                                        <p>{efficiency}</p>
+                                        <p class="muted">{savings}</p>
+                                    </div>
+                                </div>
+                            </div>
                         }
                     }}
-                </p>
-            </Show>
+                </Show>
+
+                <Show when=move || {
+                    let a = analysis.get();
+                    let busy = analysis_busy.get();
+                    !busy
+                        && a.as_ref().map(|x| x.report.is_none()).unwrap_or(true)
+                        && a.as_ref().map(|x| {
+                            x.analysis_status != "pending"
+                                && x.analysis_status != "running"
+                                && x.analysis_status != "completed"
+                        }).unwrap_or(true)
+                }>
+                    <p class="muted">
+                        {move || {
+                            if analysis.get().map(|a| a.can_analyze).unwrap_or(false) {
+                                "No analysis yet. Configure OpenRouter in Settings, then click Analyze route."
+                            } else {
+                                "Only the car owner can run analysis. Shared users can read completed reports."
+                            }
+                        }}
+                    </p>
+                </Show>
+            </div>
         </div>
     }
 }
