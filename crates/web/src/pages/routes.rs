@@ -35,6 +35,37 @@ fn ors_swatch(i: usize) -> &'static str {
     ORS_SWATCHES[i % ORS_SWATCHES.len()]
 }
 
+/// Human label for insight `kind` codes from the server.
+fn insight_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "prefer_variant" | "prefer_variant_soft" => "Faster path",
+        "avoid_variant_now" | "avoid_variant_now_soft" => "Right now",
+        "ors_reference" => "Router tip",
+        "ors_matches" => "Matches router",
+        "beats_router" => "Beats router",
+        "forming" => "Forming",
+        "typical_pace" => "Baseline",
+        "single_path" => "One path",
+        "time_window" => "This hour",
+        "peak_vs_offpeak" => "Peak hours",
+        "weekend_vs_weekday" => "Weekend",
+        "high_stops" => "Stops",
+        _ => "Insight",
+    }
+}
+
+fn insight_kind_class(kind: &str) -> &'static str {
+    match kind {
+        "prefer_variant" | "beats_router" => "is-positive",
+        "prefer_variant_soft" | "ors_matches" | "typical_pace" => "is-neutral",
+        "avoid_variant_now" | "avoid_variant_now_soft" | "ors_reference" | "high_stops" => {
+            "is-warn"
+        }
+        "forming" | "single_path" => "is-muted",
+        _ => "is-neutral",
+    }
+}
+
 #[component]
 pub fn RoutesPage() -> impl IntoView {
     let cars = RwSignal::new(Vec::<Car>::new());
@@ -165,7 +196,11 @@ pub fn RoutesPage() -> impl IntoView {
             let insights = s.map(|s| s.insights).unwrap_or_default();
             if insights.is_empty() {
                 return view! {
-                    <p class="muted">"No insights yet — finish more trips on repeating routes, then Recompute."</p>
+                    <div class="card routes-insight routes-insight-empty">
+                        <p class="muted" style="margin:0">
+                            "No insights yet. Finish trips on a repeating origin→destination so the corridor can form — baselines appear after the first trip; path comparisons need alternate lines or more samples."
+                        </p>
+                    </div>
                 }.into_any();
             }
             view! {
@@ -175,9 +210,11 @@ pub fn RoutesPage() -> impl IntoView {
                         key=|i| i.id.clone()
                         children=move |i| {
                             let kind = i.kind.clone();
+                            let kind_label = insight_kind_label(&kind).to_string();
+                            let kind_class = format!("routes-insight-kind {}", insight_kind_class(&kind));
                             view! {
                                 <div class="card routes-insight">
-                                    <div class="routes-insight-kind">{kind}</div>
+                                    <div class=kind_class>{kind_label}</div>
                                     <h3>{i.title.clone()}</h3>
                                     <p class="muted" style="margin:0">{i.body.clone()}</p>
                                     <button
@@ -533,22 +570,45 @@ pub fn RouteCorridorPage() -> impl IntoView {
                     </div>
                 </Show>
 
-                <h2 class="section-title" style="margin-top:1.25rem">"Insights"</h2>
-                <div class="routes-insight-grid">
-                    <For
-                        each=move || detail.get().map(|d| d.insights).unwrap_or_default()
-                        key=|i| i.id.clone()
-                        children=move |i| {
-                            view! {
-                                <div class="card routes-insight">
-                                    <div class="routes-insight-kind">{i.kind.clone()}</div>
-                                    <h3>{i.title.clone()}</h3>
-                                    <p class="muted" style="margin:0">{i.body.clone()}</p>
-                                </div>
-                            }
-                        }
-                    />
-                </div>
+                <h2 class="section-title" style="margin-top:1.25rem">
+                    <Icon name="star" color=IconColor::Warn />
+                    "Insights"
+                </h2>
+                {move || {
+                    let list = detail.get().map(|d| d.insights).unwrap_or_default();
+                    if list.is_empty() {
+                        return view! {
+                            <div class="card routes-insight routes-insight-empty">
+                                <p class="muted" style="margin:0">
+                                    "No insights for this corridor yet. They appear automatically from finished trips on this OD — try another path or more drives at different hours for richer tips."
+                                </p>
+                            </div>
+                        }.into_any();
+                    }
+                    view! {
+                        <div class="routes-insight-grid">
+                            <For
+                                each=move || detail.get().map(|d| d.insights).unwrap_or_default()
+                                key=|i| i.id.clone()
+                                children=move |i| {
+                                    let kind = i.kind.clone();
+                                    let kind_label = insight_kind_label(&kind).to_string();
+                                    let kind_class = format!(
+                                        "routes-insight-kind {}",
+                                        insight_kind_class(&kind)
+                                    );
+                                    view! {
+                                        <div class="card routes-insight">
+                                            <div class=kind_class>{kind_label}</div>
+                                            <h3>{i.title.clone()}</h3>
+                                            <p class="muted" style="margin:0">{i.body.clone()}</p>
+                                        </div>
+                                    }
+                                }
+                            />
+                        </div>
+                    }.into_any()
+                }}
             }.into_any()
         }}
     }

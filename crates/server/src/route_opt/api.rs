@@ -16,6 +16,7 @@ use crate::shares::access::{can_read_car, resolve_access, CarAccess};
 use crate::state::AppState;
 use crate::units::{convert_distance_m, UnitSystem};
 
+use super::insights::{build_insights, InsightDraft, OrsAltRef};
 use super::job::{recompute_car, rebuild_insights};
 use super::stats::{aggregate_by_variant, aggregate_samples, best_variant_id, VariantSample};
 
@@ -133,26 +134,28 @@ async fn summary(
     .fetch_all(&state.pool)
     .await?;
 
+    let now = Utc::now();
     let mut corridors = Vec::new();
+    let mut insights: Vec<InsightDto> = Vec::new();
     for r in corridors_rows {
         let id: Uuid = r.try_get("id")?;
         let trip_count: i32 = r.try_get("trip_count")?;
         let samples = load_samples(&state.pool, id).await?;
         let by_var = aggregate_by_variant(&samples);
+        let labels = load_variant_labels(&state.pool, id).await?;
         let best_id = best_variant_id(&by_var, 1);
-        let best_label = match best_id {
-            Some(vid) => sqlx::query_scalar::<_, String>(
-                "SELECT label FROM route_variants WHERE id = $1",
-            )
-            .bind(vid)
-            .fetch_optional(&state.pool)
-            .await?,
-            None => None,
-        };
+        let best_label = best_id.and_then(|vid| labels.get(&vid).cloned());
         let (med_dur, med_dist) = best_id
             .and_then(|vid| by_var.get(&vid))
             .map(|s| (Some(s.median_duration_secs), Some(s.median_distance_m)))
             .unwrap_or((None, None));
+
+        // Live insights (soft + strong) so Routes is never an empty panel once trips exist.
+        if !samples.is_empty() && !labels.is_empty() {
+            let ors_alts = load_ors_refs(&state.pool, id).await?;
+            let drafts = build_insights(&labels, &samples, &ors_alts, now, 3);
+            insights.extend(drafts_to_dtos(id, drafts, now));
+        }
 
         corridors.push(CorridorSummaryDto {
             id,
@@ -172,34 +175,13 @@ async fn summary(
             median_distance: med_dist.map(|m| convert_distance_m(m, system)),
         });
     }
-
-    let insight_rows = sqlx::query(
-        r#"
-        SELECT id, corridor_id, kind, title, body, score, created_at
-        FROM route_insights
-        WHERE car_id = $1 AND dismissed_at IS NULL
-        ORDER BY score DESC, created_at DESC
-        LIMIT 30
-        "#,
-    )
-    .bind(q.car_id)
-    .fetch_all(&state.pool)
-    .await?;
-
-    let insights = insight_rows
-        .into_iter()
-        .map(|r| {
-            Ok(InsightDto {
-                id: r.try_get("id")?,
-                corridor_id: r.try_get("corridor_id")?,
-                kind: r.try_get("kind")?,
-                title: r.try_get("title")?,
-                body: r.try_get("body")?,
-                score: r.try_get("score")?,
-                created_at: r.try_get("created_at")?,
-            })
-        })
-        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    insights.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
+    insights.truncate(30);
 
     Ok(Json(SummaryResponse {
         car_id: q.car_id,
@@ -457,31 +439,10 @@ async fn corridor_detail(
         }
     };
 
-    let insight_rows = sqlx::query(
-        r#"
-        SELECT id, corridor_id, kind, title, body, score, created_at
-        FROM route_insights
-        WHERE corridor_id = $1 AND dismissed_at IS NULL
-        ORDER BY score DESC
-        "#,
-    )
-    .bind(id)
-    .fetch_all(&state.pool)
-    .await?;
-    let insights = insight_rows
-        .into_iter()
-        .map(|r| {
-            Ok(InsightDto {
-                id: r.try_get("id")?,
-                corridor_id: r.try_get("corridor_id")?,
-                kind: r.try_get("kind")?,
-                title: r.try_get("title")?,
-                body: r.try_get("body")?,
-                score: r.try_get("score")?,
-                created_at: r.try_get("created_at")?,
-            })
-        })
-        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    // Live-build corridor insights (SI units) so detail is never blank after trips exist.
+    let ors_refs = load_ors_refs(&state.pool, id).await?;
+    let drafts = build_insights(&labels, &samples, &ors_refs, now, 3);
+    let insights = drafts_to_dtos(id, drafts, now);
 
     Ok(Json(CorridorDetailResponse {
         id,
@@ -615,6 +576,79 @@ async fn recompute(
         processed,
         status: "ok",
     }))
+}
+
+fn drafts_to_dtos(
+    corridor_id: Uuid,
+    drafts: Vec<InsightDraft>,
+    now: DateTime<Utc>,
+) -> Vec<InsightDto> {
+    drafts
+        .into_iter()
+        .map(|d| InsightDto {
+            // Stable-enough id for list keys within a response; not persisted.
+            id: Uuid::new_v4(),
+            corridor_id,
+            kind: d.kind,
+            title: d.title,
+            body: d.body,
+            score: d.score,
+            created_at: now,
+        })
+        .collect()
+}
+
+async fn load_variant_labels(
+    pool: &sqlx::PgPool,
+    corridor_id: Uuid,
+) -> AppResult<HashMap<Uuid, String>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT v.id, v.label
+        FROM route_variants v
+        WHERE v.corridor_id = $1
+          AND EXISTS (
+            SELECT 1 FROM route_trip_assignments a WHERE a.variant_id = v.id
+          )
+        "#,
+    )
+    .bind(corridor_id)
+    .fetch_all(pool)
+    .await?;
+    let mut labels = HashMap::new();
+    for r in rows {
+        labels.insert(r.try_get("id")?, r.try_get("label")?);
+    }
+    Ok(labels)
+}
+
+async fn load_ors_refs(pool: &sqlx::PgPool, corridor_id: Uuid) -> AppResult<Vec<OrsAltRef>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT preference, distance_m, duration_secs
+        FROM route_ors_alternatives WHERE corridor_id = $1
+        "#,
+    )
+    .bind(corridor_id)
+    .fetch_all(pool)
+    .await?;
+    let mut out = Vec::new();
+    for r in rows {
+        let distance_m: Option<f64> = r.try_get("distance_m")?;
+        let duration_secs: Option<f64> = r.try_get("duration_secs")?;
+        let (Some(distance_m), Some(duration_secs)) = (distance_m, duration_secs) else {
+            continue;
+        };
+        if !duration_secs.is_finite() || duration_secs <= 0.0 {
+            continue;
+        }
+        out.push(OrsAltRef {
+            preference: r.try_get("preference")?,
+            distance_m,
+            duration_secs,
+        });
+    }
+    Ok(out)
 }
 
 async fn load_samples(pool: &sqlx::PgPool, corridor_id: Uuid) -> AppResult<Vec<VariantSample>> {
