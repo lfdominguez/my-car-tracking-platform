@@ -697,6 +697,23 @@ fn shared_chart_chrome(
     (tooltip, legend, grid, data_zoom)
 }
 
+/// Color for a Y-axis from the first series bound to that axis (palette index).
+/// Left axis falls back to the first series when everything shares one axis;
+/// otherwise muted slate if nothing is bound.
+fn y_axis_series_color(series: &[ChartSeriesSpec], colors: &[&str], axis_idx: i32) -> String {
+    let by_axis = series
+        .iter()
+        .enumerate()
+        .find(|(_, s)| s.y_axis_index == axis_idx);
+    let pick = if axis_idx == 0 {
+        by_axis.or_else(|| series.iter().enumerate().next())
+    } else {
+        by_axis
+    };
+    pick.map(|(i, _)| colors[i % colors.len()].to_string())
+        .unwrap_or_else(|| "#93a0b8".to_string())
+}
+
 fn build_option(
     labels: &[String],
     times: &[String],
@@ -711,6 +728,11 @@ fn build_option(
     let use_right = y_right_name.is_some() && series.iter().any(|s| s.y_axis_index == 1);
     let (tooltip, legend, grid, data_zoom) = shared_chart_chrome(use_right, false);
 
+    // Match axis chrome (name, ticks, line) to the primary series on that axis so
+    // dual-axis panels are readable at a glance without hunting the legend.
+    let left_color = y_axis_series_color(series, &colors, 0);
+    let right_color = y_axis_series_color(series, &colors, 1);
+
     // Axis unit names sit mid-axis so they never collide with clickable legend items.
     let mut y_axis = vec![serde_json::json!({
         "type": "value",
@@ -718,10 +740,11 @@ fn build_option(
         "nameLocation": "middle",
         "nameGap": 46,
         "nameRotate": 90,
-        "nameTextStyle": { "color": "#93a0b8", "fontSize": 11, "padding": [0, 0, 0, 0] },
+        "nameTextStyle": { "color": left_color, "fontSize": 11, "padding": [0, 0, 0, 0] },
         "splitLine": { "lineStyle": { "color": "rgba(36,49,74,0.85)" } },
-        "axisLabel": { "color": "#93a0b8", "hideOverlap": true },
-        "axisLine": { "lineStyle": { "color": "#24314a" } },
+        "axisLabel": { "color": left_color, "hideOverlap": true },
+        "axisLine": { "show": true, "lineStyle": { "color": left_color } },
+        "axisTick": { "lineStyle": { "color": left_color } },
         "scale": true
     })];
     if use_right {
@@ -731,10 +754,11 @@ fn build_option(
             "nameLocation": "middle",
             "nameGap": 46,
             "nameRotate": 90,
-            "nameTextStyle": { "color": "#93a0b8", "fontSize": 11 },
+            "nameTextStyle": { "color": right_color, "fontSize": 11 },
             "splitLine": { "show": false },
-            "axisLabel": { "color": "#93a0b8", "hideOverlap": true },
-            "axisLine": { "lineStyle": { "color": "#24314a" } },
+            "axisLabel": { "color": right_color, "hideOverlap": true },
+            "axisLine": { "show": true, "lineStyle": { "color": right_color } },
+            "axisTick": { "lineStyle": { "color": right_color } },
             "scale": true
         }));
     }
@@ -818,6 +842,9 @@ fn build_mixture_option(
     let use_right = lambda.map(|s| series_has_data(&s.data)).unwrap_or(false);
     let (_tooltip, legend, grid, data_zoom) = shared_chart_chrome(use_right, true);
 
+    // Match axis chrome to the primary series on each side (STFT green / lambda violet).
+    const TRIM_AXIS_COLOR: &str = "#22c55e";
+    const LAMBDA_AXIS_COLOR: &str = "#a78bfa";
     let band = FUEL_TRIM_HEALTHY_PCT;
     let y_axis = {
         let mut axes = vec![serde_json::json!({
@@ -826,10 +853,11 @@ fn build_mixture_option(
             "nameLocation": "middle",
             "nameGap": 46,
             "nameRotate": 90,
-            "nameTextStyle": { "color": "#93a0b8", "fontSize": 11 },
+            "nameTextStyle": { "color": TRIM_AXIS_COLOR, "fontSize": 11 },
             "splitLine": { "lineStyle": { "color": "rgba(36,49,74,0.85)" } },
-            "axisLabel": { "color": "#93a0b8", "hideOverlap": true },
-            "axisLine": { "lineStyle": { "color": "#24314a" } },
+            "axisLabel": { "color": TRIM_AXIS_COLOR, "hideOverlap": true },
+            "axisLine": { "show": true, "lineStyle": { "color": TRIM_AXIS_COLOR } },
+            "axisTick": { "lineStyle": { "color": TRIM_AXIS_COLOR } },
             "scale": true,
             "min": serde_json::Value::Null,
             "max": serde_json::Value::Null
@@ -841,10 +869,11 @@ fn build_mixture_option(
                 "nameLocation": "middle",
                 "nameGap": 46,
                 "nameRotate": 90,
-                "nameTextStyle": { "color": "#93a0b8", "fontSize": 11 },
+                "nameTextStyle": { "color": LAMBDA_AXIS_COLOR, "fontSize": 11 },
                 "splitLine": { "show": false },
-                "axisLabel": { "color": "#93a0b8", "hideOverlap": true },
-                "axisLine": { "lineStyle": { "color": "#24314a" } },
+                "axisLabel": { "color": LAMBDA_AXIS_COLOR, "hideOverlap": true },
+                "axisLine": { "show": true, "lineStyle": { "color": LAMBDA_AXIS_COLOR } },
+                "axisTick": { "lineStyle": { "color": LAMBDA_AXIS_COLOR } },
                 "scale": true
             }));
         }
@@ -1777,6 +1806,36 @@ mod tests {
         let d = double[70].unwrap();
         let mid = 25.0;
         assert!((d - mid).abs() <= (s - mid).abs() + 1e-9);
+    }
+
+    #[test]
+    fn y_axis_color_matches_bound_series_palette() {
+        let colors = ["#3b82f6", "#22c55e", "#f59e0b"];
+        let series = vec![
+            ChartSeriesSpec {
+                name: "speed".into(),
+                data: vec![Some(1.0)],
+                y_axis_index: 0,
+                area: false,
+            },
+            ChartSeriesSpec {
+                name: "pedal".into(),
+                data: vec![Some(2.0)],
+                y_axis_index: 1,
+                area: false,
+            },
+        ];
+        assert_eq!(y_axis_series_color(&series, &colors, 0), "#3b82f6");
+        assert_eq!(y_axis_series_color(&series, &colors, 1), "#22c55e");
+        // Single-axis: only right-tagged series still tints left from first series.
+        let only_right = vec![ChartSeriesSpec {
+            name: "x".into(),
+            data: vec![Some(1.0)],
+            y_axis_index: 1,
+            area: false,
+        }];
+        assert_eq!(y_axis_series_color(&only_right, &colors, 0), "#3b82f6");
+        assert_eq!(y_axis_series_color(&only_right, &colors, 1), "#3b82f6");
     }
 }
 
