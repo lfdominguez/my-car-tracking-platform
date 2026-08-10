@@ -123,10 +123,14 @@ pub struct Trip {
     pub fuel_type_snapshot: String,
     pub point_count: i64,
     pub distance_m: Option<f64>,
+    #[serde(default)]
+    pub economy_distance_m: Option<f64>,
     pub duration_s: Option<f64>,
     pub avg_speed_kph: Option<f64>,
     pub max_speed_kph: Option<f64>,
     pub fuel_used_l: Option<f64>,
+    #[serde(default)]
+    pub fuel_from_level_l: Option<f64>,
     #[serde(default = "default_analysis_status")]
     pub analysis_status: String,
     #[serde(default)]

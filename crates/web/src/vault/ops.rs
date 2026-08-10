@@ -37,10 +37,14 @@ pub struct TrackMetaV1 {
     pub fuel_type_snapshot: String,
     pub point_count: i64,
     pub distance_m: Option<f64>,
+    #[serde(default)]
+    pub economy_distance_m: Option<f64>,
     pub duration_s: Option<f64>,
     pub avg_speed_kph: Option<f64>,
     pub max_speed_kph: Option<f64>,
     pub fuel_used_l: Option<f64>,
+    #[serde(default)]
+    pub fuel_from_level_l: Option<f64>,
 }
 
 fn parse_uuid(s: &str) -> Result<Uuid, String> {
@@ -418,10 +422,12 @@ async fn migrate_trip(dek: &Dek, car_uuid: Uuid, trip: &Trip) -> Result<(), Stri
         fuel_type_snapshot: trip.fuel_type_snapshot.clone(),
         point_count: trip.point_count,
         distance_m: trip.distance_m,
+        economy_distance_m: trip.economy_distance_m,
         duration_s: trip.duration_s,
         avg_speed_kph: trip.avg_speed_kph,
         max_speed_kph: trip.max_speed_kph,
         fuel_used_l: trip.fuel_used_l,
+        fuel_from_level_l: trip.fuel_from_level_l,
     };
     let plain = serde_json::to_vec(&meta).map_err(|e| e.to_string())?;
     let body = encrypt_put(dek, car_uuid, "track_meta", track_uuid, None, 1, &plain)?;

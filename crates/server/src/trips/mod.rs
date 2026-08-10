@@ -1,5 +1,7 @@
 //! Trip list/detail/points/map APIs.
 
+mod fuel_stats;
+
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -122,7 +124,7 @@ pub struct TripListQuery {
     pub limit: Option<i64>,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, Clone)]
 pub struct TripSummary {
     pub id: Uuid,
     pub car_id: Uuid,
@@ -133,10 +135,15 @@ pub struct TripSummary {
     pub fuel_type_snapshot: String,
     pub point_count: i64,
     pub distance_m: Option<f64>,
+    /// Distance used for L/100 km (odometer Δ when sane, else GPS).
+    pub economy_distance_m: Option<f64>,
     pub duration_s: Option<f64>,
     pub avg_speed_kph: Option<f64>,
     pub max_speed_kph: Option<f64>,
+    /// Σ fuel_consumption_rate × Δt (gap-capped).
     pub fuel_used_l: Option<f64>,
+    /// Parallel cross-check from tank % Δ × tank capacity (L).
+    pub fuel_from_level_l: Option<f64>,
     pub analysis_status: String,
     pub analyzed_at: Option<DateTime<Utc>>,
     pub analyzed: bool,
@@ -144,6 +151,71 @@ pub struct TripSummary {
     pub traffic_analyzed: bool,
     /// Owner vault active — client should load ciphertext objects instead of points.
     pub vault_sealed: bool,
+}
+
+/// Row shape from list/detail SQL before fuel cross-check enrichment.
+#[derive(Debug, sqlx::FromRow)]
+struct TripSummaryRow {
+    id: Uuid,
+    car_id: Uuid,
+    car_name: String,
+    started_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+    finished: bool,
+    fuel_type_snapshot: String,
+    point_count: i64,
+    distance_m: Option<f64>,
+    duration_s: Option<f64>,
+    avg_speed_kph: Option<f64>,
+    max_speed_kph: Option<f64>,
+    fuel_used_l: Option<f64>,
+    odo_start_km: Option<f64>,
+    odo_end_km: Option<f64>,
+    fuel_level_start_pct: Option<f64>,
+    fuel_level_end_pct: Option<f64>,
+    tank_capacity_l: Option<f64>,
+    analysis_status: String,
+    analyzed_at: Option<DateTime<Utc>>,
+    analyzed: bool,
+    traffic_analyzed: bool,
+    vault_sealed: bool,
+}
+
+impl TripSummaryRow {
+    fn into_summary(self) -> TripSummary {
+        let economy_distance_m = fuel_stats::economy_distance_m(
+            self.distance_m,
+            self.odo_start_km,
+            self.odo_end_km,
+        );
+        let fuel_from_level_l = fuel_stats::fuel_from_level_l(
+            self.fuel_level_start_pct,
+            self.fuel_level_end_pct,
+            self.tank_capacity_l,
+        );
+        TripSummary {
+            id: self.id,
+            car_id: self.car_id,
+            car_name: self.car_name,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            finished: self.finished,
+            fuel_type_snapshot: self.fuel_type_snapshot,
+            point_count: self.point_count,
+            distance_m: self.distance_m,
+            economy_distance_m,
+            duration_s: self.duration_s,
+            avg_speed_kph: self.avg_speed_kph,
+            max_speed_kph: self.max_speed_kph,
+            fuel_used_l: self.fuel_used_l,
+            fuel_from_level_l,
+            analysis_status: self.analysis_status,
+            analyzed_at: self.analyzed_at,
+            analyzed: self.analyzed,
+            traffic_analyzed: self.traffic_analyzed,
+            vault_sealed: self.vault_sealed,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -180,9 +252,12 @@ fn seal_trip_if_vault(mut t: TripSummary) -> TripSummary {
         t.car_name = String::new();
         t.point_count = 0;
         t.distance_m = None;
+        t.economy_distance_m = None;
+        t.duration_s = None;
         t.avg_speed_kph = None;
         t.max_speed_kph = None;
         t.fuel_used_l = None;
+        t.fuel_from_level_l = None;
     }
     t
 }
@@ -258,6 +333,9 @@ fn apply_trip_summary_units(mut t: TripSummary, system: UnitSystem) -> TripSumma
     if let Some(d) = t.distance_m {
         t.distance_m = Some(convert_distance_m(d, system));
     }
+    if let Some(d) = t.economy_distance_m {
+        t.economy_distance_m = Some(convert_distance_m(d, system));
+    }
     if let Some(v) = t.avg_speed_kph {
         t.avg_speed_kph = Some(convert_speed_kph(v, system));
     }
@@ -266,6 +344,9 @@ fn apply_trip_summary_units(mut t: TripSummary, system: UnitSystem) -> TripSumma
     }
     if let Some(v) = t.fuel_used_l {
         t.fuel_used_l = Some(convert_fuel_l(v, system));
+    }
+    if let Some(v) = t.fuel_from_level_l {
+        t.fuel_from_level_l = Some(convert_fuel_l(v, system));
     }
     t
 }
@@ -297,7 +378,7 @@ async fn list_trips(
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
 
     // Build dynamically with optional filters
-    let rows = sqlx::query_as::<_, TripSummary>(
+    let rows = sqlx::query_as::<_, TripSummaryRow>(
         r#"
         SELECT
             t.id,
@@ -317,6 +398,11 @@ async fn list_trips(
             stats.avg_speed_kph,
             stats.max_speed_kph,
             stats.fuel_used_l,
+            stats.odo_start_km,
+            stats.odo_end_km,
+            stats.fuel_level_start_pct,
+            stats.fuel_level_end_pct,
+            COALESCE(t.tank_capacity_l_snapshot, c.tank_capacity_l) AS tank_capacity_l,
             t.analysis_status,
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
@@ -331,14 +417,31 @@ async fn list_trips(
                 MAX(tp.recorded_at) AS last_at,
                 AVG(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS avg_speed_kph,
                 MAX(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS max_speed_kph,
-                -- approximate fuel used: average L/h * hours
-                CASE
-                  WHEN COUNT(tp.fuel_consumption_rate) > 0
-                    AND MAX(tp.recorded_at) > MIN(tp.recorded_at)
-                  THEN (AVG(tp.fuel_consumption_rate)
-                        * EXTRACT(EPOCH FROM (MAX(tp.recorded_at) - MIN(tp.recorded_at))) / 3600.0)::float8
-                  ELSE NULL
-                END AS fuel_used_l,
+                (
+                  SELECT SUM(
+                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
+                  )::float8
+                  FROM (
+                    SELECT
+                      tp2.fuel_consumption_rate AS rate,
+                      tp2.recorded_at AS t,
+                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
+                    FROM track_points tp2
+                    WHERE tp2.track_id = t.id
+                  ) x
+                  WHERE x.rate IS NOT NULL
+                    AND x.lead_t IS NOT NULL
+                    AND x.lead_t > x.t
+                    AND x.lead_t <= x.t + interval '5 minutes'
+                ) AS fuel_used_l,
+                (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at ASC)
+                  FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_start_km,
+                (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at DESC)
+                  FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_end_km,
+                (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at ASC)
+                  FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_start_pct,
+                (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at DESC)
+                  FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_end_pct,
                 CASE
                   WHEN COUNT(*) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
                   ELSE 0::float8
@@ -368,6 +471,7 @@ async fn list_trips(
     let system = user.unit_system;
     let rows = rows
         .into_iter()
+        .map(TripSummaryRow::into_summary)
         .map(seal_trip_if_vault)
         .map(|trip| apply_trip_summary_units(trip, system))
         .collect();
@@ -386,7 +490,7 @@ async fn get_trip(
         .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
 
-    let row = sqlx::query_as::<_, TripSummary>(
+    let row = sqlx::query_as::<_, TripSummaryRow>(
         r#"
         SELECT
             t.id, t.car_id, c.name AS car_name, t.started_at, t.finished_at, t.finished,
@@ -399,6 +503,9 @@ async fn get_trip(
               ELSE NULL
             END AS duration_s,
             stats.avg_speed_kph, stats.max_speed_kph, stats.fuel_used_l,
+            stats.odo_start_km, stats.odo_end_km,
+            stats.fuel_level_start_pct, stats.fuel_level_end_pct,
+            COALESCE(t.tank_capacity_l_snapshot, c.tank_capacity_l) AS tank_capacity_l,
             t.analysis_status,
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
@@ -413,13 +520,31 @@ async fn get_trip(
                 MAX(tp.recorded_at) AS last_at,
                 AVG(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS avg_speed_kph,
                 MAX(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS max_speed_kph,
-                CASE
-                  WHEN COUNT(tp.fuel_consumption_rate) > 0
-                    AND MAX(tp.recorded_at) > MIN(tp.recorded_at)
-                  THEN (AVG(tp.fuel_consumption_rate)
-                        * EXTRACT(EPOCH FROM (MAX(tp.recorded_at) - MIN(tp.recorded_at))) / 3600.0)::float8
-                  ELSE NULL
-                END AS fuel_used_l,
+                (
+                  SELECT SUM(
+                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
+                  )::float8
+                  FROM (
+                    SELECT
+                      tp2.fuel_consumption_rate AS rate,
+                      tp2.recorded_at AS t,
+                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
+                    FROM track_points tp2
+                    WHERE tp2.track_id = t.id
+                  ) x
+                  WHERE x.rate IS NOT NULL
+                    AND x.lead_t IS NOT NULL
+                    AND x.lead_t > x.t
+                    AND x.lead_t <= x.t + interval '5 minutes'
+                ) AS fuel_used_l,
+                (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at ASC)
+                  FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_start_km,
+                (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at DESC)
+                  FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_end_km,
+                (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at ASC)
+                  FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_start_pct,
+                (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at DESC)
+                  FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_end_pct,
                 CASE
                   WHEN COUNT(*) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
                   ELSE 0::float8
@@ -432,6 +557,7 @@ async fn get_trip(
     .bind(id)
     .fetch_one(&state.pool)
     .await?;
+    let row = row.into_summary();
 
     let traffic_row = sqlx::query_as::<
         _,

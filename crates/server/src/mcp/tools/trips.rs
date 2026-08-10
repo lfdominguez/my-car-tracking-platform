@@ -121,13 +121,23 @@ const TRIP_SELECT: &str = r#"
                 MAX(tp.recorded_at) AS last_at,
                 AVG(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS avg_speed_kph,
                 MAX(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS max_speed_kph,
-                CASE
-                  WHEN COUNT(tp.fuel_consumption_rate) > 0
-                    AND MAX(tp.recorded_at) > MIN(tp.recorded_at)
-                  THEN (AVG(tp.fuel_consumption_rate)
-                        * EXTRACT(EPOCH FROM (MAX(tp.recorded_at) - MIN(tp.recorded_at))) / 3600.0)::float8
-                  ELSE NULL
-                END AS fuel_used_l,
+                (
+                  SELECT SUM(
+                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
+                  )::float8
+                  FROM (
+                    SELECT
+                      tp2.fuel_consumption_rate AS rate,
+                      tp2.recorded_at AS t,
+                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
+                    FROM track_points tp2
+                    WHERE tp2.track_id = t.id
+                  ) x
+                  WHERE x.rate IS NOT NULL
+                    AND x.lead_t IS NOT NULL
+                    AND x.lead_t > x.t
+                    AND x.lead_t <= x.t + interval '5 minutes'
+                ) AS fuel_used_l,
                 CASE
                   WHEN COUNT(*) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
                   ELSE 0::float8

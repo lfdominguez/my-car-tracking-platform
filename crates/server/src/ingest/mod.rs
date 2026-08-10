@@ -36,6 +36,9 @@ async fn health_head() -> StatusCode {
 #[derive(Debug, Deserialize)]
 pub struct TrackStartRequest {
     pub timestamp_start: DateTime<Utc>,
+    /// Optional tank capacity (L) from device settings; snapshots onto the track.
+    #[serde(default)]
+    pub tank_capacity_l: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,7 +108,7 @@ async fn track_start(
 
     let car = sqlx::query_as::<_, CarFuelSnap>(
         r#"
-        SELECT fuel_type, stoich_afr, density_gl, displacement_l, ve
+        SELECT fuel_type, stoich_afr, density_gl, displacement_l, ve, tank_capacity_l
         FROM cars WHERE id = $1
         "#,
     )
@@ -115,6 +118,11 @@ async fn track_start(
 
     let track_id = Uuid::new_v4();
     let legacy_key = body.timestamp_start;
+
+    let tank = body
+        .tank_capacity_l
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .or(car.tank_capacity_l);
 
     // Idempotent start: if same car+legacy_key exists, succeed.
     let existing = sqlx::query_scalar::<_, Uuid>(
@@ -134,8 +142,8 @@ async fn track_start(
         INSERT INTO tracks (
             id, car_id, device_id, legacy_key, started_at, finished,
             fuel_type_snapshot, stoich_afr_snapshot, density_gl_snapshot,
-            displacement_l_snapshot, ve_snapshot
-        ) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9,$10)
+            displacement_l_snapshot, ve_snapshot, tank_capacity_l_snapshot
+        ) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9,$10,$11)
         "#,
     )
     .bind(track_id)
@@ -148,8 +156,17 @@ async fn track_start(
     .bind(car.density_gl)
     .bind(car.displacement_l)
     .bind(car.ve)
+    .bind(tank)
     .execute(&state.pool)
     .await?;
+
+    if let Some(tcap) = body.tank_capacity_l.filter(|v| v.is_finite() && *v > 0.0) {
+        let _ = sqlx::query("UPDATE cars SET tank_capacity_l = $1 WHERE id = $2")
+            .bind(tcap)
+            .bind(device.car_id)
+            .execute(&state.pool)
+            .await?;
+    }
 
     Ok(StatusCode::OK)
 }
@@ -472,6 +489,7 @@ struct CarFuelSnap {
     density_gl: f64,
     displacement_l: f64,
     ve: f64,
+    tank_capacity_l: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]

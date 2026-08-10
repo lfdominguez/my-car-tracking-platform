@@ -152,15 +152,19 @@ pub async fn build_trip_analysis_context(
             ) AS max_speed_kph,
             (
                 SELECT SUM(
-                    COALESCE(fuel_consumption_rate, 0) * GREATEST(
-                        EXTRACT(EPOCH FROM (lead_t - recorded_at)), 0
-                    ) / 3600.0
+                    rate * EXTRACT(EPOCH FROM (lead_t - t)) / 3600.0
                 )::float8
                 FROM (
-                    SELECT recorded_at, fuel_consumption_rate,
-                           LEAD(recorded_at) OVER (ORDER BY recorded_at) AS lead_t
+                    SELECT
+                      fuel_consumption_rate AS rate,
+                      recorded_at AS t,
+                      LEAD(recorded_at) OVER (ORDER BY recorded_at) AS lead_t
                     FROM track_points WHERE track_id = $1
                 ) s
+                WHERE rate IS NOT NULL
+                  AND lead_t IS NOT NULL
+                  AND lead_t > t
+                  AND lead_t <= t + interval '5 minutes'
             ) AS fuel_used_l,
             (SELECT COUNT(*) FROM track_points WHERE track_id = $1)::bigint AS point_count
         FROM tracks t

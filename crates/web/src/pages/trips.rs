@@ -608,13 +608,30 @@ pub fn TripDetailPage() -> impl IntoView {
                 move || {
                     let t = trip.get().expect("shown when some");
                     let p = prefs.get();
+                    let econ_dist = t.economy_distance_m.or(t.distance_m);
                     let l100 = fmt_economy(
-                        avg_economy(t.fuel_used_l, t.distance_m, &p),
+                        avg_economy(t.fuel_used_l, econ_dist, &p),
                         &p,
                     );
+                    let econ_hint = if t.economy_distance_m.is_some()
+                        && t.distance_m.is_some()
+                        && t.economy_distance_m != t.distance_m
+                    {
+                        "fuel ÷ odometer distance".into()
+                    } else {
+                        "fuel ÷ GPS distance".into()
+                    };
                     let econ_label: &'static str = match p.system {
                         crate::units::UnitSystem::Metric => "Avg L/100km",
                         crate::units::UnitSystem::Us => "Avg mpg",
+                    };
+                    let fuel_hint = match t.fuel_from_level_l {
+                        Some(lvl) => format!(
+                            "Type {} · tank gauge ~{}",
+                            t.fuel_type_snapshot,
+                            fmt_fuel(Some(lvl), &p)
+                        ),
+                        None => format!("Type {}", t.fuel_type_snapshot),
                     };
                     view! {
                         <div class="kpi-grid">
@@ -622,8 +639,8 @@ pub fn TripDetailPage() -> impl IntoView {
                             <KpiCard label="Duration" value=fmt_duration(t.duration_s) hint=None />
                             <KpiCard label="Avg speed" value=fmt_speed(t.avg_speed_kph, &prefs.get()) hint=None />
                             <KpiCard label="Max speed" value=fmt_speed(t.max_speed_kph, &prefs.get()) hint=None />
-                            <KpiCard label="Fuel used" value=fmt_fuel(t.fuel_used_l, &prefs.get()) hint=Some(format!("Type {}", t.fuel_type_snapshot)) />
-                            <KpiCard label=econ_label value=l100 hint=Some("from fuel ÷ distance".into()) />
+                            <KpiCard label="Fuel used" value=fmt_fuel(t.fuel_used_l, &prefs.get()) hint=Some(fuel_hint) />
+                            <KpiCard label=econ_label value=l100 hint=Some(econ_hint) />
                             <KpiCard label="Samples" value=format!("{}", t.point_count) hint=None />
                         </div>
                     }
