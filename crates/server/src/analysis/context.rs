@@ -15,13 +15,14 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::http_client;
 use crate::traffic::{
-    fetch_ways_bbox, match_way, position_type_from_highway, upsert_ways,
+    fetch_ways_around_points, match_way, position_type_from_highway, upsert_ways,
 };
 use crate::units::UnitSystem;
 
 const ROUTE_POSITION_STEP_PCT: u8 = 5;
 const ROUTE_POSITION_MATCH_RADIUS_M: f64 = 40.0;
-const ROUTE_POSITION_BBOX_PAD_DEG: f64 = 0.001;
+/// Overpass `around` radius for route-position OSM refresh (larger than match radius).
+const ROUTE_POSITION_AROUND_M: f64 = 100.0;
 
 #[derive(Debug, Deserialize, sqlx::FromRow)]
 struct TrackCarRow {
@@ -576,43 +577,27 @@ fn sample_points_by_duration_pct(points: &[PointRow], step_pct: u8) -> Vec<(u8, 
     out
 }
 
-async fn ensure_osm_ways_for_bbox(pool: &PgPool, points: &[PointRow], overpass_url: &str) {
-    let mut min_lat = f64::MAX;
-    let mut max_lat = f64::MIN;
-    let mut min_lon = f64::MAX;
-    let mut max_lon = f64::MIN;
-    let mut any = false;
-    for p in points {
-        let (Some(lat), Some(lon)) = (p.lat, p.lon) else {
-            continue;
-        };
-        any = true;
-        min_lat = min_lat.min(lat);
-        max_lat = max_lat.max(lat);
-        min_lon = min_lon.min(lon);
-        max_lon = max_lon.max(lon);
-    }
-    if !any {
+/// Best-effort OSM refresh near route-position anchors only (avoids huge trip bboxes → 504).
+async fn ensure_osm_ways_near_anchors(
+    pool: &PgPool,
+    anchors: &[(u8, &PointRow)],
+    overpass_url: &str,
+) {
+    let pts: Vec<(f64, f64)> = anchors
+        .iter()
+        .filter_map(|(_, p)| match (p.lat, p.lon) {
+            (Some(lat), Some(lon)) if lat.is_finite() && lon.is_finite() => Some((lat, lon)),
+            _ => None,
+        })
+        .collect();
+    if pts.is_empty() {
         return;
     }
-    min_lat -= ROUTE_POSITION_BBOX_PAD_DEG;
-    max_lat += ROUTE_POSITION_BBOX_PAD_DEG;
-    min_lon -= ROUTE_POSITION_BBOX_PAD_DEG;
-    max_lon += ROUTE_POSITION_BBOX_PAD_DEG;
 
     let Ok(http) = http_client::outbound_client_long() else {
         return;
     };
-    match fetch_ways_bbox(
-        &http,
-        overpass_url,
-        min_lat,
-        min_lon,
-        max_lat,
-        max_lon,
-    )
-    .await
-    {
+    match fetch_ways_around_points(&http, overpass_url, &pts, ROUTE_POSITION_AROUND_M).await {
         Ok(ways) => {
             if let Err(e) = upsert_ways(pool, &ways).await {
                 tracing::warn!(error = %e, "route position OSM cache upsert failed");
@@ -640,8 +625,8 @@ async fn build_route_position_profile(
         };
     }
 
-    // Best-effort refresh of OSM ways for the full trip bbox (reuses traffic cache).
-    ensure_osm_ways_for_bbox(pool, points, overpass_url).await;
+    // Small around-queries at 5% anchors — not the full trip bounding box.
+    ensure_osm_ways_near_anchors(pool, &anchors, overpass_url).await;
 
     let mut samples = Vec::with_capacity(anchors.len());
     let mut type_counts: BTreeMap<String, u32> = BTreeMap::new();

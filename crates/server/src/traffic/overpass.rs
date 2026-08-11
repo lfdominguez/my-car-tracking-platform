@@ -83,24 +83,148 @@ pub fn parse_overpass_ways(body: &str) -> Result<Vec<OsmWay>, OverpassError> {
     Ok(out)
 }
 
-pub async fn fetch_ways_bbox(
-    http: &reqwest::Client,
-    overpass_url: &str,
+/// Overpass QL server-side timeout (seconds). Keep below HTTP client timeout.
+const OVERPASS_QL_TIMEOUT_SECS: u32 = 40;
+/// Max attempts for a single Overpass HTTP call (includes the first try).
+const OVERPASS_MAX_ATTEMPTS: u32 = 3;
+/// Split bboxes larger than this span (degrees) on either axis into a grid.
+/// ~0.12° ≈ 13 km — keeps public Overpass queries smaller (fewer 504s).
+pub const OVERPASS_MAX_TILE_SPAN_DEG: f64 = 0.12;
+/// Base backoff between transient retries.
+const OVERPASS_RETRY_BASE_MS: u64 = 750;
+
+/// HTTP statuses that usually mean "try again" on public Overpass.
+pub fn is_transient_overpass_status(code: u16) -> bool {
+    matches!(code, 429 | 502 | 503 | 504)
+}
+
+pub fn is_transient_overpass_error(err: &OverpassError) -> bool {
+    match err {
+        OverpassError::Status(code) => is_transient_overpass_status(*code),
+        OverpassError::Http(e) => e.is_timeout() || e.is_connect() || e.is_request(),
+        _ => false,
+    }
+}
+
+/// Split a bbox into tiles no larger than `max_span_deg` on each axis.
+pub fn split_bbox_tiles(
     min_lat: f64,
     min_lon: f64,
     max_lat: f64,
     max_lon: f64,
-) -> Result<Vec<OsmWay>, OverpassError> {
-    let ql = format!(
-        r#"[out:json][timeout:25];
+    max_span_deg: f64,
+) -> Vec<(f64, f64, f64, f64)> {
+    let max_span = max_span_deg.max(1e-6);
+    let (min_lat, max_lat) = if min_lat <= max_lat {
+        (min_lat, max_lat)
+    } else {
+        (max_lat, min_lat)
+    };
+    let (min_lon, max_lon) = if min_lon <= max_lon {
+        (min_lon, max_lon)
+    } else {
+        (max_lon, min_lon)
+    };
+
+    let lat_span = (max_lat - min_lat).max(0.0);
+    let lon_span = (max_lon - min_lon).max(0.0);
+    let n_lat = ((lat_span / max_span).ceil() as usize).max(1);
+    let n_lon = ((lon_span / max_span).ceil() as usize).max(1);
+
+    let mut tiles = Vec::with_capacity(n_lat * n_lon);
+    for i in 0..n_lat {
+        let t0 = min_lat + lat_span * (i as f64) / (n_lat as f64);
+        let t1 = min_lat + lat_span * ((i + 1) as f64) / (n_lat as f64);
+        for j in 0..n_lon {
+            let g0 = min_lon + lon_span * (j as f64) / (n_lon as f64);
+            let g1 = min_lon + lon_span * ((j + 1) as f64) / (n_lon as f64);
+            // Tiny pad so tile edges don't drop ways on boundaries.
+            let pad = max_span * 0.01;
+            tiles.push((
+                t0 - if i == 0 { 0.0 } else { pad },
+                g0 - if j == 0 { 0.0 } else { pad },
+                t1 + if i + 1 == n_lat { 0.0 } else { pad },
+                g1 + if j + 1 == n_lon { 0.0 } else { pad },
+            ));
+        }
+    }
+    tiles
+}
+
+pub fn build_overpass_bbox_ql(
+    min_lat: f64,
+    min_lon: f64,
+    max_lat: f64,
+    max_lon: f64,
+) -> String {
+    format!(
+        r#"[out:json][timeout:{OVERPASS_QL_TIMEOUT_SECS}];
 way["highway"]({min_lat},{min_lon},{max_lat},{max_lon});
 out tags geom;"#
-    );
+    )
+}
+
+/// Build Overpass QL for highways near lat/lon samples (`around:radius`).
+pub fn build_overpass_around_ql(points: &[(f64, f64)], radius_m: f64) -> String {
+    let radius_m = radius_m.clamp(20.0, 500.0);
+    let mut body = String::from("(\n");
+    for (lat, lon) in points {
+        body.push_str(&format!(
+            "  way[\"highway\"](around:{radius_m},{lat},{lon});\n"
+        ));
+    }
+    body.push_str(");\n");
+    format!(
+        "[out:json][timeout:{OVERPASS_QL_TIMEOUT_SECS}];\n{body}out tags geom;"
+    )
+}
+
+fn merge_ways(into: &mut std::collections::BTreeMap<i64, OsmWay>, ways: Vec<OsmWay>) {
+    for w in ways {
+        into.entry(w.way_id).or_insert(w);
+    }
+}
+
+async fn post_overpass_ql(
+    http: &reqwest::Client,
+    overpass_url: &str,
+    ql: &str,
+) -> Result<Vec<OsmWay>, OverpassError> {
+    let mut last_err: Option<OverpassError> = None;
+    for attempt in 0..OVERPASS_MAX_ATTEMPTS {
+        if attempt > 0 {
+            let delay_ms = OVERPASS_RETRY_BASE_MS * (1u64 << (attempt - 1).min(3));
+            tracing::warn!(
+                attempt = attempt + 1,
+                attempts = OVERPASS_MAX_ATTEMPTS,
+                delay_ms,
+                error = %last_err.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                "overpass transient failure; retrying"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+
+        match post_overpass_ql_once(http, overpass_url, ql).await {
+            Ok(ways) => return Ok(ways),
+            Err(e) if is_transient_overpass_error(&e) && attempt + 1 < OVERPASS_MAX_ATTEMPTS => {
+                last_err = Some(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| OverpassError::Parse("overpass retries exhausted".into())))
+}
+
+async fn post_overpass_ql_once(
+    http: &reqwest::Client,
+    overpass_url: &str,
+    ql: &str,
+) -> Result<Vec<OsmWay>, OverpassError> {
     let resp = http
         .post(overpass_url)
         .header("User-Agent", "car-tracking-platform/traffic")
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(format!("data={}", urlencoding_encode(&ql)))
+        .body(format!("data={}", urlencoding_encode(ql)))
         .send()
         .await?;
     let status = resp.status();
@@ -109,6 +233,110 @@ out tags geom;"#
     }
     let text = resp.text().await?;
     parse_overpass_ways(&text)
+}
+
+pub async fn fetch_ways_bbox(
+    http: &reqwest::Client,
+    overpass_url: &str,
+    min_lat: f64,
+    min_lon: f64,
+    max_lat: f64,
+    max_lon: f64,
+) -> Result<Vec<OsmWay>, OverpassError> {
+    let tiles = split_bbox_tiles(
+        min_lat,
+        min_lon,
+        max_lat,
+        max_lon,
+        OVERPASS_MAX_TILE_SPAN_DEG,
+    );
+    let mut merged = std::collections::BTreeMap::new();
+    let mut last_err: Option<OverpassError> = None;
+    let mut ok_tiles = 0u32;
+    for (t_min_lat, t_min_lon, t_max_lat, t_max_lon) in tiles {
+        let ql = build_overpass_bbox_ql(t_min_lat, t_min_lon, t_max_lat, t_max_lon);
+        match post_overpass_ql(http, overpass_url, &ql).await {
+            Ok(ways) => {
+                ok_tiles += 1;
+                merge_ways(&mut merged, ways);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    min_lat = t_min_lat,
+                    min_lon = t_min_lon,
+                    max_lat = t_max_lat,
+                    max_lon = t_max_lon,
+                    "overpass tile failed; continuing with other tiles"
+                );
+                last_err = Some(e);
+            }
+        }
+    }
+    if ok_tiles == 0 {
+        return Err(last_err.unwrap_or_else(|| {
+            OverpassError::Parse("overpass returned no tiles".into())
+        }));
+    }
+    Ok(merged.into_values().collect())
+}
+
+/// Fetch highway ways near sample points (small `around:` queries). Prefer this for
+/// route-position profiling so long trips do not request a city-scale bbox.
+pub async fn fetch_ways_around_points(
+    http: &reqwest::Client,
+    overpass_url: &str,
+    points: &[(f64, f64)],
+    radius_m: f64,
+) -> Result<Vec<OsmWay>, OverpassError> {
+    if points.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Dedupe nearly-identical anchors (same 5% sample can repeat when parked).
+    let mut unique: Vec<(f64, f64)> = Vec::new();
+    for &(lat, lon) in points {
+        if !lat.is_finite() || !lon.is_finite() {
+            continue;
+        }
+        let dup = unique.iter().any(|(a, b)| {
+            (a - lat).abs() < 1e-5 && (b - lon).abs() < 1e-5
+        });
+        if !dup {
+            unique.push((lat, lon));
+        }
+    }
+    if unique.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Batch to keep each Overpass request light.
+    const BATCH: usize = 8;
+    let mut merged = std::collections::BTreeMap::new();
+    let mut last_err: Option<OverpassError> = None;
+    let mut ok_batches = 0u32;
+    for chunk in unique.chunks(BATCH) {
+        let ql = build_overpass_around_ql(chunk, radius_m);
+        match post_overpass_ql(http, overpass_url, &ql).await {
+            Ok(ways) => {
+                ok_batches += 1;
+                merge_ways(&mut merged, ways);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    batch_points = chunk.len(),
+                    "overpass around-batch failed; continuing with other anchors"
+                );
+                last_err = Some(e);
+            }
+        }
+    }
+    if ok_batches == 0 {
+        return Err(last_err.unwrap_or_else(|| {
+            OverpassError::Parse("overpass around queries all failed".into())
+        }));
+    }
+    Ok(merged.into_values().collect())
 }
 
 fn urlencoding_encode(s: &str) -> String {
@@ -220,6 +448,7 @@ pub fn free_flow_kph(matched: Option<&MatchedWay>) -> (f64, Option<i64>, bool) {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +474,61 @@ mod tests {
         assert_eq!(ways[0].highway, "residential");
         assert_eq!(ways[0].maxspeed_kph, Some(30.0));
         assert_eq!(ways[0].coords.len(), 2);
+    }
+
+    #[test]
+    fn transient_status_covers_gateway_timeouts() {
+        assert!(is_transient_overpass_status(504));
+        assert!(is_transient_overpass_status(503));
+        assert!(is_transient_overpass_status(502));
+        assert!(is_transient_overpass_status(429));
+        assert!(!is_transient_overpass_status(400));
+        assert!(!is_transient_overpass_status(200));
+        assert!(is_transient_overpass_error(&OverpassError::Status(504)));
+        assert!(!is_transient_overpass_error(&OverpassError::Parse("x".into())));
+    }
+
+    #[test]
+    fn small_bbox_is_single_tile() {
+        let tiles = split_bbox_tiles(-23.55, -46.65, -23.54, -46.64, 0.12);
+        assert_eq!(tiles.len(), 1);
+        let (a, b, c, d) = tiles[0];
+        assert!((a - -23.55).abs() < 1e-12);
+        assert!((b - -46.65).abs() < 1e-12);
+        assert!((c - -23.54).abs() < 1e-12);
+        assert!((d - -46.64).abs() < 1e-12);
+    }
+
+    #[test]
+    fn large_bbox_is_tiled() {
+        // ~0.5° x 0.5° with 0.12 max span → ceil(0.5/0.12)=5 → 25 tiles
+        let tiles = split_bbox_tiles(0.0, 0.0, 0.5, 0.5, 0.12);
+        assert!(tiles.len() >= 16, "got {}", tiles.len());
+        assert!(tiles.len() <= 36, "got {}", tiles.len());
+        // Coverage: first tile starts at SW, last ends at NE
+        let min_a = tiles.iter().map(|t| t.0).fold(f64::INFINITY, f64::min);
+        let min_b = tiles.iter().map(|t| t.1).fold(f64::INFINITY, f64::min);
+        let max_c = tiles.iter().map(|t| t.2).fold(f64::NEG_INFINITY, f64::max);
+        let max_d = tiles.iter().map(|t| t.3).fold(f64::NEG_INFINITY, f64::max);
+        assert!(min_a <= 0.0 + 1e-9);
+        assert!(min_b <= 0.0 + 1e-9);
+        assert!(max_c >= 0.5 - 1e-9);
+        assert!(max_d >= 0.5 - 1e-9);
+    }
+
+    #[test]
+    fn around_ql_includes_points_and_timeout() {
+        let ql = build_overpass_around_ql(&[(-23.5, -46.6), (-23.51, -46.61)], 80.0);
+        assert!(ql.contains("[timeout:40]"));
+        assert!(ql.contains("around:80,-23.5,-46.6"));
+        assert!(ql.contains("around:80,-23.51,-46.61"));
+        assert!(ql.contains("out tags geom"));
+        assert!(ql.contains("way[\"highway\"]"));
+    }
+
+    #[test]
+    fn bbox_ql_uses_south_west_north_east_order() {
+        let ql = build_overpass_bbox_ql(-23.6, -46.7, -23.5, -46.6);
+        assert!(ql.contains("way[\"highway\"](-23.6,-46.7,-23.5,-46.6)"));
     }
 }
