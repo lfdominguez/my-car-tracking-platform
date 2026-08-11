@@ -1,7 +1,9 @@
 use leptos::prelude::*;
 use leptos_router::components::A;
 
-use crate::api::{get_dashboard, list_trips, DashboardCarSummary, DashboardSummary, Trip};
+use crate::api::{
+    get_dashboard, list_trips, DashboardCarSummary, DashboardSummary, Trip, TripListOpts,
+};
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{
     fmt_distance, fmt_distance_value, fmt_fuel, fmt_odometer_delta, use_unit_prefs, UnitPrefs,
@@ -20,7 +22,12 @@ pub fn DashboardPage() -> impl IntoView {
                 Ok(s) => summary.set(Some(s)),
                 Err(e) => error.set(Some(e.to_string())),
             }
-            match list_trips(None).await {
+            match list_trips(TripListOpts {
+                limit: Some(10),
+                ..Default::default()
+            })
+            .await
+            {
                 Ok(t) => trips.set(t),
                 Err(e) => error.set(Some(e.to_string())),
             }

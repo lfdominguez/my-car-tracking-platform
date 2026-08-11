@@ -8,7 +8,7 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 use crate::api::{
     delete_trip, fetch_trip_analysis, get_trip, list_trips, start_trip_analysis,
     start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames, vault_create_job, Trip,
-    TripAnalysis, TripPoint, TripTrafficFrame,
+    TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame,
 };
 use crate::vault::{
     build_analysis_context_json, decrypt_ai_report, decrypt_track_meta, decrypt_track_points,
@@ -85,6 +85,139 @@ fn confirm(msg: &str) -> bool {
         .unwrap_or(false)
 }
 
+const TRIPS_LIST_LIMIT: i64 = 200;
+const TRIPS_FILTER_STORAGE_KEY: &str = "trips-list-filter";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TripListFilter {
+    Week,
+    Month,
+    Older,
+    All,
+}
+
+impl TripListFilter {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Older => "older",
+            Self::All => "all",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Week => "This week",
+            Self::Month => "This month",
+            Self::Older => "Older",
+            Self::All => "All",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "week" => Some(Self::Week),
+            "month" => Some(Self::Month),
+            "older" => Some(Self::Older),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    fn all() -> [Self; 4] {
+        [Self::Week, Self::Month, Self::Older, Self::All]
+    }
+}
+
+fn load_trips_filter() -> TripListFilter {
+    let Some(win) = web_sys::window() else {
+        return TripListFilter::Month;
+    };
+    let Ok(Some(storage)) = win.session_storage() else {
+        return TripListFilter::Month;
+    };
+    match storage.get_item(TRIPS_FILTER_STORAGE_KEY) {
+        Ok(Some(raw)) => TripListFilter::from_str(&raw).unwrap_or(TripListFilter::Month),
+        _ => TripListFilter::Month,
+    }
+}
+
+fn save_trips_filter(f: TripListFilter) {
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = win.session_storage() else {
+        return;
+    };
+    let _ = storage.set_item(TRIPS_FILTER_STORAGE_KEY, f.as_str());
+}
+
+fn local_midnight(date: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Local, TimeZone};
+    let naive = date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is always valid");
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .unwrap_or_else(|| Local.from_utc_datetime(&naive))
+        .with_timezone(&chrono::Utc)
+}
+
+fn start_of_local_month() -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Datelike, Local};
+    let today = Local::now().date_naive();
+    let first = today
+        .with_day(1)
+        .expect("day 1 exists for every month");
+    local_midnight(first)
+}
+
+fn start_of_local_week_monday() -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Datelike, Duration, Local};
+    let today = Local::now().date_naive();
+    let days = today.weekday().num_days_from_monday() as i64;
+    local_midnight(today - Duration::days(days))
+}
+
+fn end_of_previous_local_month() -> chrono::DateTime<chrono::Utc> {
+    start_of_local_month() - chrono::Duration::milliseconds(1)
+}
+
+fn to_rfc3339(dt: chrono::DateTime<chrono::Utc>) -> String {
+    dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn trip_list_opts_for_filter(filter: TripListFilter) -> TripListOpts {
+    match filter {
+        TripListFilter::Week => TripListOpts {
+            from: Some(to_rfc3339(start_of_local_week_monday())),
+            to: None,
+            limit: Some(TRIPS_LIST_LIMIT),
+            car_id: None,
+        },
+        TripListFilter::Month => TripListOpts {
+            from: Some(to_rfc3339(start_of_local_month())),
+            to: None,
+            limit: Some(TRIPS_LIST_LIMIT),
+            car_id: None,
+        },
+        TripListFilter::Older => TripListOpts {
+            from: None,
+            to: Some(to_rfc3339(end_of_previous_local_month())),
+            limit: Some(TRIPS_LIST_LIMIT),
+            car_id: None,
+        },
+        TripListFilter::All => TripListOpts {
+            from: None,
+            to: None,
+            limit: Some(TRIPS_LIST_LIMIT),
+            car_id: None,
+        },
+    }
+}
+
 #[component]
 pub fn TripsPage() -> impl IntoView {
     let prefs = use_unit_prefs();
@@ -92,14 +225,18 @@ pub fn TripsPage() -> impl IntoView {
     let error = RwSignal::new(Option::<String>::None);
     let loading = RwSignal::new(true);
     let deleting = RwSignal::new(Option::<String>::None);
+    let filter = RwSignal::new(load_trips_filter());
 
     let vault = use_vault_session();
 
     Effect::new(move |_| {
         let sess = vault.clone();
+        let f = filter.get();
+        save_trips_filter(f);
+        let opts = trip_list_opts_for_filter(f);
         leptos::task::spawn_local(async move {
             loading.set(true);
-            match list_trips(None).await {
+            match list_trips(opts).await {
                 Ok(mut t) => {
                     let unlocked = sess.is_unlocked();
                     for trip in t.iter_mut() {
@@ -127,9 +264,51 @@ pub fn TripsPage() -> impl IntoView {
                     <Icon name="map-trifold" color=IconColor::Accent />
                     "Trips"
                 </h1>
-                <p class="muted">"History across accessible cars — open a trip for full telemetry"</p>
+                <p class="muted">"History across accessible cars — filter by time, open a trip for full telemetry"</p>
             </div>
         </div>
+
+        <div class="trips-filter-bar">
+            <div class="trips-filter-chips" role="tablist" aria-label="Trip time filter">
+                {TripListFilter::all().into_iter().map(|chip| {
+                    view! {
+                        <button
+                            type="button"
+                            role="tab"
+                            class=move || {
+                                if filter.get() == chip {
+                                    "trips-filter-chip is-active".to_string()
+                                } else {
+                                    "trips-filter-chip".to_string()
+                                }
+                            }
+                            aria-selected=move || (filter.get() == chip).to_string()
+                            on:click=move |_| filter.set(chip)
+                        >
+                            {chip.label()}
+                        </button>
+                    }
+                }).collect_view()}
+            </div>
+            <div class="trips-filter-meta muted">
+                {move || {
+                    if loading.get() {
+                        "Loading…".to_string()
+                    } else {
+                        let n = trips.get().len();
+                        let label = filter.get().label();
+                        let mut s = format!("{n} trip{} · {label}", if n == 1 { "" } else { "s" });
+                        if n as i64 >= TRIPS_LIST_LIMIT {
+                            s.push_str(&format!(
+                                " · showing latest {TRIPS_LIST_LIMIT} in this range"
+                            ));
+                        }
+                        s
+                    }
+                }}
+            </div>
+        </div>
+
         <Show when=move || error.get().is_some()>
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
@@ -145,7 +324,17 @@ pub fn TripsPage() -> impl IntoView {
             <div class="card">
                 <div class="empty-state">
                     <Icon name="map-trifold" size=IconSize::Xl color=IconColor::Accent />
-                    <div>"No trips yet. Upload a track from the phone to see it here."</div>
+                    <div>{move || {
+                        match filter.get() {
+                            TripListFilter::All => {
+                                "No trips yet. Upload a track from the phone to see it here.".to_string()
+                            }
+                            other => format!(
+                                "No trips in this period ({}) — try another filter.",
+                                other.label()
+                            ),
+                        }
+                    }}</div>
                 </div>
             </div>
         </Show>

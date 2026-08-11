@@ -217,6 +217,46 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .chart { width: 100%; height: 280px; }
 .chart.chart-tall { height: 320px; }
 
+/* —— Trips list filters —— */
+.trips-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem 1rem;
+  margin: 0 0 1rem;
+}
+.trips-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.trips-filter-chip {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.55);
+  color: var(--muted, #94a3b8);
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.trips-filter-chip:hover {
+  border-color: rgba(59, 130, 246, 0.45);
+  color: var(--text, #e2e8f0);
+}
+.trips-filter-chip.is-active {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.55);
+  color: #93c5fd;
+}
+.trips-filter-meta {
+  font-size: 0.85rem;
+}
+
 /* —— Trips list cards —— */
 .trip-grid {
   display: grid;

@@ -370,12 +370,22 @@ fn apply_trip_point_units(mut p: TripPoint, system: UnitSystem) -> TripPoint {
     p
 }
 
+/// Default / max page size for `GET /api/trips` (raised so recent trips aren't cut off).
+const DEFAULT_TRIP_LIST_LIMIT: i64 = 100;
+const MAX_TRIP_LIST_LIMIT: i64 = 500;
+
+fn trip_list_limit(requested: Option<i64>) -> i64 {
+    requested
+        .unwrap_or(DEFAULT_TRIP_LIST_LIMIT)
+        .clamp(1, MAX_TRIP_LIST_LIMIT)
+}
+
 async fn list_trips(
     State(state): State<AppState>,
     user: AuthUser,
     Query(q): Query<TripListQuery>,
 ) -> AppResult<Json<Vec<TripSummary>>> {
-    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let limit = trip_list_limit(q.limit);
 
     // Build dynamically with optional filters
     let rows = sqlx::query_as::<_, TripSummaryRow>(
@@ -841,4 +851,22 @@ async fn trip_map(
 #[allow(dead_code)]
 async fn _unused() {
     let _ = accessible_car_filter(Uuid::nil()).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{trip_list_limit, DEFAULT_TRIP_LIST_LIMIT, MAX_TRIP_LIST_LIMIT};
+
+    #[test]
+    fn trip_list_limit_defaults_and_clamps() {
+        assert_eq!(trip_list_limit(None), DEFAULT_TRIP_LIST_LIMIT);
+        assert_eq!(trip_list_limit(Some(0)), 1);
+        assert_eq!(trip_list_limit(Some(-5)), 1);
+        assert_eq!(trip_list_limit(Some(200)), 200);
+        assert_eq!(trip_list_limit(Some(MAX_TRIP_LIST_LIMIT)), MAX_TRIP_LIST_LIMIT);
+        assert_eq!(
+            trip_list_limit(Some(MAX_TRIP_LIST_LIMIT + 50)),
+            MAX_TRIP_LIST_LIMIT
+        );
+    }
 }

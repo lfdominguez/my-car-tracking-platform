@@ -415,9 +415,13 @@ pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String
     let body = encrypt_put(&dek, car_uuid, "car_profile", car_uuid, None, 1, &plain)?;
     vault_put_object(body).await.map_err(|e| e.to_string())?;
 
-    let trips = list_trips(Some(&car.id))
-        .await
-        .map_err(|e| e.to_string())?;
+    let trips = list_trips(crate::api::TripListOpts {
+        car_id: Some(car.id.clone()),
+        limit: Some(500),
+        ..Default::default()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     for trip in trips {
         migrate_trip(&dek, car_uuid, &trip).await?;
     }

@@ -446,11 +446,59 @@ pub async fn upload_car_photo(id: &str, file: &web_sys::File) -> Result<Car, Api
     send_body_json(req).await
 }
 
-pub async fn list_trips(car_id: Option<&str>) -> Result<Vec<Trip>, ApiError> {
-    let url = match car_id {
-        Some(id) => format!("/api/trips?car_id={id}"),
-        None => "/api/trips".into(),
-    };
+/// Optional filters for `GET /api/trips`.
+#[derive(Debug, Clone, Default)]
+pub struct TripListOpts {
+    pub car_id: Option<String>,
+    /// Inclusive lower bound on `started_at` (RFC3339 / ISO-8601).
+    pub from: Option<String>,
+    /// Inclusive upper bound on `started_at` (RFC3339 / ISO-8601).
+    pub to: Option<String>,
+    pub limit: Option<i64>,
+}
+
+pub fn build_trips_list_url(opts: &TripListOpts) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(id) = opts.car_id.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("car_id={id}"));
+    }
+    if let Some(from) = opts.from.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("from={}", urlencoding_trip_query(from)));
+    }
+    if let Some(to) = opts.to.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("to={}", urlencoding_trip_query(to)));
+    }
+    if let Some(limit) = opts.limit {
+        parts.push(format!("limit={limit}"));
+    }
+    if parts.is_empty() {
+        "/api/trips".into()
+    } else {
+        format!("/api/trips?{}", parts.join("&"))
+    }
+}
+
+/// Minimal query encoding for ISO timestamps and UUIDs (encode reserved chars).
+fn urlencoding_trip_query(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xf) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+pub async fn list_trips(opts: TripListOpts) -> Result<Vec<Trip>, ApiError> {
+    let url = build_trips_list_url(&opts);
     send_json(Request::get(&url)).await
 }
 
