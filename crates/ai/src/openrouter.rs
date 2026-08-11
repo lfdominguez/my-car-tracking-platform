@@ -26,10 +26,10 @@ const MAX_BODY_LOG: usize = 800;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Full request budget including model generation. Slow reasoning models + tools
 /// regularly exceed 60s; that used to surface as a vague body-decode error.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(240);
 /// Extra attempts after the first try for transient transport failures.
-/// Keep low: each attempt may run up to REQUEST_TIMEOUT.
-const MAX_TRANSIENT_RETRIES: u32 = 1;
+/// Keep modest: each attempt may run up to REQUEST_TIMEOUT (worst case ~3 × timeout + backoff).
+const MAX_TRANSIENT_RETRIES: u32 = 2;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(1000);
 
 #[derive(Debug, Clone)]
@@ -534,6 +534,14 @@ mod tests {
         let body = r#"{"id":"x","choices":[],"error":{"message":"Provider down","code":502}}"#;
         let err = parse_chat_response(StatusCode::OK, body).unwrap_err();
         assert!(err.to_string().contains("Provider down"), "{err}");
+    }
+
+    #[test]
+    fn retry_and_timeout_constants_are_sane() {
+        // Documented resilience knobs for slow OpenRouter body reads.
+        assert!(REQUEST_TIMEOUT.as_secs() >= 180);
+        assert!(MAX_TRANSIENT_RETRIES >= 2);
+        assert_eq!(1 + MAX_TRANSIENT_RETRIES, 3);
     }
 
     #[test]

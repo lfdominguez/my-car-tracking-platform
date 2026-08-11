@@ -71,9 +71,10 @@ pub async fn analyze_trip(
                     Err(e) => {
                         warn!(tool = %tc.name, error = %e, "tool failed");
                         // Feed structured errors so the model can correct messy args.
+                        let hint = tool_error_hint(&tc.name);
                         json!({
                             "error": e,
-                            "hint": "Fix arguments and retry. submit_analysis_report requires a single JSON object matching the tool schema (no markdown fences)."
+                            "hint": hint,
                         })
                         .to_string()
                     }
@@ -123,7 +124,7 @@ pub async fn analyze_trip(
             submit_nudges += 1;
             messages.push(json!({
                 "role": "user",
-                "content": "You must finish by calling the submit_analysis_report tool exactly once. Pass a single JSON object with fields: summary, mechanical_findings, driving_style, financial, confidence, markdown. Do not wrap the arguments in markdown fences or prose."
+                "content": "You must finish by calling the submit_analysis_report tool exactly once. Pass a single JSON object with fields: summary, mechanical_findings, driving_style, financial, confidence, markdown. The summary MUST briefly name places/road environments visited (from get_route_position_profile when available). Do not wrap the arguments in markdown fences or prose."
             }));
             continue;
         }
@@ -300,6 +301,16 @@ fn parse_empty(args_raw: &str) -> Result<EmptyArgs, String> {
     parse_json_args(args_raw)
 }
 
+fn tool_error_hint(tool_name: &str) -> &'static str {
+    if tool_name == EvaluateMath::NAME {
+        crate::tools::EVALUATE_MATH_ARGS_HINT
+    } else if tool_name == SubmitAnalysisReport::NAME {
+        "Fix arguments and retry. submit_analysis_report requires a single JSON object matching the tool schema (no markdown fences)."
+    } else {
+        "Fix arguments and retry. Pass a single JSON object matching the tool schema (no markdown fences)."
+    }
+}
+
 /// Tolerate markdown fences / prose wrappers around tool argument JSON.
 fn parse_json_args<T: serde::de::DeserializeOwned>(args_raw: &str) -> Result<T, String> {
     let cleaned = strip_code_fences(args_raw.trim());
@@ -379,6 +390,20 @@ mod tests {
         let raw = "```json\n{\"expression\":\"1+1\",\"variables\":{}}\n```";
         let args: EvaluateMathArgs = parse_json_args(raw).unwrap();
         assert_eq!(args.expression, "1+1");
+    }
+
+    #[test]
+    fn parse_json_args_tolerates_stringified_math_variables() {
+        let raw = r#"{"expression":"a/b","variables":"{\"a\": 10, \"b\": 2}"}"#;
+        let args: EvaluateMathArgs = parse_json_args(raw).unwrap();
+        assert_eq!(args.variables.get("a"), Some(&10.0));
+        assert_eq!(args.variables.get("b"), Some(&2.0));
+    }
+
+    #[test]
+    fn evaluate_math_error_hint_is_specific() {
+        assert!(tool_error_hint(EvaluateMath::NAME).contains("variables"));
+        assert!(tool_error_hint(SubmitAnalysisReport::NAME).contains("submit_analysis_report"));
     }
 
     #[test]

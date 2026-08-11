@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{json, Value};
 
-use crate::context::TripAnalysisContext;
+use crate::context::{SamplePoint, TripAnalysisContext};
 use crate::error::AiError;
 use crate::math::evaluate_expression;
 use crate::report::AnalysisReport;
@@ -264,19 +265,24 @@ impl Tool for GetRoutePositionProfile {
 
 // --- get_point_window ---
 
+/// Default number of slim timeline anchors in a window summary.
+pub const DEFAULT_POINT_WINDOW_ANCHORS: usize = 5;
+/// Hard cap on anchors (keeps tool results small for the model).
+pub const MAX_POINT_WINDOW_ANCHORS: usize = 8;
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PointWindowArgs {
     /// ISO-8601 start (inclusive).
     pub start: DateTime<Utc>,
     /// ISO-8601 end (inclusive).
     pub end: DateTime<Utc>,
-    /// Max points to return (capped server-side at 50).
-    #[serde(default = "default_limit")]
+    /// Number of slim anchor samples (default 5, max 8). Not a raw dump size.
+    #[serde(default = "default_point_window_limit")]
     pub limit: usize,
 }
 
-fn default_limit() -> usize {
-    30
+fn default_point_window_limit() -> usize {
+    DEFAULT_POINT_WINDOW_ANCHORS
 }
 
 #[derive(Clone)]
@@ -293,13 +299,16 @@ impl Tool for GetPointWindow {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Return up to `limit` downsampled samples between start and end (ISO-8601). Cap 50.".into(),
+            description: "Summarize telemetry in a time window [start, end] (ISO-8601). Returns window aggregates (min/avg/max for speed, RPM, load, fuel rate, coolant, voltage; min/max trims/lambda) plus a few slim anchors (default 5, max 8: time, lat/lon, speed, rpm, load, fuel_rate, coolant) — not a full raw point dump. Prefer trip-level tools for whole-trip stats; use this only for local drill-down.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "start": { "type": "string", "description": "ISO-8601 start time" },
-                    "end": { "type": "string", "description": "ISO-8601 end time" },
-                    "limit": { "type": "integer", "description": "Max points (default 30, max 50)" }
+                    "start": { "type": "string", "description": "ISO-8601 start time (inclusive)" },
+                    "end": { "type": "string", "description": "ISO-8601 end time (inclusive)" },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of slim anchor points (default 5, max 8). Does not return dense raw series."
+                    }
                 },
                 "required": ["start", "end"]
             }),
@@ -307,22 +316,176 @@ impl Tool for GetPointWindow {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let limit = args.limit.clamp(1, 50);
-        let mut pts: Vec<_> = self
-            .ctx
-            .0
-            .samples
-            .iter()
-            .filter(|p| p.recorded_at >= args.start && p.recorded_at <= args.end)
-            .cloned()
-            .collect();
-        if pts.len() > limit {
-            // even sample
-            let step = (pts.len() as f64 / limit as f64).ceil() as usize;
-            pts = pts.into_iter().step_by(step.max(1)).take(limit).collect();
-        }
-        dump(&json!({ "count": pts.len(), "points": pts }))
+        let payload = build_point_window_payload(
+            &self.ctx.0.samples,
+            args.start,
+            args.end,
+            args.limit,
+        );
+        dump(&payload)
     }
+}
+
+/// Build the compact window payload (summary + slim anchors). Public for tests.
+pub fn build_point_window_payload(
+    samples: &[SamplePoint],
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    anchor_limit: usize,
+) -> Value {
+    let matched: Vec<&SamplePoint> = samples
+        .iter()
+        .filter(|p| p.recorded_at >= start && p.recorded_at <= end)
+        .collect();
+
+    let limit = anchor_limit
+        .clamp(1, MAX_POINT_WINDOW_ANCHORS)
+        .min(matched.len().max(1));
+
+    if matched.is_empty() {
+        return json!({
+            "matched_count": 0,
+            "anchor_count": 0,
+            "start": start,
+            "end": end,
+            "duration_secs": (end - start).num_milliseconds() as f64 / 1000.0,
+            "summary": {},
+            "anchors": [],
+            "note": "No samples in this time window.",
+        });
+    }
+
+    let first = matched[0];
+    let last = matched[matched.len() - 1];
+    let duration_secs = (last.recorded_at - first.recorded_at)
+        .num_milliseconds() as f64
+        / 1000.0;
+
+    let mut summary = serde_json::Map::new();
+    if let Some(s) = metric_avg_stats(matched.iter().filter_map(|p| p.speed_kph)) {
+        summary.insert("speed_kph".into(), s);
+    }
+    if let Some(s) = metric_avg_stats(matched.iter().filter_map(|p| p.rpm)) {
+        summary.insert("rpm".into(), s);
+    }
+    if let Some(s) = metric_avg_stats(matched.iter().filter_map(|p| p.engine_load_pct)) {
+        summary.insert("engine_load_pct".into(), s);
+    }
+    if let Some(s) = metric_avg_stats(matched.iter().filter_map(|p| p.fuel_rate_lph)) {
+        summary.insert("fuel_rate_lph".into(), s);
+    }
+    if let Some(s) = metric_avg_stats(matched.iter().filter_map(|p| p.coolant_c)) {
+        summary.insert("coolant_c".into(), s);
+    }
+    if let Some(s) = metric_avg_stats(matched.iter().filter_map(|p| p.voltage)) {
+        summary.insert("voltage".into(), s);
+    }
+    if let Some(s) = metric_minmax_stats(matched.iter().filter_map(|p| p.stft_pct)) {
+        summary.insert("stft_pct".into(), s);
+    }
+    if let Some(s) = metric_minmax_stats(matched.iter().filter_map(|p| p.ltft_pct)) {
+        summary.insert("ltft_pct".into(), s);
+    }
+    if let Some(s) = metric_minmax_stats(matched.iter().filter_map(|p| p.lambda)) {
+        summary.insert("lambda".into(), s);
+    }
+
+    // Start/end coordinates from first/last point that has them.
+    if let Some(p) = matched.iter().find(|p| p.lat.is_some() && p.lon.is_some()) {
+        summary.insert("start_lat".into(), json!(p.lat));
+        summary.insert("start_lon".into(), json!(p.lon));
+    }
+    if let Some(p) = matched.iter().rev().find(|p| p.lat.is_some() && p.lon.is_some()) {
+        summary.insert("end_lat".into(), json!(p.lat));
+        summary.insert("end_lon".into(), json!(p.lon));
+    }
+
+    let idxs = even_anchor_indices(matched.len(), limit);
+    let anchors: Vec<Value> = idxs
+        .iter()
+        .map(|&i| slim_anchor(matched[i]))
+        .collect();
+
+    json!({
+        "matched_count": matched.len(),
+        "anchor_count": anchors.len(),
+        "start": first.recorded_at,
+        "end": last.recorded_at,
+        "duration_secs": duration_secs,
+        "summary": Value::Object(summary),
+        "anchors": anchors,
+    })
+}
+
+fn metric_avg_stats<I>(iter: I) -> Option<Value>
+where
+    I: Iterator<Item = f64>,
+{
+    let vals: Vec<f64> = iter.filter(|v| v.is_finite()).collect();
+    if vals.is_empty() {
+        return None;
+    }
+    let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let avg = vals.iter().sum::<f64>() / vals.len() as f64;
+    Some(json!({ "min": min, "avg": avg, "max": max }))
+}
+
+fn metric_minmax_stats<I>(iter: I) -> Option<Value>
+where
+    I: Iterator<Item = f64>,
+{
+    let vals: Vec<f64> = iter.filter(|v| v.is_finite()).collect();
+    if vals.is_empty() {
+        return None;
+    }
+    let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    Some(json!({ "min": min, "max": max }))
+}
+
+/// Evenly spaced indices in `0..n`, always including first and last when `limit >= 2`.
+pub fn even_anchor_indices(n: usize, limit: usize) -> Vec<usize> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let limit = limit.clamp(1, n);
+    if limit == 1 {
+        return vec![0];
+    }
+    let mut out = Vec::with_capacity(limit);
+    for i in 0..limit {
+        let idx = i * (n - 1) / (limit - 1);
+        if out.last().copied() != Some(idx) {
+            out.push(idx);
+        }
+    }
+    // If rounding collapsed indices, backfill unused slots from remaining positions.
+    if out.len() < limit {
+        for idx in 0..n {
+            if !out.contains(&idx) {
+                out.push(idx);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        out.sort_unstable();
+    }
+    out
+}
+
+fn slim_anchor(p: &SamplePoint) -> Value {
+    json!({
+        "recorded_at": p.recorded_at,
+        "lat": p.lat,
+        "lon": p.lon,
+        "speed_kph": p.speed_kph,
+        "rpm": p.rpm,
+        "engine_load_pct": p.engine_load_pct,
+        "fuel_rate_lph": p.fuel_rate_lph,
+        "coolant_c": p.coolant_c,
+    })
 }
 
 // --- evaluate_math ---
@@ -332,9 +495,18 @@ pub struct EvaluateMathArgs {
     /// Arithmetic / helper expression, e.g. `l_per_100km(1.2, 15)` or `fuel_l / dist_km * 100`.
     pub expression: String,
     /// Optional named numeric bindings usable inside the expression.
-    #[serde(default)]
+    ///
+    /// Tolerant of common model mistakes: JSON-encoded object strings and numeric strings.
+    /// Arithmetic must live in `expression`, not inside variable values.
+    #[serde(default, deserialize_with = "deserialize_math_variables")]
     pub variables: BTreeMap<String, f64>,
 }
+
+/// Hint appended when `evaluate_math` args fail to parse (agent → model).
+pub const EVALUATE_MATH_ARGS_HINT: &str = "evaluate_math expects {\"expression\":\"...\",\"variables\":{\"name\": number, ...}}. \
+`variables` must be a JSON object of finite numbers (not a string). Put all arithmetic in `expression` \
+(e.g. expression=\"a / (b * c)\", variables={\"a\":113,\"b\":0.42,\"c\":0.63}). Example: \
+{\"expression\":\"hard_accel_events / moving_hours\",\"variables\":{\"hard_accel_events\":113,\"moving_hours\":0.27}}.";
 
 /// Stateless safe math evaluator (free-form + trip helpers).
 #[derive(Clone, Default)]
@@ -349,17 +521,17 @@ impl Tool for EvaluateMath {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Evaluate a safe math expression. Use for L/100km, MPG, unit conversions, and general arithmetic. Helpers: l_per_100km(liters,km), mpg_us(liters,km), kph_to_mph, mph_to_kph, km_to_mi, mi_to_km, m_to_mi, mi_to_m, l_to_gal_us, gal_us_to_l, seconds_to_hours, pow, log, sqrt, min, max, abs, ln, exp, floor, ceil, round. Optional `variables` map binds names. Returns JSON {expression, result, error}.".into(),
+            description: "Evaluate a safe math expression. Use for L/100km, MPG, unit conversions, and general arithmetic. Helpers: l_per_100km(liters,km), mpg_us(liters,km), kph_to_mph, mph_to_kph, km_to_mi, mi_to_km, m_to_mi, mi_to_m, l_to_gal_us, gal_us_to_l, seconds_to_hours, pow, log, sqrt, min, max, abs, ln, exp, floor, ceil, round. Optional `variables` is a JSON object mapping names to numbers only (never a stringified JSON blob; never put formulas in values — put math in `expression`). Returns JSON {expression, result, error}. Example args: {\"expression\":\"hard_accel_events / moving_hours\",\"variables\":{\"hard_accel_events\":113,\"moving_hours\":0.27}}.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "expression": {
                         "type": "string",
-                        "description": "Math expression (max 500 chars)"
+                        "description": "Math expression (max 500 chars). Put operators and formulas here (e.g. a/(b*c))."
                     },
                     "variables": {
                         "type": "object",
-                        "description": "Optional name → number bindings",
+                        "description": "Optional name → number bindings only (plain JSON object, not a string). Values must be numbers, not expressions.",
                         "additionalProperties": { "type": "number" }
                     }
                 },
@@ -372,6 +544,124 @@ impl Tool for EvaluateMath {
         let out = evaluate_expression(&args.expression, &args.variables);
         dump(&out)
     }
+}
+
+/// Deserialize `variables` with tolerance for model quirks:
+/// - missing / null → empty map
+/// - object with number or numeric-string values
+/// - string containing a JSON object (double-encoded)
+fn deserialize_math_variables<'de, D>(deserializer: D) -> Result<BTreeMap<String, f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    coerce_math_variables(value.unwrap_or(Value::Null)).map_err(D::Error::custom)
+}
+
+/// Public for tests / agent error shaping.
+pub fn coerce_math_variables(value: Value) -> Result<BTreeMap<String, f64>, String> {
+    match value {
+        Value::Null => Ok(BTreeMap::new()),
+        Value::Object(map) => object_to_f64_map(map),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(BTreeMap::new());
+            }
+            // Models often JSON-stringify the whole variables object.
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(Value::Object(map)) => object_to_f64_map(map),
+                Ok(other) => Err(format!(
+                    "`variables` string must decode to a JSON object of numbers, got {other}; \
+                     put arithmetic in `expression`, not inside `variables`"
+                )),
+                Err(parse_err) => {
+                    // Common failure: double-encoded object with bare expressions
+                    // e.g. "{\"x\": 1, \"y\": 0.4 * 0.6}" — invalid JSON because of `*`.
+                    if trimmed.starts_with('{')
+                        && trimmed.contains(|c| matches!(c, '*' | '/'))
+                    {
+                        return Err(format!(
+                            "`variables` was a string that is not valid JSON ({parse_err}). \
+                             Likely a formula was embedded in a value (e.g. 0.4 * 0.6). \
+                             Pass a real object of numbers and put math in `expression`, e.g. \
+                             expression=\"a/(b*c)\", variables={{\"a\":1,\"b\":0.4,\"c\":0.6}}."
+                        ));
+                    }
+                    Err(
+                        "`variables` must be a JSON object of numbers, not a plain string. \
+                         Do not stringify the map. Example: \"variables\": {\"x\": 1.5}. \
+                         Put formulas in `expression`."
+                            .into(),
+                    )
+                }
+            }
+        }
+        other => Err(format!(
+            "`variables` must be a JSON object of numbers (got {other}); \
+             put arithmetic in `expression`"
+        )),
+    }
+}
+
+fn object_to_f64_map(
+    map: serde_json::Map<String, Value>,
+) -> Result<BTreeMap<String, f64>, String> {
+    let mut out = BTreeMap::new();
+    for (key, val) in map {
+        out.insert(key.clone(), coerce_variable_number(&key, &val)?);
+    }
+    Ok(out)
+}
+
+fn coerce_variable_number(key: &str, val: &Value) -> Result<f64, String> {
+    match val {
+        Value::Number(n) => n.as_f64().filter(|v| v.is_finite()).ok_or_else(|| {
+            format!("variable `{key}` is not a finite number")
+        }),
+        Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                return Err(format!("variable `{key}` is an empty string"));
+            }
+            // Reject expressions stuffed into values (e.g. "0.42 * 0.63").
+            if looks_like_math_expression(s) {
+                return Err(format!(
+                    "variable `{key}` value `{s}` looks like an expression; \
+                     put math in `expression` and bind only plain numbers in `variables`"
+                ));
+            }
+            s.parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| {
+                    format!(
+                        "variable `{key}` value `{s}` is not a finite number; \
+                         use a plain number (no units or formulas)"
+                    )
+                })
+        }
+        Value::Null => Err(format!(
+            "variable `{key}` is null; omit it or pass a number"
+        )),
+        other => Err(format!(
+            "variable `{key}` must be a number, got {other}"
+        )),
+    }
+}
+
+/// True when a string is not a plain numeric literal (optional leading sign / decimal / exponent)
+/// but contains operators or parentheses that belong in `expression`.
+fn looks_like_math_expression(s: &str) -> bool {
+    // Plain numbers: 1, -2.5, .5, 1e-3, +3.0
+    if s.parse::<f64>().is_ok() && !s.chars().any(|c| matches!(c, '*' | '/' | '(' | ')')) {
+        // `parse` accepts "1e2" etc.; still reject if * / ( ) present.
+        // Note: unary +/- is fine for parse; binary + or - mid-string is rare in valid f64.
+        return false;
+    }
+    s.chars()
+        .any(|c| matches!(c, '*' | '/' | '(' | ')' | '+' | '-'))
+        && s.parse::<f64>().is_err()
 }
 
 // --- submit_analysis_report ---
@@ -390,11 +680,14 @@ impl Tool for SubmitAnalysisReport {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Submit the final structured analysis report. Call exactly once when done.".into(),
+            description: "Submit the final structured analysis report. Call exactly once when done. The summary must briefly name places/road environments visited (from get_route_position_profile), not only mechanical or speed stats.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "summary": { "type": "string" },
+                    "summary": {
+                        "type": "string",
+                        "description": "Short executive summary that MUST include places / road types visited along the trip (e.g. residential, service_access/housing complex, city arterial, motorway) from get_route_position_profile when available; say unknown if not."
+                    },
                     "mechanical_findings": {
                         "type": "array",
                         "items": {
@@ -583,6 +876,201 @@ mod tests {
             .unwrap();
         assert!(out.contains("8.0") || out.contains("\"result\": 8"));
         assert!(out.contains("\"error\": null") || out.contains("\"error\":null"));
+    }
+
+    #[test]
+    fn coerce_variables_accepts_normal_object() {
+        let v = json!({"hard_accel_events": 113, "moving_hours": 0.27});
+        let map = coerce_math_variables(v).unwrap();
+        assert_eq!(map.get("hard_accel_events"), Some(&113.0));
+        assert_eq!(map.get("moving_hours"), Some(&0.27));
+    }
+
+    #[test]
+    fn coerce_variables_accepts_json_object_string() {
+        // Production failure mode: model double-stringifies the map.
+        let inner = r#"{"hard_accel_events": 113, "hard_brake_events": 98, "moving_hours": 0.27}"#;
+        let map = coerce_math_variables(Value::String(inner.into())).unwrap();
+        assert_eq!(map.get("hard_accel_events"), Some(&113.0));
+        assert_eq!(map.get("hard_brake_events"), Some(&98.0));
+        assert_eq!(map.get("moving_hours"), Some(&0.27));
+    }
+
+    #[test]
+    fn coerce_variables_accepts_numeric_strings_in_object() {
+        let v = json!({"fuel_l": "2.0", "dist_km": "25"});
+        let map = coerce_math_variables(v).unwrap();
+        assert_eq!(map.get("fuel_l"), Some(&2.0));
+        assert_eq!(map.get("dist_km"), Some(&25.0));
+    }
+
+    #[test]
+    fn coerce_variables_rejects_expression_in_value() {
+        let v = json!({"moving_hours": "0.426 * 0.637"});
+        let err = coerce_math_variables(v).unwrap_err();
+        assert!(err.contains("expression"), "err={err}");
+        assert!(err.contains("moving_hours"), "err={err}");
+    }
+
+    #[test]
+    fn coerce_variables_rejects_invalid_json_string_with_formula() {
+        // Exact shape from production warn: stringified map + bare `*` (invalid JSON).
+        let bad = r#"{"hard_accel_events": 113, "hard_brake_events": 98, "moving_hours": 0.4268847830555556 * 0.6371335504885993}"#;
+        let err = coerce_math_variables(Value::String(bad.into())).unwrap_err();
+        assert!(err.contains("expression") || err.contains("formula") || err.contains("not valid JSON"), "err={err}");
+    }
+
+    #[test]
+    fn evaluate_math_args_deserializes_stringified_variables() {
+        let raw = r#"{
+            "expression": "hard_accel_events / moving_hours",
+            "variables": "{\"hard_accel_events\": 113, \"moving_hours\": 0.27}"
+        }"#;
+        let args: EvaluateMathArgs = serde_json::from_str(raw).unwrap();
+        assert_eq!(args.expression, "hard_accel_events / moving_hours");
+        assert_eq!(args.variables.get("hard_accel_events"), Some(&113.0));
+        assert_eq!(args.variables.get("moving_hours"), Some(&0.27));
+    }
+
+    #[test]
+    fn evaluate_math_args_missing_variables_defaults_empty() {
+        let raw = r#"{"expression": "1+1"}"#;
+        let args: EvaluateMathArgs = serde_json::from_str(raw).unwrap();
+        assert!(args.variables.is_empty());
+    }
+
+    fn sp(
+        t0: DateTime<Utc>,
+        offset_s: i64,
+        speed: f64,
+        rpm: f64,
+        load: Option<f64>,
+    ) -> SamplePoint {
+        SamplePoint {
+            recorded_at: t0 + chrono::Duration::seconds(offset_s),
+            lat: Some(10.0 + offset_s as f64 * 0.001),
+            lon: Some(20.0),
+            speed_kph: Some(speed),
+            rpm: Some(rpm),
+            engine_load_pct: load,
+            fuel_rate_lph: Some(speed / 20.0),
+            coolant_c: Some(90.0),
+            voltage: Some(14.0),
+            stft_pct: Some(1.0),
+            ltft_pct: Some(-2.0),
+            lambda: Some(1.0),
+            odometer_km: Some(100.0 + offset_s as f64),
+            engine_on_time_s: Some(offset_s as f64),
+        }
+    }
+
+    #[test]
+    fn even_anchor_indices_includes_first_and_last() {
+        let idxs = even_anchor_indices(20, 5);
+        assert_eq!(idxs.first().copied(), Some(0));
+        assert_eq!(idxs.last().copied(), Some(19));
+        assert_eq!(idxs.len(), 5);
+        // Monotonic unique
+        for w in idxs.windows(2) {
+            assert!(w[0] < w[1]);
+        }
+    }
+
+    #[test]
+    fn point_window_empty_range() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let samples = vec![sp(t0, 0, 40.0, 2000.0, Some(30.0))];
+        let out = build_point_window_payload(
+            &samples,
+            t0 + chrono::Duration::hours(1),
+            t0 + chrono::Duration::hours(2),
+            5,
+        );
+        assert_eq!(out["matched_count"], 0);
+        assert_eq!(out["anchor_count"], 0);
+        assert!(out["anchors"].as_array().unwrap().is_empty());
+        assert!(out.get("points").is_none());
+    }
+
+    #[test]
+    fn point_window_summary_and_slim_anchors() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let samples: Vec<_> = (0..20)
+            .map(|i| sp(t0, i, 10.0 + i as f64, 1500.0 + i as f64 * 50.0, Some(20.0 + i as f64)))
+            .collect();
+        // Request a huge limit — must clamp to max 8 anchors, not dump 20 fat points.
+        let out = build_point_window_payload(
+            &samples,
+            t0,
+            t0 + chrono::Duration::seconds(19),
+            50,
+        );
+        assert_eq!(out["matched_count"], 20);
+        assert_eq!(out["anchor_count"], MAX_POINT_WINDOW_ANCHORS);
+        assert!(out.get("points").is_none(), "legacy raw points key must be gone");
+
+        let speed = &out["summary"]["speed_kph"];
+        assert_eq!(speed["min"], 10.0);
+        assert_eq!(speed["max"], 29.0);
+        let avg = speed["avg"].as_f64().unwrap();
+        assert!((avg - 19.5).abs() < 1e-9, "avg={avg}");
+
+        // trims are min/max only
+        assert!(out["summary"]["stft_pct"].get("avg").is_none());
+        assert_eq!(out["summary"]["stft_pct"]["min"], 1.0);
+
+        let anchors = out["anchors"].as_array().unwrap();
+        assert_eq!(anchors.len(), MAX_POINT_WINDOW_ANCHORS);
+        // first/last preserved
+        assert_eq!(
+            anchors[0]["recorded_at"],
+            json!(t0)
+        );
+        assert_eq!(
+            anchors.last().unwrap()["recorded_at"],
+            json!(t0 + chrono::Duration::seconds(19))
+        );
+        // slim: no odometer / voltage / trims / lambda on anchors
+        let a0 = &anchors[0];
+        assert!(a0.get("odometer_km").is_none());
+        assert!(a0.get("voltage").is_none());
+        assert!(a0.get("stft_pct").is_none());
+        assert!(a0.get("lambda").is_none());
+        assert!(a0.get("engine_on_time_s").is_none());
+        assert!(a0.get("speed_kph").is_some());
+        assert!(a0.get("rpm").is_some());
+    }
+
+    #[test]
+    fn point_window_default_limit_is_five() {
+        let raw = r#"{"start":"2026-01-01T12:00:00Z","end":"2026-01-01T13:00:00Z"}"#;
+        let args: PointWindowArgs = serde_json::from_str(raw).unwrap();
+        assert_eq!(args.limit, DEFAULT_POINT_WINDOW_ANCHORS);
+    }
+
+    #[tokio::test]
+    async fn get_point_window_tool_returns_summary_shape() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let mut ctx = sample_ctx();
+        ctx.samples = (0..10).map(|i| sp(t0, i, 30.0, 2000.0, None)).collect();
+        let tool = GetPointWindow {
+            ctx: CtxHandle(Arc::new(ctx)),
+        };
+        let out = tool
+            .call(PointWindowArgs {
+                start: t0,
+                end: t0 + chrono::Duration::seconds(9),
+                limit: 5,
+            })
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["matched_count"], 10);
+        assert_eq!(v["anchor_count"], 5);
+        assert!(v["summary"]["speed_kph"]["avg"].is_number());
+        assert_eq!(v["anchors"].as_array().unwrap().len(), 5);
+        assert!(out.contains("summary"));
+        assert!(!out.contains("\"points\""));
     }
 
     #[tokio::test]
