@@ -63,6 +63,26 @@ pub fn highway_default_kph(highway: &str) -> f64 {
     }
 }
 
+/// Coarse place/road class for AI narrative (from OSM `highway=*`).
+pub fn position_type_from_highway(highway: &str) -> &'static str {
+    match highway.trim().to_ascii_lowercase().as_str() {
+        "motorway" | "motorway_link" => "motorway",
+        "trunk" | "trunk_link" => "trunk_highway",
+        "primary" | "primary_link" => "primary_city_road",
+        "secondary" | "secondary_link" => "secondary_city_road",
+        "tertiary" | "tertiary_link" => "tertiary_road",
+        "unclassified" | "road" => "local_road",
+        "residential" => "residential_street",
+        "living_street" => "living_street",
+        // Driveways, parking aisles, housing-complex internal roads, alleys
+        "service" => "service_access",
+        "track" => "track",
+        "path" | "footway" | "pedestrian" | "cycleway" | "steps" => "non_vehicle_path",
+        "" => "unknown",
+        _ => "other",
+    }
+}
+
 /// Moving-frame level from speed / v_ff (not signal).
 pub fn level_from_ratio(speed_kph: f64, v_ff_kph: f64) -> TrafficLevel {
     let vff = v_ff_kph.max(5.0);
@@ -121,6 +141,16 @@ mod tests {
         assert_eq!(highway_default_kph("motorway"), 100.0);
         assert_eq!(highway_default_kph("residential"), 30.0);
         assert_eq!(highway_default_kph("unknown_class"), 50.0);
+    }
+
+    #[test]
+    fn position_types_cover_complex_vs_city() {
+        assert_eq!(position_type_from_highway("service"), "service_access");
+        assert_eq!(position_type_from_highway("residential"), "residential_street");
+        assert_eq!(position_type_from_highway("living_street"), "living_street");
+        assert_eq!(position_type_from_highway("primary"), "primary_city_road");
+        assert_eq!(position_type_from_highway("motorway_link"), "motorway");
+        assert_eq!(position_type_from_highway(""), "unknown");
     }
 
     #[test]

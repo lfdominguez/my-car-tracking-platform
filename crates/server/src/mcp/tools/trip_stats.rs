@@ -11,25 +11,49 @@ use super::ToolCtx;
 
 pub async fn get_trip_speed_stats(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<Value> {
     require_readable_trip(ctx, trip_id).await?;
-    let analysis = build_trip_analysis_context(&ctx.state.pool, trip_id, ctx.user.unit_system).await?;
+    let analysis = build_trip_analysis_context(
+        &ctx.state.pool,
+        trip_id,
+        ctx.user.unit_system,
+        &ctx.state.config.overpass_url,
+    )
+    .await?;
     Ok(serde_json::to_value(&analysis.speed).unwrap_or(Value::Null))
 }
 
 pub async fn get_trip_engine_stats(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<Value> {
     require_readable_trip(ctx, trip_id).await?;
-    let analysis = build_trip_analysis_context(&ctx.state.pool, trip_id, ctx.user.unit_system).await?;
+    let analysis = build_trip_analysis_context(
+        &ctx.state.pool,
+        trip_id,
+        ctx.user.unit_system,
+        &ctx.state.config.overpass_url,
+    )
+    .await?;
     Ok(serde_json::to_value(&analysis.engine).unwrap_or(Value::Null))
 }
 
 pub async fn get_trip_fuel_stats(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<Value> {
     require_readable_trip(ctx, trip_id).await?;
-    let analysis = build_trip_analysis_context(&ctx.state.pool, trip_id, ctx.user.unit_system).await?;
+    let analysis = build_trip_analysis_context(
+        &ctx.state.pool,
+        trip_id,
+        ctx.user.unit_system,
+        &ctx.state.config.overpass_url,
+    )
+    .await?;
     Ok(serde_json::to_value(&analysis.fuel).unwrap_or(Value::Null))
 }
 
 pub async fn get_trip_stops(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<Value> {
     require_readable_trip(ctx, trip_id).await?;
-    let analysis = build_trip_analysis_context(&ctx.state.pool, trip_id, ctx.user.unit_system).await?;
+    let analysis = build_trip_analysis_context(
+        &ctx.state.pool,
+        trip_id,
+        ctx.user.unit_system,
+        &ctx.state.config.overpass_url,
+    )
+    .await?;
     Ok(serde_json::to_value(&analysis.stops).unwrap_or(Value::Null))
 }
 

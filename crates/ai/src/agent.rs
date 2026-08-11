@@ -14,8 +14,9 @@ use crate::prompt::{SYSTEM_PREAMBLE, USER_TASK};
 use crate::report::AnalysisReport;
 use crate::tools::{
     CtxHandle, EmptyArgs, EvaluateMath, EvaluateMathArgs, GetEngineStats, GetFuelMixtureStats,
-    GetPointWindow, GetSpeedProfile, GetStopSummary, GetThermalElectricalStats, GetTrafficSummary,
-    GetTripOverview, PointWindowArgs, ReportSlot, SubmitAnalysisReport,
+    GetPointWindow, GetRoutePositionProfile, GetSpeedProfile, GetStopSummary,
+    GetThermalElectricalStats, GetTrafficSummary, GetTripOverview, PointWindowArgs, ReportSlot,
+    SubmitAnalysisReport,
 };
 
 const MAX_TURNS: usize = 24;
@@ -158,6 +159,7 @@ struct ToolBundle {
     thermal: GetThermalElectricalStats,
     stops: GetStopSummary,
     traffic: GetTrafficSummary,
+    route_positions: GetRoutePositionProfile,
     points: GetPointWindow,
     math: EvaluateMath,
     submit: SubmitAnalysisReport,
@@ -187,6 +189,9 @@ impl ToolBundle {
             traffic: GetTrafficSummary {
                 ctx: handle.clone(),
             },
+            route_positions: GetRoutePositionProfile {
+                ctx: handle.clone(),
+            },
             points: GetPointWindow {
                 ctx: handle.clone(),
             },
@@ -204,6 +209,7 @@ impl ToolBundle {
             self.thermal.definition(String::new()).await,
             self.stops.definition(String::new()).await,
             self.traffic.definition(String::new()).await,
+            self.route_positions.definition(String::new()).await,
             self.points.definition(String::new()).await,
             self.math.definition(String::new()).await,
             self.submit.definition(String::new()).await,
@@ -251,6 +257,11 @@ impl ToolBundle {
                 .map_err(|e| e.0),
             GetTrafficSummary::NAME => self
                 .traffic
+                .call(parse_empty(args_raw)?)
+                .await
+                .map_err(|e| e.0),
+            GetRoutePositionProfile::NAME => self
+                .route_positions
                 .call(parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),

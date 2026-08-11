@@ -206,6 +206,7 @@ async fn start_analysis(
 
     let pool = state.pool.clone();
     let secrets_key = state.config.secrets_key.clone();
+    let overpass_url = state.config.overpass_url.clone();
     // Re-encrypt not needed; pass plaintext only into task (in-memory)
     let model_owned = model.clone();
     let key_owned = api_key;
@@ -218,6 +219,7 @@ async fn start_analysis(
             &model_owned,
             unit_system,
             &secrets_key,
+            &overpass_url,
         )
         .await
         {
@@ -253,6 +255,7 @@ async fn run_analysis_job(
     model: &str,
     unit_system: UnitSystem,
     _secrets_key: &str,
+    overpass_url: &str,
 ) -> Result<(), String> {
     sqlx::query(
         r#"
@@ -267,7 +270,7 @@ async fn run_analysis_job(
     .await
     .map_err(|e| e.to_string())?;
 
-    let ctx = build_trip_analysis_context(pool, track_id, unit_system)
+    let ctx = build_trip_analysis_context(pool, track_id, unit_system, overpass_url)
         .await
         .map_err(|e| e.to_string())?;
 

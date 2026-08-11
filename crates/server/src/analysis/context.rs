@@ -1,8 +1,11 @@
 //! Build [`ai::TripAnalysisContext`] from Postgres track points (SI/raw).
 
+use std::collections::BTreeMap;
+
 use ai::{
-    EngineStats, FuelMixtureStats, SamplePoint, SpeedProfile, StopEvent, StopSummary,
-    ThermalElectricalStats, TrafficSummary, TripAnalysisContext, TripOverview, UnitLabels,
+    EngineStats, FuelMixtureStats, RoutePositionProfile, RoutePositionSample, SamplePoint,
+    SpeedProfile, StopEvent, StopSummary, ThermalElectricalStats, TrafficSummary,
+    TripAnalysisContext, TripOverview, UnitLabels,
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -10,7 +13,15 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::http_client;
+use crate::traffic::{
+    fetch_ways_bbox, match_way, position_type_from_highway, upsert_ways,
+};
 use crate::units::UnitSystem;
+
+const ROUTE_POSITION_STEP_PCT: u8 = 5;
+const ROUTE_POSITION_MATCH_RADIUS_M: f64 = 40.0;
+const ROUTE_POSITION_BBOX_PAD_DEG: f64 = 0.001;
 
 #[derive(Debug, Deserialize, sqlx::FromRow)]
 struct TrackCarRow {
@@ -68,6 +79,7 @@ pub async fn build_trip_analysis_context(
     pool: &PgPool,
     track_id: Uuid,
     unit_system: UnitSystem,
+    overpass_url: &str,
 ) -> AppResult<TripAnalysisContext> {
     let track = sqlx::query_as::<_, TrackCarRow>(
         r#"
@@ -201,6 +213,7 @@ pub async fn build_trip_analysis_context(
     let thermal = compute_thermal_stats(&points);
     let stops = compute_stops(&points);
     let samples = downsample_samples(&points, 400);
+    let route_positions = build_route_position_profile(pool, &points, overpass_url).await;
 
     let traffic_row = sqlx::query_as::<
         _,
@@ -254,6 +267,7 @@ pub async fn build_trip_analysis_context(
         samples,
         prior_markdown: track.prior_markdown,
         traffic,
+        route_positions,
     })
 }
 
@@ -527,6 +541,168 @@ fn downsample_samples(points: &[PointRow], max: usize) -> Vec<SamplePoint> {
         .collect()
 }
 
+/// Nearest track point for each `step_pct` of trip duration (0, 5, …, 100).
+fn sample_points_by_duration_pct(points: &[PointRow], step_pct: u8) -> Vec<(u8, &PointRow)> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let step = step_pct.max(1);
+    let t0 = points[0].recorded_at;
+    let t1 = points[points.len() - 1].recorded_at;
+    let total_ms = (t1 - t0).num_milliseconds().max(0) as f64;
+    if total_ms <= 0.0 {
+        return vec![(0, &points[0]), (100, points.last().unwrap())]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_iter()
+            .collect();
+    }
+
+    let mut out = Vec::new();
+    let mut pct: u16 = 0;
+    while pct <= 100 {
+        let target_ms = (total_ms * (pct as f64 / 100.0)).round() as i64;
+        let target = t0 + chrono::Duration::milliseconds(target_ms);
+        let nearest = points
+            .iter()
+            .min_by_key(|p| (p.recorded_at - target).num_milliseconds().unsigned_abs())
+            .expect("non-empty points");
+        out.push((pct as u8, nearest));
+        if pct >= 100 {
+            break;
+        }
+        pct = (pct + u16::from(step)).min(100);
+    }
+    out
+}
+
+async fn ensure_osm_ways_for_bbox(pool: &PgPool, points: &[PointRow], overpass_url: &str) {
+    let mut min_lat = f64::MAX;
+    let mut max_lat = f64::MIN;
+    let mut min_lon = f64::MAX;
+    let mut max_lon = f64::MIN;
+    let mut any = false;
+    for p in points {
+        let (Some(lat), Some(lon)) = (p.lat, p.lon) else {
+            continue;
+        };
+        any = true;
+        min_lat = min_lat.min(lat);
+        max_lat = max_lat.max(lat);
+        min_lon = min_lon.min(lon);
+        max_lon = max_lon.max(lon);
+    }
+    if !any {
+        return;
+    }
+    min_lat -= ROUTE_POSITION_BBOX_PAD_DEG;
+    max_lat += ROUTE_POSITION_BBOX_PAD_DEG;
+    min_lon -= ROUTE_POSITION_BBOX_PAD_DEG;
+    max_lon += ROUTE_POSITION_BBOX_PAD_DEG;
+
+    let Ok(http) = http_client::outbound_client_long() else {
+        return;
+    };
+    match fetch_ways_bbox(
+        &http,
+        overpass_url,
+        min_lat,
+        min_lon,
+        max_lat,
+        max_lon,
+    )
+    .await
+    {
+        Ok(ways) => {
+            if let Err(e) = upsert_ways(pool, &ways).await {
+                tracing::warn!(error = %e, "route position OSM cache upsert failed");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "route position Overpass fetch failed; using cache only");
+        }
+    }
+}
+
+async fn build_route_position_profile(
+    pool: &PgPool,
+    points: &[PointRow],
+    overpass_url: &str,
+) -> RoutePositionProfile {
+    let anchors = sample_points_by_duration_pct(points, ROUTE_POSITION_STEP_PCT);
+    if anchors.is_empty() {
+        return RoutePositionProfile {
+            available: false,
+            step_pct: ROUTE_POSITION_STEP_PCT,
+            samples: Vec::new(),
+            type_counts: BTreeMap::new(),
+            note: Some("no track points for route position sampling".into()),
+        };
+    }
+
+    // Best-effort refresh of OSM ways for the full trip bbox (reuses traffic cache).
+    ensure_osm_ways_for_bbox(pool, points, overpass_url).await;
+
+    let mut samples = Vec::with_capacity(anchors.len());
+    let mut type_counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut matched = 0u32;
+
+    for (pct, p) in anchors {
+        let (osm_highway, maxspeed_kph) = match (p.lat, p.lon) {
+            (Some(lat), Some(lon)) => match match_way(pool, lon, lat, ROUTE_POSITION_MATCH_RADIUS_M)
+                .await
+                .ok()
+                .flatten()
+            {
+                Some(m) => {
+                    matched += 1;
+                    (Some(m.highway), m.maxspeed_kph)
+                }
+                None => (None, None),
+            },
+            _ => (None, None),
+        };
+
+        let position_type = osm_highway
+            .as_deref()
+            .map(position_type_from_highway)
+            .unwrap_or("unknown")
+            .to_string();
+        *type_counts.entry(position_type.clone()).or_insert(0) += 1;
+
+        samples.push(RoutePositionSample {
+            pct,
+            recorded_at: p.recorded_at,
+            lat: p.lat,
+            lon: p.lon,
+            speed_kph: p.speed(),
+            osm_highway,
+            position_type,
+            maxspeed_kph,
+        });
+    }
+
+    let available = matched > 0;
+    let note = if !available {
+        Some(
+            "no OSM highway match near samples; do not invent city/highway setting from speed alone"
+                .into(),
+        )
+    } else if matched < samples.len() as u32 / 2 {
+        Some("many samples unmatched; treat missing position_type as unknown".into())
+    } else {
+        None
+    };
+
+    RoutePositionProfile {
+        available,
+        step_pct: ROUTE_POSITION_STEP_PCT,
+        samples,
+        type_counts,
+        note,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +747,21 @@ mod tests {
         let stops = compute_stops(&pts);
         assert_eq!(stops.stop_count, 1);
         assert!(stops.longest_stop_secs >= 60.0);
+    }
+
+    #[test]
+    fn duration_pct_samples_include_start_and_end() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let mut pts = Vec::new();
+        for i in 0..=100 {
+            pts.push(pt(t0 + chrono::Duration::seconds(i * 6), i as f64));
+        }
+        let anchors = sample_points_by_duration_pct(&pts, 5);
+        assert_eq!(anchors.len(), 21); // 0,5,...,100
+        assert_eq!(anchors.first().map(|a| a.0), Some(0));
+        assert_eq!(anchors.last().map(|a| a.0), Some(100));
+        // Midpoint ~50% should be near the middle of the series
+        let mid = anchors.iter().find(|a| a.0 == 50).expect("50%");
+        assert!((mid.1.speed().unwrap_or(0.0) - 50.0).abs() < 5.0);
     }
 }

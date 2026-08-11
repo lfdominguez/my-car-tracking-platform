@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -157,6 +159,49 @@ impl Default for TrafficSummary {
     }
 }
 
+/// One anchor along the trip timeline (typically every 5% of duration).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutePositionSample {
+    /// 0..=100 percent of trip duration from start.
+    pub pct: u8,
+    pub recorded_at: DateTime<Utc>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub speed_kph: Option<f64>,
+    /// Raw OSM `highway=*` when matched.
+    pub osm_highway: Option<String>,
+    /// Coarse place/road class for narrative (e.g. residential_street, service_access, motorway).
+    pub position_type: String,
+    pub maxspeed_kph: Option<f64>,
+}
+
+/// Evenly spaced place/road types along the route (time-based).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutePositionProfile {
+    /// True when at least one sample matched an OSM highway.
+    pub available: bool,
+    /// Sampling step as percent of trip duration (usually 5).
+    pub step_pct: u8,
+    pub samples: Vec<RoutePositionSample>,
+    /// Count of `position_type` values across samples.
+    #[serde(default)]
+    pub type_counts: BTreeMap<String, u32>,
+    /// Optional guidance when matches are sparse/missing.
+    pub note: Option<String>,
+}
+
+impl Default for RoutePositionProfile {
+    fn default() -> Self {
+        Self {
+            available: false,
+            step_pct: 5,
+            samples: Vec::new(),
+            type_counts: BTreeMap::new(),
+            note: None,
+        }
+    }
+}
+
 /// Everything the Rig tools may read. Built by the server; no DB access here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TripAnalysisContext {
@@ -173,4 +218,7 @@ pub struct TripAnalysisContext {
     /// Congestion summary when traffic analysis exists; else `available: false`.
     #[serde(default)]
     pub traffic: TrafficSummary,
+    /// Road/place type anchors every ~5% of trip duration (OSM highway match).
+    #[serde(default)]
+    pub route_positions: RoutePositionProfile,
 }

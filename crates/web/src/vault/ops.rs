@@ -341,6 +341,21 @@ pub fn build_analysis_context_json(
         },
         "samples": samples,
         "prior_markdown": null,
+        "traffic": {
+            "available": false,
+            "status": "none",
+            "overall_index": null,
+            "time_share": null,
+            "distance_share": null,
+            "frame_count": 0
+        },
+        "route_positions": {
+            "available": false,
+            "step_pct": 5,
+            "samples": [],
+            "type_counts": {},
+            "note": "vault client context has no OSM place matching; server plaintext analysis includes route positions"
+        }
     })
 }
 

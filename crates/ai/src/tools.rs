@@ -236,6 +236,32 @@ impl Tool for GetTrafficSummary {
     }
 }
 
+// --- get_route_position_profile ---
+
+#[derive(Clone)]
+pub struct GetRoutePositionProfile {
+    pub ctx: CtxHandle,
+}
+
+impl Tool for GetRoutePositionProfile {
+    const NAME: &'static str = "get_route_position_profile";
+    type Error = ToolErr;
+    type Args = EmptyArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Place/road type along the route at every ~5% of trip duration (OSM highway match). Use this BEFORE interpreting slow speeds as city traffic jams — residential_street / living_street / service_access often mean housing complexes, driveways, or private roads, not urban congestion. Returns samples with pct, lat/lon, speed, osm_highway, position_type, plus type_counts. available=false if no OSM matches.".into(),
+            parameters: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        dump(&self.ctx.0.route_positions)
+    }
+}
+
 // --- get_point_window ---
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -481,7 +507,36 @@ mod tests {
             }],
             prior_markdown: None,
             traffic: TrafficSummary::default(),
+            route_positions: RoutePositionProfile::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn route_position_profile_tool_returns_payload() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let mut ctx = sample_ctx();
+        ctx.route_positions = RoutePositionProfile {
+            available: true,
+            step_pct: 5,
+            samples: vec![crate::context::RoutePositionSample {
+                pct: 0,
+                recorded_at: t0,
+                lat: Some(1.0),
+                lon: Some(2.0),
+                speed_kph: Some(15.0),
+                osm_highway: Some("service".into()),
+                position_type: "service_access".into(),
+                maxspeed_kph: Some(20.0),
+            }],
+            type_counts: BTreeMap::from([("service_access".into(), 1)]),
+            note: None,
+        };
+        let tool = GetRoutePositionProfile {
+            ctx: CtxHandle(Arc::new(ctx)),
+        };
+        let out = tool.call(EmptyArgs {}).await.unwrap();
+        assert!(out.contains("service_access"));
+        assert!(out.contains("\"available\": true") || out.contains("\"available\":true"));
     }
 
     #[tokio::test]
