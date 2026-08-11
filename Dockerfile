@@ -17,11 +17,14 @@ RUN curl -fsSL \
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY scripts/verify-web-dist-sri.sh /app/scripts/verify-web-dist-sri.sh
+RUN chmod +x /app/scripts/verify-web-dist-sri.sh
 
 WORKDIR /app/crates/web
 RUN trunk build --release \
  && test -f dist/qrcode.min.js \
- && grep -q 'src="/qrcode.min.js"' dist/index.html
+ && grep -q 'src="/qrcode.min.js"' dist/index.html \
+ && /app/scripts/verify-web-dist-sri.sh /app/crates/web/dist
 
 # -----------------------------------------------------------------------------
 # Stage 2: build Axum server binary

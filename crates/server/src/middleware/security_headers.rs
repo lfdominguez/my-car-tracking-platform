@@ -88,8 +88,15 @@ pub fn inline_script_csp_hashes_from_dist(dist: &Path) -> Vec<String> {
     }
 }
 
+/// Cloudflare Web Analytics beacon host (injected by CF when enabled on the zone).
+pub const CLOUDFLARE_INSIGHTS_SCRIPT_HOST: &str = "https://static.cloudflareinsights.com";
+
 /// Build full CSP string. `script_hashes` are bare `sha256-...` tokens (no quotes).
-pub fn build_csp(script_hashes: &[String]) -> String {
+///
+/// When `allow_cloudflare_analytics` is true, `script-src` also allows the Cloudflare
+/// Web Analytics beacon host. Does **not** add `'unsafe-eval'` or `'unsafe-inline'`.
+/// Residual beacon `eval` console noise is expected; the external script can load.
+pub fn build_csp(script_hashes: &[String], allow_cloudflare_analytics: bool) -> String {
     let mut script_src = String::from("script-src 'self' 'wasm-unsafe-eval'");
     for h in script_hashes {
         let token = h.trim();
@@ -106,10 +113,15 @@ pub fn build_csp(script_hashes: &[String]) -> String {
             script_src.push('\'');
         }
     }
+    if allow_cloudflare_analytics {
+        script_src.push(' ');
+        script_src.push_str(CLOUDFLARE_INSIGHTS_SCRIPT_HOST);
+    }
     // CSP aligned with self-hosted SPA assets under `/` and `/vendor/*`.
     // Map tiles may still load from third-party hosts used by map styles.
     // Trunk injects an inline module bootstrap into index.html — allow via hash
     // (not 'unsafe-inline') so rebuilds work after server restart rescans dist.
+    // connect-src already allows https: (CF RUM endpoints included).
     format!(
         "default-src 'self'; \
 {script_src}; \
@@ -133,6 +145,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 pub fn security_headers_layer(
     enable_hsts: bool,
     script_hashes: &[String],
+    allow_cloudflare_analytics: bool,
 ) -> (
     SetResponseHeaderLayer<HeaderValue>,
     SetResponseHeaderLayer<HeaderValue>,
@@ -153,7 +166,7 @@ pub fn security_headers_layer(
         header::X_FRAME_OPTIONS,
         HeaderValue::from_static("DENY"),
     );
-    let csp_value = build_csp(script_hashes);
+    let csp_value = build_csp(script_hashes, allow_cloudflare_analytics);
     let csp_header = HeaderValue::from_str(&csp_value).unwrap_or_else(|_| {
         tracing::error!("invalid CSP header bytes; falling back to strict default");
         HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'none'")
@@ -216,7 +229,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
     #[test]
     fn build_csp_allows_trunk_inline_via_hash_not_unsafe_inline() {
-        let csp = build_csp(&[TRUNK_BOOTSTRAP_HASH.to_string()]);
+        let csp = build_csp(&[TRUNK_BOOTSTRAP_HASH.to_string()], false);
         assert!(csp.contains("script-src 'self' 'wasm-unsafe-eval'"));
         // Prefer quoted hash token form in CSP.
         assert!(csp.contains(&format!("'{TRUNK_BOOTSTRAP_HASH}'")), "csp={csp}");
@@ -229,6 +242,43 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         assert!(
             !script_src.contains("'unsafe-inline'"),
             "script-src must not allow unsafe-inline: {script_src}"
+        );
+        assert!(
+            !script_src.contains(CLOUDFLARE_INSIGHTS_SCRIPT_HOST),
+            "CF analytics host must be off by default: {script_src}"
+        );
+        assert!(
+            !script_src.contains("'unsafe-eval'"),
+            "script-src must not allow unsafe-eval: {script_src}"
+        );
+    }
+
+    #[test]
+    fn build_csp_optional_cloudflare_analytics_script_host() {
+        let off = build_csp(&[], false);
+        let on = build_csp(&[], true);
+        let off_script = off
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("script-src"))
+            .expect("script-src");
+        let on_script = on
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("script-src"))
+            .expect("script-src");
+        assert!(!off_script.contains(CLOUDFLARE_INSIGHTS_SCRIPT_HOST));
+        assert!(
+            on_script.contains(CLOUDFLARE_INSIGHTS_SCRIPT_HOST),
+            "on script-src={on_script}"
+        );
+        assert!(
+            !on_script.contains("'unsafe-eval'"),
+            "CF mode must not add unsafe-eval: {on_script}"
+        );
+        assert!(
+            !on_script.contains("'unsafe-inline'"),
+            "CF mode must not add unsafe-inline: {on_script}"
         );
     }
 

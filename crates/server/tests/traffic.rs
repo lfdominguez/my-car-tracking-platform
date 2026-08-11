@@ -37,6 +37,7 @@ fn test_config(database_url: String) -> Config {
         vault_max_object_bytes: 1024,
         // Unreachable — job should use seeded cache only.
         overpass_url: "http://127.0.0.1:9/overpass".into(),
+        csp_cloudflare_analytics: false,
     }
 }
 

@@ -40,6 +40,9 @@ pub struct Config {
     pub vault_max_object_bytes: usize,
     /// Overpass API interpreter URL (OSM maxspeed for traffic guessing).
     pub overpass_url: String,
+    /// When true, CSP `script-src` allows Cloudflare Web Analytics beacon host.
+    /// Does not enable `'unsafe-eval'`. Default false.
+    pub csp_cloudflare_analytics: bool,
 }
 
 #[derive(Debug, Error)]
@@ -164,6 +167,7 @@ impl Config {
         let overpass_url = env::var("OVERPASS_URL").unwrap_or_else(|_| {
             "https://overpass-api.de/api/interpreter".into()
         });
+        let csp_cloudflare_analytics = env_flag("CSP_CLOUDFLARE_ANALYTICS", false);
 
         if is_local_dev {
             if session_secret == DEFAULT_SESSION_SECRET
@@ -203,6 +207,7 @@ impl Config {
             vault_job_ttl_secs,
             vault_max_object_bytes,
             overpass_url,
+            csp_cloudflare_analytics,
         })
     }
 }

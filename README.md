@@ -190,8 +190,10 @@ Packages may start private on GHCR — mark public in GitHub → Packages, or `d
 - **Photos:** `GET|POST /api/cars/{id}/photo` (session + `can_read_car` / edit); jpeg/png/webp magic-byte check; **no** public `/uploads`.
 - **DoS:** Per-IP rate limits (stricter on `/auth/*` and `/api/track/*`), 2 MiB default body limit (8 MiB photos), batch/point caps, finished-track sample reject.
 - **Headers:** CSP (self-hosted SPA vendor assets), `nosniff`, `frame-ancestors 'none'`, HSTS when `PUBLIC_BASE_URL` is https.
+- **Cloudflare Web Analytics (optional):** set `CSP_CLOUDFLARE_ANALYTICS=1` so CSP `script-src` allows `https://static.cloudflareinsights.com`. Default is off. Does **not** add `'unsafe-eval'`; residual beacon `eval()` console noise is expected and harmless if the UI works. Prefer turning the CF beacon off if you do not need RUM.
 - **Proxy:** Set `TRUST_FORWARDED_HEADERS=1` only behind a trusted reverse proxy. See `deploy/nginx-security.conf.example`.
 - **Hardening:** Example Fail2ban and Nginx configs are available in `deploy/`.
+- **SPA deploy (SRI):** Trunk ships Subresource Integrity on `/snippets/*` and other assets. Never partially overwrite a live `WEB_DIST` (mixed `index.html` + old snippets breaks the client). Use `scripts/verify-web-dist-sri.sh` and atomic `scripts/deploy-web-dist.sh SOURCE DEST` (or rebuild the whole Docker image). After bare-metal publish, purge Cloudflare cache for `/`, `/web-*`, `/snippets/*`, `/vendor/*`.
 - **CI/Local:** GitHub Actions (`.github/workflows/security.yml`) runs `cargo audit` + Trivy FS/config on PRs and weekly. Locally: `scripts/ci-security.sh`. Known unfixed transitive advisory `RUSTSEC-2023-0071` (`rsa` via `sqlx-postgres`) is ignored in `.cargo/audit.toml` until upstream ships a fix.
 
 #### 🔄 Secrets rotation procedure
