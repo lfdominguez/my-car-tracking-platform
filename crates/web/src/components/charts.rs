@@ -45,6 +45,36 @@ function applyTwoDecimalFormatters(option) {
   }
 }
 
+/** ECharts throws if axis min/max are JSON null, or candlestick points are null. */
+function sanitizeChartOption(option) {
+  if (!option || typeof option !== 'object') return option;
+  const axes = option.yAxis;
+  const axisList = Array.isArray(axes) ? axes : axes ? [axes] : [];
+  for (const axis of axisList) {
+    if (!axis || typeof axis !== 'object') continue;
+    if (axis.min == null) delete axis.min;
+    if (axis.max == null) delete axis.max;
+  }
+  const series = option.series;
+  if (!Array.isArray(series)) return option;
+  for (const s of series) {
+    if (!s || !Array.isArray(s.data)) continue;
+    if (s.type === 'candlestick') {
+      s.data = s.data.map((pt) => {
+        if (pt == null) return '-';
+        if (Array.isArray(pt)) {
+          // OHLC must be 4 finite numbers; otherwise treat as gap.
+          if (pt.length < 4 || pt.some((v) => v == null || !Number.isFinite(Number(v)))) {
+            return '-';
+          }
+        }
+        return pt;
+      });
+    }
+  }
+  return option;
+}
+
 function parseTimeMs(iso) {
   if (!iso) return null;
   const t = Date.parse(iso);
@@ -318,11 +348,17 @@ function ensureChartObservers(elId, el, chart) {
 }
 
 function applyChartOption(elId, chart, option) {
+  sanitizeChartOption(option);
   applyTwoDecimalFormatters(option);
   // First paint must not use lazyUpdate — mobile WebKit often leaves a blank canvas.
   const isFirst = !chart.__hasPainted;
-  chart.setOption(option, { notMerge: true, lazyUpdate: !isFirst });
-  chart.__hasPainted = true;
+  try {
+    chart.setOption(option, { notMerge: true, lazyUpdate: !isFirst });
+    chart.__hasPainted = true;
+  } catch (err) {
+    console.error('chart setOption failed', elId, err);
+    return;
+  }
   const paint = () => {
     safeResize(chart);
     if (__tripSelection && __tripSelection.iso) {
@@ -665,13 +701,15 @@ fn instant_economy_point(speed: Option<f64>, fuel_rate: Option<f64>, system: Uni
 }
 
 /// Bucket a line series into ECharts candlestick OHLC: `[open, close, low, high]`.
+/// Empty buckets use `"-"` (ECharts missing-data marker). JSON `null` crashes
+/// candlestick `getInitialData` (`can't access property "value", t is null`).
 fn series_to_ohlc(data: &[Option<f64>], bucket: usize) -> Vec<serde_json::Value> {
     let bucket = bucket.max(1);
     let mut out = Vec::with_capacity(data.len().div_ceil(bucket));
     for chunk in data.chunks(bucket) {
         let vals: Vec<f64> = chunk.iter().filter_map(|v| *v).collect();
         if vals.is_empty() {
-            out.push(serde_json::Value::Null);
+            out.push(serde_json::json!("-"));
             continue;
         }
         let open = round2(vals[0]);
@@ -952,9 +990,8 @@ fn build_mixture_option(
             "axisLabel": { "color": TRIM_AXIS_COLOR, "hideOverlap": true },
             "axisLine": { "show": true, "lineStyle": { "color": TRIM_AXIS_COLOR } },
             "axisTick": { "lineStyle": { "color": TRIM_AXIS_COLOR } },
-            "scale": true,
-            "min": serde_json::Value::Null,
-            "max": serde_json::Value::Null
+            // Do NOT set min/max to JSON null — ECharts expects a number or omit.
+            "scale": true
         })];
         if use_right {
             axes.push(serde_json::json!({
@@ -1051,13 +1088,13 @@ fn build_mixture_option(
                 .data
                 .chunks(bucket.max(1))
                 .map(|chunk| {
-                    // last non-null in bucket
+                    // last non-null in bucket; "-" = gap (safer than JSON null for some series)
                     chunk
                         .iter()
                         .rev()
                         .find_map(|v| *v)
                         .map(|v| serde_json::json!(round2(v)))
-                        .unwrap_or(serde_json::Value::Null)
+                        .unwrap_or_else(|| serde_json::json!("-"))
                 })
                 .collect();
             series_json.push(serde_json::json!({
@@ -1930,6 +1967,48 @@ mod tests {
         }];
         assert_eq!(y_axis_series_color(&only_right, &colors, 0), "#3b82f6");
         assert_eq!(y_axis_series_color(&only_right, &colors, 1), "#3b82f6");
+    }
+
+    #[test]
+    fn ohlc_empty_bucket_uses_placeholder_not_null() {
+        let data = vec![None, None, Some(1.0), Some(2.0)];
+        let ohlc = series_to_ohlc(&data, 2);
+        assert_eq!(ohlc.len(), 2);
+        assert_eq!(ohlc[0], serde_json::json!("-"));
+        assert!(ohlc[1].is_array());
+        assert!(!ohlc.iter().any(|v| v.is_null()));
+    }
+
+    #[test]
+    fn mixture_option_omits_null_axis_min_max() {
+        let labels = vec!["a".into(), "b".into()];
+        let times = vec!["t0".into(), "t1".into()];
+        let series = vec![
+            ChartSeriesSpec {
+                name: "STFT (%)".into(),
+                data: vec![Some(-2.0), Some(3.0)],
+                y_axis_index: 0,
+                area: false,
+            },
+            ChartSeriesSpec {
+                name: "LTFT (%)".into(),
+                data: vec![Some(1.0), None],
+                y_axis_index: 0,
+                area: false,
+            },
+        ];
+        let opt = build_mixture_option(&labels, &times, &series, 0.0);
+        let y0 = &opt["yAxis"][0];
+        assert!(y0.get("min").is_none(), "min must be omitted, got {:?}", y0.get("min"));
+        assert!(y0.get("max").is_none(), "max must be omitted, got {:?}", y0.get("max"));
+        // Candlestick series must not contain JSON null data points.
+        for s in opt["series"].as_array().unwrap() {
+            if s["type"] == "candlestick" {
+                for pt in s["data"].as_array().unwrap() {
+                    assert!(!pt.is_null(), "candlestick null data point");
+                }
+            }
+        }
     }
 }
 

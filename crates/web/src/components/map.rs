@@ -273,9 +273,6 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
         type: 'Feature',
         properties: {
           speed_t: 0.45,
-          speed_kph: null,
-          rpm: null,
-          recorded_at: null,
           point_index: 0
         },
         geometry: { type: 'LineString', coordinates: fc }
@@ -326,15 +323,18 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
     if (a.rpm != null && b.rpm != null) rpm = (a.rpm + b.rpm) / 2;
     else rpm = a.rpm ?? b.rpm;
 
+    // Omit null numerics — MapLibre style exprs expect number|undefined, not JSON null.
+    const props = {
+      speed_t,
+      point_index: a.point_index
+    };
+    if (speed != null && Number.isFinite(speed)) props.speed_kph = speed;
+    if (rpm != null && Number.isFinite(rpm)) props.rpm = rpm;
+    if (a.recorded_at) props.recorded_at = a.recorded_at;
+
     features.push({
       type: 'Feature',
-      properties: {
-        speed_t,
-        speed_kph: speed,
-        rpm,
-        recorded_at: a.recorded_at,
-        point_index: a.point_index
-      },
+      properties: props,
       geometry: {
         type: 'LineString',
         coordinates: [[a.lon, a.lat], [b.lon, b.lat]]
@@ -409,6 +409,17 @@ function applyTrafficColors(features, frames) {
   return any;
 }
 
+/** Prefer {width,height,data} over ImageData to avoid WebGL texImage y-flip deprecation noise. */
+function canvasToMapImage(canvas) {
+  const ctx = canvas.getContext('2d');
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  return {
+    width: img.width,
+    height: img.height,
+    data: new Uint8Array(img.data)
+  };
+}
+
 function ensureMapImages(map) {
   if (!map.hasImage('flow-chevron')) {
     const size = 64;
@@ -430,7 +441,7 @@ function ensureMapImages(map) {
     ctx.lineJoin = 'round';
     ctx.fill();
     ctx.stroke();
-    map.addImage('flow-chevron', ctx.getImageData(0, 0, size, size), { pixelRatio: 2 });
+    map.addImage('flow-chevron', canvasToMapImage(canvas), { pixelRatio: 2 });
   }
   // Amber circle for dwell stops (replaces square).
   if (!map.hasImage('stop-circle')) {
@@ -450,7 +461,7 @@ function ensureMapImages(map) {
     ctx.lineWidth = 3;
     ctx.fill();
     ctx.stroke();
-    map.addImage('stop-circle', ctx.getImageData(0, 0, size, size), { pixelRatio: 2 });
+    map.addImage('stop-circle', canvasToMapImage(canvas), { pixelRatio: 2 });
   }
   if (!map.hasImage('select-pin')) {
     const size = 48;
@@ -471,8 +482,49 @@ function ensureMapImages(map) {
     ctx.lineWidth = 3;
     ctx.fill();
     ctx.stroke();
-    map.addImage('select-pin', ctx.getImageData(0, 0, size, size), { pixelRatio: 2 });
+    map.addImage('select-pin', canvasToMapImage(canvas), { pixelRatio: 2 });
   }
+}
+
+/** OpenFreeMap Liberty sometimes references sprite icons not in the sprite sheet. */
+function bindStyleImageFallback(map) {
+  if (map.__styleImageFallbackBound) return;
+  map.__styleImageFallbackBound = true;
+  map.on('styleimagemissing', (e) => {
+    const id = e && e.id;
+    if (!id || map.hasImage(id)) return;
+    try {
+      // 1×1 transparent placeholder — silences console spam; POI icon stays blank.
+      map.addImage(id, { width: 1, height: 1, data: new Uint8Array(4) });
+    } catch (_) { /* ignore races */ }
+  });
+}
+
+function bindWebGlRecovery(map, entry) {
+  if (map.__webglRecoveryBound) return;
+  map.__webglRecoveryBound = true;
+  map.on('webglcontextlost', (e) => {
+    // Allow the browser to restore the context instead of permanent blank map.
+    try { if (e && e.originalEvent && e.originalEvent.preventDefault) e.originalEvent.preventDefault(); } catch (_) {}
+    try { if (e && e.preventDefault) e.preventDefault(); } catch (_) {}
+    console.warn('Map WebGL context lost; waiting for restore');
+  });
+  map.on('webglcontextrestored', () => {
+    console.warn('Map WebGL context restored; re-adding images and layers');
+    try {
+      // Custom images are gone after context loss.
+      map.__styleImageFallbackBound = false;
+      ensureMapImages(map);
+      bindStyleImageFallback(map);
+      map.resize();
+      map.triggerRepaint();
+      if (entry && typeof entry._onWebGlRestored === 'function') {
+        entry._onWebGlRestored();
+      }
+    } catch (err) {
+      console.warn('Map WebGL restore failed', err);
+    }
+  });
 }
 
 function updateSpeedLegend(minSpeed, maxSpeed, hasSpeed) {
@@ -1017,9 +1069,15 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     existing.container = el;
     existing.points = points;
     existing.stopFeatures = stopFeatures;
+    existing._lineFc = lineFc;
+    existing._arrowsFc = arrowsFc;
+    existing._stopsFc = stopsFc;
+    existing._coordinates = coordinates;
     existing._arrowsBuilt = false;
     existing._arrowZoomKey = null;
     const map = existing.map;
+    bindStyleImageFallback(map);
+    bindWebGlRecovery(map, existing);
     const setData = () => {
       if (__tripMaps.get(elId) !== existing) return;
       addTripLayers(map, lineFc, arrowsFc, stopsFc);
@@ -1042,7 +1100,11 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     zoom: coordinates.length ? 13 : 1,
     pitch: TRIP_MAP_PITCH,
     bearing: TRIP_MAP_BEARING,
-    attributionControl: true
+    attributionControl: true,
+    // Slightly lighter GPU use on phones (many ECharts + one GL map).
+    antialias: false,
+    maxPitch: 60,
+    failIfMajorPerformanceCaveat: false
   });
   map.addControl(
     new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }),
@@ -1077,10 +1139,31 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     _arrowZoomBound: false,
     _arrowZoomTimer: null,
     _arrowsBuilt: false,
-    _arrowZoomKey: null
+    _arrowZoomKey: null,
+    _lineFc: lineFc,
+    _arrowsFc: arrowsFc,
+    _stopsFc: stopsFc,
+    _coordinates: coordinates
   };
   entry._elId = elId;
+  entry._onWebGlRestored = () => {
+    if (__tripMaps.get(elId) !== entry) return;
+    try {
+      // Layers/sources may survive; re-assert trip overlays + custom images.
+      addTripLayers(map, entry._lineFc || emptyFc(), entry._arrowsFc || emptyFc(), entry._stopsFc || emptyFc());
+      entry.bound = false;
+      bindTripInteractions(entry);
+      bindArrowZoomRefresh(entry);
+      refreshTripArrows(entry);
+      restoreSelectionMarker(entry);
+    } catch (err) {
+      console.warn('trip map restore after WebGL loss failed', err);
+    }
+  };
   __tripMaps.set(elId, entry);
+
+  bindStyleImageFallback(map);
+  bindWebGlRecovery(map, entry);
 
   map.on('load', () => {
     // Component may have unmounted before style finished loading.
@@ -1367,11 +1450,17 @@ export function mountRouteOptMap(host, geojson) {
       pitch: 40,
       bearing: 8,
       attributionControl: true,
+      antialias: false,
+      maxPitch: 60,
+      failIfMajorPerformanceCaveat: false,
     });
     __routeOptMap.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+    bindStyleImageFallback(__routeOptMap);
+    bindWebGlRecovery(__routeOptMap, null);
     __routeOptHost = host;
   }
   const map = __routeOptMap;
+  bindStyleImageFallback(map);
   const apply = () => {
     ensureRouteOptLayers(map);
     const src = map.getSource('route-opt');
