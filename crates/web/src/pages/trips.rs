@@ -67,13 +67,19 @@ fn fmt_signed_duration(delta_secs: f64) -> String {
 }
 
 
+/// Format an API RFC3339 timestamp in the **browser local** timezone.
+/// (Raw UTC strings made morning trips look like afternoon and hard to spot.)
 fn pretty_started(s: &str) -> String {
-    // 2026-08-04T12:34:56.789Z → 2026-08-04 12:34
-    let s = s.trim_end_matches('Z');
+    use chrono::{DateTime, Local};
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
+        return dt.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+    }
+    // Fallback: strip Z and show clock without claiming local.
+    let s = s.trim().trim_end_matches('Z');
     if let Some((d, t)) = s.split_once('T') {
         let t = t.split('.').next().unwrap_or(t);
         let t = if t.len() >= 5 { &t[..5] } else { t };
-        format!("{d} {t}")
+        format!("{d} {t} UTC")
     } else {
         s.to_string()
     }
@@ -218,6 +224,32 @@ fn trip_list_opts_for_filter(filter: TripListFilter) -> TripListOpts {
     }
 }
 
+fn trip_matches_query(t: &Trip, q: &str) -> bool {
+    let q = q.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    if t.id.to_ascii_lowercase().contains(&q) {
+        return true;
+    }
+    if t.car_name.to_ascii_lowercase().contains(&q) {
+        return true;
+    }
+    if t.started_at.to_ascii_lowercase().contains(&q) {
+        return true;
+    }
+    let local = pretty_started(&t.started_at).to_ascii_lowercase();
+    if local.contains(&q) {
+        return true;
+    }
+    // Allow "db014e07" short prefix search.
+    t.id.to_ascii_lowercase().starts_with(&q)
+        || t.id
+            .get(..8)
+            .map(|s| s.to_ascii_lowercase() == q)
+            .unwrap_or(false)
+}
+
 #[component]
 pub fn TripsPage() -> impl IntoView {
     let prefs = use_unit_prefs();
@@ -226,6 +258,8 @@ pub fn TripsPage() -> impl IntoView {
     let loading = RwSignal::new(true);
     let deleting = RwSignal::new(Option::<String>::None);
     let filter = RwSignal::new(load_trips_filter());
+    let search = RwSignal::new(String::new());
+    let fetch_gen = RwSignal::new(0u64);
 
     let vault = use_vault_session();
 
@@ -234,10 +268,16 @@ pub fn TripsPage() -> impl IntoView {
         let f = filter.get();
         save_trips_filter(f);
         let opts = trip_list_opts_for_filter(f);
+        let req_id = fetch_gen.get_untracked().wrapping_add(1);
+        fetch_gen.set(req_id);
         leptos::task::spawn_local(async move {
             loading.set(true);
             match list_trips(opts).await {
                 Ok(mut t) => {
+                    // Drop stale responses if the filter changed mid-flight.
+                    if fetch_gen.get_untracked() != req_id {
+                        return;
+                    }
                     let unlocked = sess.is_unlocked();
                     for trip in t.iter_mut() {
                         if trip.vault_sealed && trip.car_name.is_empty() {
@@ -251,11 +291,27 @@ pub fn TripsPage() -> impl IntoView {
                     trips.set(t);
                     error.set(None);
                 }
-                Err(e) => error.set(Some(e.to_string())),
+                Err(e) => {
+                    if fetch_gen.get_untracked() != req_id {
+                        return;
+                    }
+                    error.set(Some(e.to_string()));
+                }
             }
-            loading.set(false);
+            if fetch_gen.get_untracked() == req_id {
+                loading.set(false);
+            }
         });
     });
+
+    let visible_trips = move || {
+        let q = search.get();
+        trips
+            .get()
+            .into_iter()
+            .filter(|t| trip_matches_query(t, &q))
+            .collect::<Vec<_>>()
+    };
 
     view! {
         <div class="topbar">
@@ -290,22 +346,39 @@ pub fn TripsPage() -> impl IntoView {
                     }
                 }).collect_view()}
             </div>
-            <div class="trips-filter-meta muted">
-                {move || {
-                    if loading.get() {
-                        "Loading…".to_string()
-                    } else {
-                        let n = trips.get().len();
-                        let label = filter.get().label();
-                        let mut s = format!("{n} trip{} · {label}", if n == 1 { "" } else { "s" });
-                        if n as i64 >= TRIPS_LIST_LIMIT {
-                            s.push_str(&format!(
-                                " · showing latest {TRIPS_LIST_LIMIT} in this range"
-                            ));
+            <div class="trips-filter-tools">
+                <label class="trips-search">
+                    <span class="sr-only">"Search trips"</span>
+                    <input
+                        type="search"
+                        class="trips-search-input"
+                        placeholder="Search car, date, or trip id…"
+                        prop:value=move || search.get()
+                        on:input=move |ev| search.set(event_target_value(&ev))
+                    />
+                </label>
+                <div class="trips-filter-meta muted">
+                    {move || {
+                        if loading.get() {
+                            "Loading…".to_string()
+                        } else {
+                            let total = trips.get().len();
+                            let shown = visible_trips().len();
+                            let label = filter.get().label();
+                            let mut s = if search.get().trim().is_empty() {
+                                format!("{total} trip{} · {label}", if total == 1 { "" } else { "s" })
+                            } else {
+                                format!("{shown} of {total} · {label}")
+                            };
+                            if total as i64 >= TRIPS_LIST_LIMIT {
+                                s.push_str(&format!(
+                                    " · showing latest {TRIPS_LIST_LIMIT} in this range"
+                                ));
+                            }
+                            s
                         }
-                        s
-                    }
-                }}
+                    }}
+                </div>
             </div>
         </div>
 
@@ -330,7 +403,7 @@ pub fn TripsPage() -> impl IntoView {
                                 "No trips yet. Upload a track from the phone to see it here.".to_string()
                             }
                             other => format!(
-                                "No trips in this period ({}) — try another filter.",
+                                "No trips in this period ({}) — try another filter (All / This month).",
                                 other.label()
                             ),
                         }
@@ -338,12 +411,26 @@ pub fn TripsPage() -> impl IntoView {
                 </div>
             </div>
         </Show>
+        <Show when=move || {
+            !loading.get()
+                && !trips.get().is_empty()
+                && visible_trips().is_empty()
+                && error.get().is_none()
+        }>
+            <div class="card">
+                <div class="empty-state">
+                    <Icon name="magnifying-glass" size=IconSize::Xl color=IconColor::Accent />
+                    <div>"No trips match this search — clear the box or switch filter."</div>
+                </div>
+            </div>
+        </Show>
         <div class="trip-grid">
             <For
-                each=move || trips.get()
+                each=move || visible_trips()
                 key=|t| t.id.clone()
                 children=move |t| {
                     let id = t.id.clone();
+                    let id_short = t.id.get(..8).unwrap_or(t.id.as_str()).to_string();
                     let id_del = t.id.clone();
                     let href = format!("/app/trips/{id}");
                     let finished = t.finished;
@@ -387,7 +474,7 @@ pub fn TripsPage() -> impl IntoView {
                                 <div class="trip-card-top">
                                     <div>
                                         <div class="trip-card-title">{car}</div>
-                                        <div class="trip-card-sub muted">{started}</div>
+                                        <div class="trip-card-sub muted">{format!("{started} · {id_short}")}</div>
                                     </div>
                                     <div class="trip-card-badges">
                                         <span class=if finished {

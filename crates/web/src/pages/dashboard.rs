@@ -9,6 +9,14 @@ use crate::units::{
     fmt_distance, fmt_distance_value, fmt_fuel, fmt_odometer_delta, use_unit_prefs, UnitPrefs,
 };
 
+fn pretty_started_local(s: &str) -> String {
+    use chrono::{DateTime, Local};
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
+        return dt.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+    }
+    s.to_string()
+}
+
 #[component]
 pub fn DashboardPage() -> impl IntoView {
     let prefs = use_unit_prefs();
@@ -157,7 +165,7 @@ pub fn DashboardPage() -> impl IntoView {
                                 view! {
                                     <tr>
                                         <td>{t.car_name.clone()}</td>
-                                        <td>{t.started_at.clone()}</td>
+                                        <td>{pretty_started_local(&t.started_at)}</td>
                                         <td>{dist}</td>
                                         <td>{format!("{:.0} min", t.duration_s.unwrap_or(0.0) / 60.0)}</td>
                                         <td>{fuel}</td>

@@ -49,6 +49,9 @@ pub fn integrate_fuel_l(samples: &[RateSample], max_gap: Duration) -> Option<f64
 }
 
 /// Prefer odometer start/end delta (m) when sane; else GPS track length.
+///
+/// Whole-km odometers often under-report short trips (e.g. GPS 8.6 km, odo Δ 1 km).
+/// Reject odo when it is far **below** GPS as well as far above.
 pub fn economy_distance_m(
     gps_m: Option<f64>,
     odo_start_km: Option<f64>,
@@ -59,8 +62,16 @@ pub fn economy_distance_m(
         if s.is_finite() && e.is_finite() {
             let d_km = e - s;
             if d_km >= ODO_MIN_KM {
-                let max_km = gps.map(|g| g / 1000.0 * 1.5 + 2.0).unwrap_or(f64::INFINITY);
+                let gps_km = gps.map(|g| g / 1000.0);
+                let max_km = gps_km.map(|g| g * 1.5 + 2.0).unwrap_or(f64::INFINITY);
                 if d_km <= max_km {
+                    if let Some(g_km) = gps_km {
+                        // Allow ~1.5 km short for integer odo rounding, but not 1 km vs 8 km.
+                        let min_sane = (g_km - 1.5).max(g_km * 0.5);
+                        if d_km + 1e-9 < min_sane {
+                            return gps;
+                        }
+                    }
                     return Some(d_km * 1000.0);
                 }
             }
@@ -160,6 +171,16 @@ mod tests {
         // GPS 10 km, odo claims 100 km
         let m = economy_distance_m(Some(10_000.0), Some(0.0), Some(100.0)).unwrap();
         assert!((m - 10_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn economy_rejects_coarse_odo_under_gps() {
+        // Real trip shape: GPS ~8.6 km, integer odo only ticks 1 km.
+        let m = economy_distance_m(Some(8643.66), Some(25409.0), Some(25410.0)).unwrap();
+        assert!(
+            (m - 8643.66).abs() < 1e-3,
+            "expected GPS distance, got {m}"
+        );
     }
 
     #[test]

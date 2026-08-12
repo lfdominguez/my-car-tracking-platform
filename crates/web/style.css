@@ -256,6 +256,47 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .trips-filter-meta {
   font-size: 0.85rem;
 }
+.trips-filter-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 1rem;
+  margin-left: auto;
+}
+.trips-search {
+  display: block;
+  min-width: min(100%, 16rem);
+}
+.trips-search-input {
+  width: 100%;
+  min-width: 12rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.55);
+  color: var(--text, #e2e8f0);
+  font: inherit;
+  font-size: 0.9rem;
+}
+.trips-search-input::placeholder {
+  color: var(--muted, #94a3b8);
+}
+.trips-search-input:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 0.55);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* —— Trips list cards —— */
 .trip-grid {

@@ -36,9 +36,22 @@ async fn spa_fallback(dist: PathBuf, index: PathBuf, req: Request<Body>) -> Resp
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let svc = ServeDir::new(&dist).not_found_service(ServeFile::new(&index));
+    // Use fallback (not not_found_service): missing paths must still serve
+    // index.html with HTTP 200 so client routes (/app/trips, /app/trips/:id)
+    // load the SPA. not_found_service forces 404 and breaks deep links / CF.
+    let svc = ServeDir::new(&dist).fallback(ServeFile::new(&index));
     match svc.oneshot(req).await {
-        Ok(res) => res.map(Body::new),
+        Ok(res) => {
+            let mut res = res.map(Body::new);
+            // Avoid caching the SPA shell so deploys + deep links stay fresh.
+            if path == "/" || !path.contains('.') {
+                res.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    header::HeaderValue::from_static("no-cache"),
+                );
+            }
+            res
+        }
         Err(_) => {
             // Dev fallback when SPA not built yet.
             (
