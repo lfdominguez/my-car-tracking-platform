@@ -16,7 +16,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true, features = ["wasmbind"] }
 uuid = { workspace = true, features = ["js"] }
 gloo-net = { version = "0.6", features = ["http"] }
-gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-timers = { version = "0.4", features = ["futures"] }
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",
