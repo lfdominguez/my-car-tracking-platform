@@ -3280,7 +3280,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-extra",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "chrono",
  "dotenvy",
@@ -4529,7 +4529,7 @@ dependencies = [
 name = "web"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "console_error_panic_hook",
  "getrandom 0.2.17",
