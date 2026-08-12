@@ -6,7 +6,7 @@ license.workspace = true
 description = "Client-side zero-knowledge vault crypto (WASM + native)"
 
 [dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 hkdf = "0.12"
 sha2 = "0.10"
