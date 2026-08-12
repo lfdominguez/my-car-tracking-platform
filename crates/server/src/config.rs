@@ -43,6 +43,8 @@ pub struct Config {
     /// When true, CSP `script-src` allows Cloudflare Web Analytics beacon host.
     /// Does not enable `'unsafe-eval'`. Default false.
     pub csp_cloudflare_analytics: bool,
+    /// Auto-finish open trips after this many seconds without new samples (default 2h).
+    pub trip_stale_finish_after_secs: u64,
 }
 
 #[derive(Debug, Error)]
@@ -168,6 +170,11 @@ impl Config {
             "https://overpass-api.de/api/interpreter".into()
         });
         let csp_cloudflare_analytics = env_flag("CSP_CLOUDFLARE_ANALYTICS", false);
+        let trip_stale_finish_after_secs = env::var("TRIP_STALE_FINISH_AFTER_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(crate::trips::DEFAULT_STALE_FINISH_AFTER_SECS)
+            .max(60);
 
         if is_local_dev {
             if session_secret == DEFAULT_SESSION_SECRET
@@ -208,6 +215,7 @@ impl Config {
             vault_max_object_bytes,
             overpass_url,
             csp_cloudflare_analytics,
+            trip_stale_finish_after_secs,
         })
     }
 }

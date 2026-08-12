@@ -6,7 +6,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::api::{
-    delete_trip, fetch_trip_analysis, get_trip, list_trips, start_trip_analysis,
+    delete_trip, fetch_trip_analysis, finish_trip, get_trip, list_trips, start_trip_analysis,
     start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames, vault_create_job, Trip,
     TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame,
 };
@@ -82,6 +82,25 @@ fn pretty_started(s: &str) -> String {
         format!("{d} {t} UTC")
     } else {
         s.to_string()
+    }
+}
+
+/// Human status for open trips: live vs no GPS for a while.
+fn open_trip_status_label(last_point_at: Option<&str>, started_at: &str) -> String {
+    use chrono::{DateTime, Local, Utc};
+    let activity = last_point_at
+        .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
+        .or_else(|| DateTime::parse_from_rfc3339(started_at.trim()).ok());
+    let Some(activity) = activity else {
+        return "In progress".into();
+    };
+    let activity_utc = activity.with_timezone(&Utc);
+    let age = Utc::now().signed_duration_since(activity_utc);
+    if age.num_minutes() >= 15 {
+        let local = activity.with_timezone(&Local).format("%H:%M");
+        format!("No GPS since {local} · finish if the drive ended")
+    } else {
+        "In progress".into()
     }
 }
 
@@ -434,6 +453,12 @@ pub fn TripsPage() -> impl IntoView {
                     let id_del = t.id.clone();
                     let href = format!("/app/trips/{id}");
                     let finished = t.finished;
+                    let status_label = if finished {
+                        "Finished".to_string()
+                    } else {
+                        open_trip_status_label(t.last_point_at.as_deref(), &t.started_at)
+                    };
+                    let status_stale = !finished && status_label.starts_with("No GPS");
                     let car = t.car_name.clone();
                     let started = pretty_started(&t.started_at);
                     let p = prefs.get();
@@ -479,10 +504,12 @@ pub fn TripsPage() -> impl IntoView {
                                     <div class="trip-card-badges">
                                         <span class=if finished {
                                             "pill pill-ok".to_string()
+                                        } else if status_stale {
+                                            "pill pill-warn".to_string()
                                         } else {
                                             "pill pill-live".to_string()
                                         }>
-                                            {if finished { "Finished" } else { "In progress" }}
+                                            {status_label}
                                         </span>
                                         {if t.analyzed {
                                             view! { <span class="pill pill-ai">"AI analyzed"</span> }.into_any()
@@ -577,6 +604,7 @@ pub fn TripDetailPage() -> impl IntoView {
     let traffic_busy = RwSignal::new(false);
     let traffic_err = RwSignal::new(Option::<String>::None);
     let deleting = RwSignal::new(false);
+    let finishing = RwSignal::new(false);
     let vault = use_vault_session();
 
     Effect::new(move |_| {
@@ -812,7 +840,11 @@ pub fn TripDetailPage() -> impl IntoView {
                                 if t.finished {
                                     format!("Finished · fuel {}", t.fuel_type_snapshot)
                                 } else {
-                                    format!("In progress · fuel {}", t.fuel_type_snapshot)
+                                    let status = open_trip_status_label(
+                                        t.last_point_at.as_deref(),
+                                        &t.started_at,
+                                    );
+                                    format!("{status} · fuel {}", t.fuel_type_snapshot)
                                 }
                             })
                             .unwrap_or_else(|| "Loading trip analytics…".into())
@@ -820,10 +852,47 @@ pub fn TripDetailPage() -> impl IntoView {
                 </p>
             </div>
             <div class="trip-detail-actions">
+                <Show when=move || trip.get().map(|t| !t.finished).unwrap_or(false)>
+                    <button
+                        type="button"
+                        class="btn sm"
+                        prop:disabled=move || finishing.get() || deleting.get()
+                        on:click=move |_| {
+                            let Some(t) = trip.get_untracked() else {
+                                return;
+                            };
+                            if finishing.get_untracked() || t.finished {
+                                return;
+                            }
+                            if !confirm(
+                                "Mark this trip as finished? Use this if the phone never sent stop. Late GPS samples can still upload for a while.",
+                            ) {
+                                return;
+                            }
+                            let id = t.id.clone();
+                            finishing.set(true);
+                            leptos::task::spawn_local(async move {
+                                match finish_trip(&id).await {
+                                    Ok(updated) => {
+                                        trip.set(Some(updated));
+                                        error.set(None);
+                                    }
+                                    Err(e) => error.set(Some(e.to_string())),
+                                }
+                                finishing.set(false);
+                            });
+                        }
+                    >
+                        <span class="icon-label">
+                            <Icon name="flag-checkered" size=IconSize::Sm />
+                            {move || if finishing.get() { "Finishing…" } else { "Finish trip" }}
+                        </span>
+                    </button>
+                </Show>
                 <button
                     type="button"
                     class="btn ghost sm err"
-                    prop:disabled=move || deleting.get() || trip.get().is_none()
+                    prop:disabled=move || deleting.get() || finishing.get() || trip.get().is_none()
                     on:click=move |_| {
                         let Some(t) = trip.get_untracked() else {
                             return;

@@ -180,80 +180,23 @@ async fn track_stop(
     let legacy_key = parse_legacy_key(&body.id)
         .ok_or_else(|| AppError::BadRequest("invalid tracking id".into()))?;
 
-    let res = sqlx::query(
-        r#"
-        UPDATE tracks
-        SET finished = true, finished_at = COALESCE(finished_at, NOW())
-        WHERE car_id = $1 AND legacy_key = $2
-        "#,
-    )
-    .bind(device.car_id)
-    .bind(legacy_key)
-    .execute(&state.pool)
-    .await?;
-
-    if res.rows_affected() == 0 {
-        return Err(AppError::NotFound);
-    }
-
-    // Auto-remove empty/noise trips; otherwise best-effort route optimization.
-    if let Ok(Some(track_id)) = sqlx::query_scalar::<_, uuid::Uuid>(
+    let track_id = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2",
     )
     .bind(device.car_id)
     .bind(legacy_key)
     .fetch_optional(&state.pool)
-    .await
-    {
-        match crate::trips::is_empty_trip_for_auto_remove(&state.pool, track_id).await {
-            Ok(true) => {
-                if let Err(e) = crate::trips::purge_track(&state.pool, track_id).await {
-                    tracing::warn!(%track_id, error = %e, "empty trip purge failed");
-                }
-            }
-            Ok(false) => {
-                let pool = state.pool.clone();
-                let keyring = state.keyring.clone();
-                let overpass = state.config.overpass_url.clone();
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        crate::route_opt::process_finished_track(&pool, &keyring, track_id).await
-                    {
-                        tracing::warn!(%track_id, error = %e, "route optimization job failed");
-                    }
-                });
-                let pool_t = state.pool.clone();
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        crate::traffic::process_finished_track(&pool_t, &overpass, track_id).await
-                    {
-                        tracing::warn!(%track_id, error = %e, "traffic job failed");
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::warn!(%track_id, error = %e, "empty trip check failed");
-                let pool = state.pool.clone();
-                let keyring = state.keyring.clone();
-                let overpass = state.config.overpass_url.clone();
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        crate::route_opt::process_finished_track(&pool, &keyring, track_id).await
-                    {
-                        tracing::warn!(%track_id, error = %e, "route optimization job failed");
-                    }
-                });
-                let pool_t = state.pool.clone();
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        crate::traffic::process_finished_track(&pool_t, &overpass, track_id).await
-                    {
-                        tracing::warn!(%track_id, error = %e, "traffic job failed");
-                    }
-                });
-            }
-        }
-    }
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    // Idempotent: already-finished tracks return OK so phone stop retries succeed.
+    crate::trips::finish_track(
+        &state.pool,
+        &state.keyring,
+        &state.config.overpass_url,
+        track_id,
+    )
+    .await?;
 
     Ok(StatusCode::OK)
 }

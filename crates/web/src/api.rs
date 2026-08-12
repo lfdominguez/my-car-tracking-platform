@@ -141,6 +141,9 @@ pub struct Trip {
     pub traffic_analyzed: bool,
     #[serde(default)]
     pub vault_sealed: bool,
+    /// Latest sample time (RFC3339); used for stale in-progress UI.
+    #[serde(default)]
+    pub last_point_at: Option<String>,
     #[serde(default)]
     pub traffic: Option<TripTrafficSummary>,
 }
@@ -504,6 +507,18 @@ pub async fn list_trips(opts: TripListOpts) -> Result<Vec<Trip>, ApiError> {
 
 pub async fn get_trip(id: &str) -> Result<Trip, ApiError> {
     send_json(Request::get(&format!("/api/trips/{id}"))).await
+}
+
+pub async fn finish_trip(id: &str) -> Result<Trip, ApiError> {
+    if id.is_empty() {
+        return Err(ApiError::Message("missing trip id".into()));
+    }
+    let body = serde_json::json!({});
+    let req = with_creds(Request::post(&format!("/api/trips/{id}/finish")))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
 }
 
 pub async fn delete_trip(id: &str) -> Result<(), ApiError> {

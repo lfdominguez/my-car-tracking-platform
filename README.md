@@ -254,7 +254,8 @@ Header: `Authorization: Basic <device_token>`. External track id = Android start
 | `GET` / `POST` | `/api/cars/{id}/devices` | device tokens |
 | `POST` | `/api/cars/{id}/devices/{id}/provisioning` | JSON `{ "token": "…" }` → QR payload |
 | `GET` / `POST` | `/api/cars/{id}/shares` | sharing (unknown email → uniform 200) |
-| `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` · `…/traffic/frames` | trips (points/map capped); traffic frames when ready |
+| `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` · `…/traffic/frames` | trips; traffic frames when ready |
+| `POST` | `/api/trips/{id}/finish` | owner/editor: mark open trip finished (same side effects as device `/stop`) |
 | `POST` | `/api/trips/{id}/traffic/analyze` | owner: run/retry traffic guessing (`traffic_analyzed` when ready) |
 | `POST` / `GET` | `/api/trips/{id}/analyze` · `…/analysis` | AI (owner) |
 | `GET` | `/api/dashboard/summary` | globals + per-car cards |

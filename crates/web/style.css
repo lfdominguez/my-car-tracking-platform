@@ -469,6 +469,15 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   background: rgba(58, 42, 8, 0.9);
   border-color: rgba(245, 158, 11, 0.4);
 }
+.pill-warn {
+  color: #fdba74;
+  background: rgba(67, 20, 7, 0.9);
+  border-color: rgba(249, 115, 22, 0.45);
+  white-space: normal;
+  max-width: 14rem;
+  text-align: center;
+  line-height: 1.25;
+}
 
 /* —— Trip detail analytics —— */
 .kpi-grid {
