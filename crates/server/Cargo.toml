@@ -30,7 +30,7 @@ rand = "0.8"
 base64 = "0.23"
 oauth2 = "5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-axum-extra = { version = "0.10", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
 time = "0.3"
 sha2 = "0.10"
 hkdf = "0.12"
