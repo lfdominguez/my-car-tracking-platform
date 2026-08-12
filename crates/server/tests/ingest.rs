@@ -299,7 +299,7 @@ async fn batch_over_max_rejected() {
 }
 
 #[tokio::test]
-async fn finished_track_samples_rejected() {
+async fn finished_track_late_samples_accepted_within_window() {
     let Some((base, client, token, _, _)) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
         return;
@@ -345,11 +345,12 @@ async fn finished_track_samples_rejected() {
         .unwrap();
     assert!(stop.status().is_success(), "stop failed: {}", stop.status());
 
+    // Late queue drain: point recorded during the trip after /stop.
     let sample = json!({
         "tracking_id": tracking_id,
         "recorded_at": started_at.timestamp_millis() + 5000,
-        "lat": 48.1,
-        "lon": 11.5,
+        "lat": 48.105,
+        "lon": 11.51,
         "acc": 3.0
     });
     let resp = client
@@ -361,7 +362,74 @@ async fn finished_track_samples_rejected() {
         .unwrap();
     assert!(resp.status().is_success());
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["accepted"], 0);
+    assert_eq!(body["accepted"], 1, "late in-window sample must be accepted: {body}");
+    assert!(body["rejected"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+}
+
+#[tokio::test]
+async fn finished_track_samples_far_outside_window_rejected() {
+    let Some((base, client, token, _, _)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+
+    let started_at = Utc::now() - chrono::Duration::hours(72);
+    let tracking_id = started_at.to_rfc3339();
+
+    let start = client
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": started_at }))
+        .send()
+        .await
+        .unwrap();
+    assert!(start.status().is_success(), "start: {}", start.status());
+
+    for i in 0..2 {
+        let sample = json!({
+            "tracking_id": tracking_id,
+            "recorded_at": started_at.timestamp_millis() + i * 1000,
+            "lat": 48.2 + (i as f64) * 0.001,
+            "lon": 11.6,
+            "acc": 3.0
+        });
+        let resp = client
+            .post(format!("{base}/api/track/sample"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&sample)
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "sample {i}: {}", resp.status());
+    }
+
+    let stop = client
+        .post(format!("{base}/api/track/stop"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "id": tracking_id }))
+        .send()
+        .await
+        .unwrap();
+    assert!(stop.status().is_success(), "stop failed: {}", stop.status());
+
+    // Far after finished_at + 48h grace (finished_at is set at stop ≈ now).
+    let sample = json!({
+        "tracking_id": tracking_id,
+        "recorded_at": (Utc::now() + chrono::Duration::hours(49)).timestamp_millis(),
+        "lat": 48.2,
+        "lon": 11.6,
+        "acc": 3.0
+    });
+    let resp = client
+        .post(format!("{base}/api/track/samples"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "samples": [sample] }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["accepted"], 0, "out-of-window late sample must be rejected: {body}");
     assert_eq!(body["rejected"][0]["reason"], "track_finished");
 }
 

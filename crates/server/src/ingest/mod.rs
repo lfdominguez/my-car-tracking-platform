@@ -371,8 +371,8 @@ async fn insert_sample(
     }
 
     let legacy_key = parse_legacy_key(&sample.tracking_id).ok_or(SampleError::UnknownTrack)?;
-    let row = sqlx::query_as::<_, (Uuid, bool)>(
-        "SELECT id, finished FROM tracks WHERE car_id = $1 AND legacy_key = $2",
+    let row = sqlx::query_as::<_, (Uuid, bool, DateTime<Utc>, Option<DateTime<Utc>>)>(
+        "SELECT id, finished, started_at, finished_at FROM tracks WHERE car_id = $1 AND legacy_key = $2",
     )
     .bind(car_id)
     .bind(legacy_key)
@@ -380,12 +380,12 @@ async fn insert_sample(
     .await
     .map_err(SampleError::Db)?
     .ok_or(SampleError::UnknownTrack)?;
-    let (track_id, finished) = row;
-    if finished {
-        return Err(SampleError::TrackFinished);
-    }
+    let (track_id, finished, started_at, finished_at) = row;
 
     let recorded_at = millis_to_datetime(sample.recorded_at);
+    if finished && !finished_track_accepts_sample(recorded_at, started_at, finished_at) {
+        return Err(SampleError::TrackFinished);
+    }
     let engine_rpm = sample.vehicle_engine_rpm;
     let engine_vel = sample.vehicle_speed_kph;
 
@@ -599,9 +599,31 @@ async fn track_vault_chunk(
     Ok(Json(serde_json::json!({ "ok": true, "id": id, "updated": false })))
 }
 
+/// How long after `finished_at` we still accept late samples (offline queue drain).
+const LATE_SAMPLE_GRACE: chrono::Duration = chrono::Duration::hours(48);
+/// Allow small clock skew before `started_at`.
+const START_SKEW: chrono::Duration = chrono::Duration::minutes(5);
+
+/// Whether a sample timestamp may still be written after the track was stopped.
+///
+/// Phones often call `/stop` before the local queue is empty; points recorded
+/// during the drive must still land. Reject only timestamps clearly outside
+/// the trip window (+ grace).
+fn finished_track_accepts_sample(
+    recorded_at: DateTime<Utc>,
+    started_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+) -> bool {
+    let earliest = started_at - START_SKEW;
+    let end_anchor = finished_at.unwrap_or(started_at);
+    let latest = end_anchor + LATE_SAMPLE_GRACE;
+    recorded_at >= earliest && recorded_at <= latest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn parse_rfc3339_legacy_key() {
@@ -619,5 +641,45 @@ mod tests {
     fn millis_conversion() {
         let dt = millis_to_datetime(1704164645123);
         assert_eq!(dt.timestamp_subsec_millis(), 123);
+    }
+
+    #[test]
+    fn finished_accepts_sample_during_trip() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 12, 0, 0).unwrap();
+        let fin = start + chrono::Duration::minutes(20);
+        let mid = start + chrono::Duration::minutes(10);
+        assert!(finished_track_accepts_sample(mid, start, Some(fin)));
+    }
+
+    #[test]
+    fn finished_accepts_sample_just_after_stop_within_grace() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 12, 0, 0).unwrap();
+        let fin = start + chrono::Duration::minutes(20);
+        let late = fin + chrono::Duration::hours(12);
+        assert!(finished_track_accepts_sample(late, start, Some(fin)));
+    }
+
+    #[test]
+    fn finished_rejects_sample_far_after_grace() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 12, 0, 0).unwrap();
+        let fin = start + chrono::Duration::minutes(20);
+        let too_late = fin + chrono::Duration::hours(49);
+        assert!(!finished_track_accepts_sample(too_late, start, Some(fin)));
+    }
+
+    #[test]
+    fn finished_rejects_sample_long_before_start() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 12, 0, 0).unwrap();
+        let fin = start + chrono::Duration::minutes(20);
+        let early = start - chrono::Duration::hours(1);
+        assert!(!finished_track_accepts_sample(early, start, Some(fin)));
+    }
+
+    #[test]
+    fn finished_accepts_small_start_skew() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 12, 0, 0).unwrap();
+        let fin = start + chrono::Duration::minutes(20);
+        let skew = start - chrono::Duration::minutes(3);
+        assert!(finished_track_accepts_sample(skew, start, Some(fin)));
     }
 }
