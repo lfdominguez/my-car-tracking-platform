@@ -246,7 +246,7 @@ Header: `Authorization: Basic <device_token>`. External track id = Android start
 |--------|------|--------|
 | `GET` / `PATCH` | `/api/me` | profile, units, API key flags, MCP token status |
 | `POST` / `DELETE` | `/api/me/mcp-token` | rotate (plaintext once) / revoke MCP Bearer token |
-| MCP | `/mcp` | Streamable HTTP MCP · `Authorization: Bearer <token>` · read-only tools |
+| MCP | `/mcp` | Streamable HTTP MCP · `Authorization: Bearer <token>` · read-only tools · Host allow-list = loopback + host from `PUBLIC_BASE_URL` (+ optional `MCP_ALLOWED_HOSTS`) |
 | `POST` | `/auth/logout` | clear session |
 | `GET` / `POST` | `/api/cars` | list / create |
 | `GET` / `PATCH` / `DELETE` | `/api/cars/{id}` | car CRUD |

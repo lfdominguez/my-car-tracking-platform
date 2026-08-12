@@ -321,13 +321,72 @@ impl ServerHandler for CarTrackingMcp {
     }
 }
 
+/// Build rmcp `allowed_hosts` for DNS-rebinding protection.
+///
+/// rmcp defaults to loopback only. Public deployments must include the real
+/// public hostname (from `PUBLIC_BASE_URL`) or clients get
+/// `Forbidden: Host header is not allowed`.
+///
+/// Always keeps loopback entries for local tooling. Optional `extra_csv` is a
+/// comma-separated list (env `MCP_ALLOWED_HOSTS`) for aliases / LAN names.
+pub fn build_mcp_allowed_hosts(public_base_url: &str, extra_csv: Option<&str>) -> Vec<String> {
+    let mut hosts: Vec<String> = vec![
+        "localhost".into(),
+        "127.0.0.1".into(),
+        "::1".into(),
+    ];
+
+    let push_unique = |hosts: &mut Vec<String>, candidate: &str| {
+        let candidate = candidate.trim();
+        if candidate.is_empty() {
+            return;
+        }
+        if hosts
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(candidate))
+        {
+            return;
+        }
+        hosts.push(candidate.to_string());
+    };
+
+    if let Ok(url) = url::Url::parse(public_base_url) {
+        if let Some(host) = url.host_str() {
+            push_unique(&mut hosts, host);
+            // Explicit non-default port (e.g. :8443) — some clients send Host: name:port.
+            if let Some(port) = url.port() {
+                push_unique(&mut hosts, &format!("{host}:{port}"));
+            }
+        }
+    }
+
+    if let Some(extra) = extra_csv {
+        for part in extra.split(',') {
+            push_unique(&mut hosts, part);
+        }
+    }
+
+    hosts
+}
+
 /// Mount Streamable HTTP MCP at `/mcp` with Bearer auth middleware.
 pub fn router(state: AppState) -> Router<AppState> {
     let factory_state = state.clone();
+    let allowed_hosts = build_mcp_allowed_hosts(
+        &state.config.public_base_url,
+        std::env::var("MCP_ALLOWED_HOSTS").ok().as_deref(),
+    );
+    tracing::info!(
+        ?allowed_hosts,
+        "MCP Streamable HTTP Host allow-list (DNS rebinding protection)"
+    );
+
     let service = StreamableHttpService::new(
         move || Ok(CarTrackingMcp::new(factory_state.clone())),
         Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default().with_json_response(true),
+        StreamableHttpServerConfig::default()
+            .with_json_response(true)
+            .with_allowed_hosts(allowed_hosts),
     );
 
     Router::new()
@@ -336,4 +395,45 @@ pub fn router(state: AppState) -> Router<AppState> {
             state,
             mcp_bearer_middleware,
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_mcp_allowed_hosts;
+
+    #[test]
+    fn includes_loopback_and_public_host() {
+        let hosts = build_mcp_allowed_hosts("https://mycar.domivega.com", None);
+        assert!(hosts.iter().any(|h| h == "localhost"));
+        assert!(hosts.iter().any(|h| h == "127.0.0.1"));
+        assert!(hosts.iter().any(|h| h == "::1"));
+        assert!(hosts.iter().any(|h| h == "mycar.domivega.com"));
+        // Default https port is omitted from URL → no host:443 entry required;
+        // hostname-only allow matches any port.
+        assert!(!hosts.iter().any(|h| h == "mycar.domivega.com:443"));
+    }
+
+    #[test]
+    fn includes_explicit_port_and_extras() {
+        let hosts = build_mcp_allowed_hosts(
+            "http://track.example.com:8443",
+            Some(" lan.internal ,track.example.com, 192.168.88.10 "),
+        );
+        assert!(hosts.iter().any(|h| h == "track.example.com"));
+        assert!(hosts.iter().any(|h| h == "track.example.com:8443"));
+        assert!(hosts.iter().any(|h| h == "lan.internal"));
+        assert!(hosts.iter().any(|h| h == "192.168.88.10"));
+        // Deduped public host from URL + extras
+        assert_eq!(
+            hosts.iter().filter(|h| h.as_str() == "track.example.com").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn invalid_public_url_still_keeps_loopback() {
+        let hosts = build_mcp_allowed_hosts("not-a-url", Some("ok.host"));
+        assert!(hosts.iter().any(|h| h == "127.0.0.1"));
+        assert!(hosts.iter().any(|h| h == "ok.host"));
+    }
 }
