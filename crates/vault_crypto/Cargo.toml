@@ -8,7 +8,7 @@ description = "Client-side zero-knowledge vault crypto (WASM + native)"
 [dependencies]
 aes-gcm = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
-hkdf = "0.12"
+hkdf = "0.13"
 sha2 = "0.10"
 rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
