@@ -2,12 +2,28 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Car Tracking Platform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="theme-color" content="#0b1220"/>
+  <meta name="color-scheme" content="dark"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Car Tracking"/>
+  <meta name="application-name" content="Car Tracking"/>
+  <meta name="description" content="Trip tracking, telemetry, and route insights"/>
+  <title>Car Tracking</title>
+  <link rel="manifest" href="/manifest.webmanifest"/>
+  <link rel="icon" href="/icons/favicon.ico" sizes="any"/>
+  <link rel="icon" type="image/png" href="/icons/favicon-32.png" sizes="32x32"/>
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/>
   <link data-trunk rel="css" href="style.css"/>
   <link data-trunk rel="rust" data-wasm-opt="z"/>
   <!-- Vendor assets (self-hosted for CSP script-src 'self'). -->
   <link data-trunk rel="copy-file" href="public/qrcode.min.js"/>
+  <link data-trunk rel="copy-file" href="public/sw.js"/>
+  <link data-trunk rel="copy-file" href="public/pwa-register.js"/>
+  <link data-trunk rel="copy-file" href="public/manifest.webmanifest"/>
+  <link data-trunk rel="copy-dir" href="public/icons" data-target-path="icons"/>
   <link data-trunk rel="copy-dir" href="public/vendor" data-target-path="vendor"/>
   <link rel="stylesheet" type="text/css" href="/vendor/phosphor-duotone.css"/>
   <link rel="stylesheet" type="text/css" href="/vendor/phosphor-regular.css"/>
@@ -16,6 +32,7 @@
   <script src="/vendor/echarts.min.js"></script>
   <!-- Absolute path: relative src breaks on client routes like /cars/:id (SPA deep links). -->
   <script src="/qrcode.min.js"></script>
+  <script src="/pwa-register.js"></script>
 </head>
 <body></body>
 </html>

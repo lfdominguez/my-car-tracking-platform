@@ -40,6 +40,7 @@
 | 📱 **QR bootstrap** | One-time device token + absolute URLs + fuel math for the phone |
 | 🌍 **Units** | Metric or Imperial — converted on the API; DB stays SI/raw |
 | 🐳 **Ship it** | Multi-stage Docker image on GHCR; compose with PostGIS |
+| 📱 **Installable web** | PWA manifest + icons · Add to Home Screen · light offline shell · update banner |
 
 ---
 
@@ -193,7 +194,8 @@ Packages may start private on GHCR — mark public in GitHub → Packages, or `d
 - **Cloudflare Web Analytics (optional):** set `CSP_CLOUDFLARE_ANALYTICS=1` so CSP `script-src` allows `https://static.cloudflareinsights.com`. Default is off. Does **not** add `'unsafe-eval'`; residual beacon `eval()` console noise is expected and harmless if the UI works. Prefer turning the CF beacon off if you do not need RUM.
 - **Proxy:** Set `TRUST_FORWARDED_HEADERS=1` only behind a trusted reverse proxy. See `deploy/nginx-security.conf.example`.
 - **Hardening:** Example Fail2ban and Nginx configs are available in `deploy/`.
-- **SPA deploy (SRI):** Trunk ships Subresource Integrity on `/snippets/*` and other assets. Never partially overwrite a live `WEB_DIST` (mixed `index.html` + old snippets breaks the client). Use `scripts/verify-web-dist-sri.sh` and atomic `scripts/deploy-web-dist.sh SOURCE DEST` (or rebuild the whole Docker image). After bare-metal publish, purge Cloudflare cache for `/`, `/web-*`, `/snippets/*`, `/vendor/*`.
+- **SPA deploy (SRI):** Trunk ships Subresource Integrity on `/snippets/*` and other assets. Never partially overwrite a live `WEB_DIST` (mixed `index.html` + old snippets breaks the client). Use `scripts/verify-web-dist-sri.sh` and atomic `scripts/deploy-web-dist.sh SOURCE DEST` (or rebuild the whole Docker image). After bare-metal publish, purge Cloudflare cache for `/`, `/web-*`, `/snippets/*`, `/vendor/*`, `/icons/*`, `/sw.js`, `/manifest.webmanifest`.
+- **PWA:** `manifest.webmanifest` + `/icons/*` (from the Android app logo) enable **Add to Home Screen** on Android Chrome and iOS Safari. A light service worker (`/sw.js`) caches the SPA shell for offline chrome; `/api/*` stays network-only. When a new worker is waiting, the app shows **Update now** (skipWaiting + reload). Bump `CACHE_VERSION` in `crates/web/public/sw.js` when changing SW logic. HTTPS (or localhost) required for install/SW.
 - **CI/Local:** GitHub Actions (`.github/workflows/security.yml`) runs `cargo audit` + Trivy FS/config on PRs and weekly. Locally: `scripts/ci-security.sh`. Known unfixed transitive advisory `RUSTSEC-2023-0071` (`rsa` via `sqlx-postgres`) is ignored in `.cargo/audit.toml` until upstream ships a fix.
 
 #### 🔄 Secrets rotation procedure

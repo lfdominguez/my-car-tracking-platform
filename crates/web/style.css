@@ -31,6 +31,19 @@ a:hover { text-decoration: underline; }
   min-height: 100vh;
   min-height: 100dvh;
 }
+.mobile-topbar {
+  display: none;
+}
+.nav-backdrop {
+  display: none;
+}
+.brand-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
 .sidebar {
   position: sticky;
   top: 0;
@@ -48,6 +61,7 @@ a:hover { text-decoration: underline; }
   flex-direction: column;
   gap: 1rem;
   box-sizing: border-box;
+  z-index: 40;
 }
 .brand {
   font-weight: 700;
@@ -66,8 +80,43 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   gap: 0.55rem;
+  min-height: 44px;
 }
 .nav a.active, .nav a:hover { background: var(--panel-2); }
+.connectivity-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  padding: 0.65rem 0.85rem;
+  border-radius: 12px;
+  margin-bottom: 0.85rem;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  border: 1px solid var(--border);
+}
+.connectivity-banner.offline {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(120, 53, 15, 0.35);
+  color: #fde68a;
+}
+.connectivity-banner.update {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(30, 58, 138, 0.35);
+  color: var(--text);
+}
+.connectivity-banner .btn {
+  margin-left: auto;
+}
+.btn.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  min-width: 44px;
+}
 .user-card {
   display: flex;
   align-items: center;
@@ -2295,5 +2344,137 @@ a:hover .routes-corridor-card {
   .landing-feature-card {
     transition: none;
     transform: none;
+  }
+}
+
+/* —— App shell: mobile / tablet —— */
+@media (max-width: 900px) {
+  /* Block layout: fixed drawer/backdrop must not steal grid tracks. */
+  .app-shell {
+    display: block;
+    min-height: 100dvh;
+  }
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    padding: 0.55rem 0.75rem;
+    padding-top: max(0.55rem, env(safe-area-inset-top));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    background: rgba(13, 20, 34, 0.94);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+  .mobile-topbar-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 700;
+    font-size: 1rem;
+    min-width: 0;
+  }
+  .mobile-topbar-brand .brand-logo {
+    width: 28px;
+    height: 28px;
+  }
+  .mobile-topbar-spacer {
+    width: 44px;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+  .nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .app-shell.nav-open .nav-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(300px, 88vw);
+    height: 100dvh;
+    max-height: 100dvh;
+    z-index: 60;
+    transform: translateX(-105%);
+    transition: transform 0.22s ease;
+    padding-top: max(1.25rem, env(safe-area-inset-top));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.45);
+  }
+  .app-shell.nav-open .sidebar {
+    transform: translateX(0);
+  }
+  .main {
+    padding: 1rem;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    min-height: auto;
+  }
+  .grid.two {
+    grid-template-columns: 1fr;
+  }
+  .grid.stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
+  }
+  .topbar h1 {
+    font-size: 1.35rem;
+  }
+  .map {
+    height: 260px;
+    min-height: 220px;
+  }
+  .chart {
+    height: 240px;
+  }
+  .chart.chart-tall {
+    height: 260px;
+  }
+  .trip-grid {
+    grid-template-columns: 1fr;
+  }
+  .telemetry-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .telemetry-toolbar-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+  body {
+    overflow-x: hidden;
+  }
+}
+
+@media (max-width: 480px) {
+  .grid.stats {
+    grid-template-columns: 1fr 1fr;
+  }
+  .main {
+    padding: 0.75rem;
+  }
+  .card {
+    padding: 0.85rem 0.9rem;
+  }
+  .stat-value {
+    font-size: 1.35rem;
   }
 }

@@ -264,21 +264,82 @@ window.__tripTelemetry = {
   getSelection: () => __tripSelection
 };
 
+function hostHasSize(el) {
+  if (!el) return false;
+  const w = el.clientWidth || el.offsetWidth || 0;
+  const h = el.clientHeight || el.offsetHeight || 0;
+  return w > 2 && h > 2;
+}
+
+function safeResize(chart) {
+  if (!chart) return;
+  try {
+    const dom = chart.getDom && chart.getDom();
+    if (dom && !hostHasSize(dom)) return;
+    chart.resize();
+  } catch (_) { /* ignore */ }
+}
+
+function ensureChartObservers(elId, el, chart) {
+  if (chart.__observersBound) return;
+  chart.__observersBound = true;
+
+  const onResize = () => {
+    const c = __tripCharts.get(elId);
+    if (c) safeResize(c);
+  };
+  window.addEventListener('resize', onResize);
+  chart.__onResize = onResize;
+
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => {
+      const c = __tripCharts.get(elId);
+      if (!c) return;
+      // Defer one frame so flex/grid layout has settled (common on mobile).
+      requestAnimationFrame(() => safeResize(c));
+    });
+    ro.observe(el);
+    chart.__resizeObserver = ro;
+  }
+
+  if (typeof IntersectionObserver !== 'undefined') {
+    const io = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const c = __tripCharts.get(elId);
+        if (c) {
+          requestAnimationFrame(() => safeResize(c));
+        }
+      }
+    }, { root: null, threshold: 0.01 });
+    io.observe(el);
+    chart.__intersectionObserver = io;
+  }
+}
+
+function applyChartOption(elId, chart, option) {
+  applyTwoDecimalFormatters(option);
+  // First paint must not use lazyUpdate — mobile WebKit often leaves a blank canvas.
+  const isFirst = !chart.__hasPainted;
+  chart.setOption(option, { notMerge: true, lazyUpdate: !isFirst });
+  chart.__hasPainted = true;
+  const paint = () => {
+    safeResize(chart);
+    if (__tripSelection && __tripSelection.iso) {
+      applySelectionToChart(elId, chart, __tripSelection.iso);
+    }
+  };
+  requestAnimationFrame(() => {
+    paint();
+    // Second pass after layout (iOS address bar / drawer / sticky headers).
+    requestAnimationFrame(paint);
+  });
+}
+
 export function renderTelemetryChart(elId, optionJson) {
   const el = document.getElementById(elId);
   if (!el || !window.echarts) return;
-  let chart = __tripCharts.get(elId);
-  if (!chart) {
-    chart = echarts.init(el, 'dark', { renderer: 'canvas' });
-    __tripCharts.set(elId, chart);
-    const onResize = () => {
-      const c = __tripCharts.get(elId);
-      if (c) c.resize();
-    };
-    window.addEventListener('resize', onResize);
-    chart.__onResize = onResize;
-    bindChartInteractions(elId, chart);
-  }
+
   let option;
   try {
     option = typeof optionJson === 'string' ? JSON.parse(optionJson) : optionJson;
@@ -300,14 +361,41 @@ export function renderTelemetryChart(elId, optionJson) {
       }
     }
   }
-  applyTwoDecimalFormatters(option);
-  chart.setOption(option, { notMerge: true, lazyUpdate: true });
-  requestAnimationFrame(() => {
-    chart.resize();
-    if (__tripSelection && __tripSelection.iso) {
-      applySelectionToChart(elId, chart, __tripSelection.iso);
+
+  const run = (attempt) => {
+    const node = document.getElementById(elId);
+    if (!node || !window.echarts) return;
+
+    // Wait until the host has a real box — blank charts on mobile are almost
+    // always init/setOption at 0×0 (flex grid / off-screen tabs).
+    if (!hostHasSize(node)) {
+      if (attempt < 40) {
+        requestAnimationFrame(() => run(attempt + 1));
+      } else {
+        // Last resort: init anyway and rely on observers.
+        let chart = __tripCharts.get(elId);
+        if (!chart) {
+          chart = echarts.init(node, 'dark', { renderer: 'canvas' });
+          __tripCharts.set(elId, chart);
+          ensureChartObservers(elId, node, chart);
+          bindChartInteractions(elId, chart);
+        }
+        applyChartOption(elId, chart, option);
+      }
+      return;
     }
-  });
+
+    let chart = __tripCharts.get(elId);
+    if (!chart) {
+      chart = echarts.init(node, 'dark', { renderer: 'canvas' });
+      __tripCharts.set(elId, chart);
+      ensureChartObservers(elId, node, chart);
+      bindChartInteractions(elId, chart);
+    }
+    applyChartOption(elId, chart, option);
+  };
+
+  run(0);
 }
 
 export function disposeTelemetryChart(elId) {
@@ -315,6 +403,12 @@ export function disposeTelemetryChart(elId) {
   if (!chart) return;
   if (chart.__onResize) {
     window.removeEventListener('resize', chart.__onResize);
+  }
+  if (chart.__resizeObserver) {
+    try { chart.__resizeObserver.disconnect(); } catch (_) {}
+  }
+  if (chart.__intersectionObserver) {
+    try { chart.__intersectionObserver.disconnect(); } catch (_) {}
   }
   chart.dispose();
   __tripCharts.delete(elId);
