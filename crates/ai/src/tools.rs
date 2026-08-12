@@ -680,21 +680,24 @@ impl Tool for SubmitAnalysisReport {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Submit the final structured analysis report. Call exactly once when done. The summary must briefly name places/road environments visited (from get_route_position_profile), not only mechanical or speed stats.".into(),
+            description: "Submit the final structured analysis report. Call exactly once when done. Summary must name places/road environments visited. Every claim across fields must include brief quantitative proof from tools (counts, ranges, durations) — no bare qualitative labels.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "summary": {
                         "type": "string",
-                        "description": "Short executive summary that MUST include places / road types visited along the trip (e.g. residential, service_access/housing complex, city arterial, motorway) from get_route_position_profile when available; say unknown if not."
+                        "description": "Short executive summary: places/road types visited (from get_route_position_profile when available) PLUS key findings each with brief numbers (e.g. stop counts, max coolant °C, hard_brake_events). No unproven qualitative-only claims."
                     },
                     "mechanical_findings": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "title": { "type": "string" },
-                                "evidence": { "type": "string" },
+                                "title": { "type": "string", "description": "Short finding label" },
+                                "evidence": {
+                                    "type": "string",
+                                    "description": "Required proof with tool metrics (min/avg/max, counts, durations, thresholds). Example: 'Coolant max 91°C (normal band); module voltage min 13.8 V while moving.'"
+                                },
                                 "severity": { "type": "string", "enum": ["low", "medium", "high"] },
                                 "recommendation": { "type": "string" }
                             },
@@ -704,23 +707,50 @@ impl Tool for SubmitAnalysisReport {
                     "driving_style": {
                         "type": "object",
                         "properties": {
-                            "assessment": { "type": "string" },
-                            "positives": { "type": "array", "items": { "type": "string" } },
-                            "improvements": { "type": "array", "items": { "type": "string" } }
+                            "assessment": {
+                                "type": "string",
+                                "description": "Overall style with proof (e.g. 'Stop-heavy residential drive: 4 stops ≥60s, hard_accel=8, hard_brake=12, p95 speed 48 kph')."
+                            },
+                            "positives": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "description": "Positive with brief metric proof"
+                                }
+                            },
+                            "improvements": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "description": "Improvement with brief metric proof (what happened + numbers)"
+                                }
+                            }
                         },
                         "required": ["assessment"]
                     },
                     "financial": {
                         "type": "object",
                         "properties": {
-                            "fuel_used_note": { "type": "string" },
-                            "efficiency_notes": { "type": "string" },
-                            "potential_savings": { "type": "string" },
+                            "fuel_used_note": {
+                                "type": "string",
+                                "description": "Fuel used with numbers from tools (volume, distance, rate)"
+                            },
+                            "efficiency_notes": {
+                                "type": "string",
+                                "description": "Efficiency assessment with computed L/100km or equivalent metrics"
+                            },
+                            "potential_savings": {
+                                "type": "string",
+                                "description": "Savings idea tied to measured behavior counts/rates; no invented prices"
+                            },
                             "cost_estimate": { "type": ["number", "null"] }
                         }
                     },
                     "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
-                    "markdown": { "type": "string", "description": "Full narrative markdown" }
+                    "markdown": {
+                        "type": "string",
+                        "description": "Full narrative markdown; every factual claim must cite brief tool-backed numbers (counts, min/avg/max, durations, shares)."
+                    }
                 },
                 "required": ["summary", "driving_style", "financial", "markdown"]
             }),

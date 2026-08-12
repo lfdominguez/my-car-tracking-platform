@@ -124,7 +124,7 @@ pub async fn analyze_trip(
             submit_nudges += 1;
             messages.push(json!({
                 "role": "user",
-                "content": "You must finish by calling the submit_analysis_report tool exactly once. Pass a single JSON object with fields: summary, mechanical_findings, driving_style, financial, confidence, markdown. The summary MUST briefly name places/road environments visited (from get_route_position_profile when available). Do not wrap the arguments in markdown fences or prose."
+                "content": "You must finish by calling the submit_analysis_report tool exactly once. Pass a single JSON object with fields: summary, mechanical_findings, driving_style, financial, confidence, markdown. The summary MUST briefly name places/road environments visited (from get_route_position_profile when available). Every factual claim MUST include brief quantitative proof from tools (counts, min/avg/max, durations) — no bare qualitative labels like 'excessive stops' without numbers. mechanical_findings.evidence and driving_style items must cite metrics. Do not wrap the arguments in markdown fences or prose."
             }));
             continue;
         }
