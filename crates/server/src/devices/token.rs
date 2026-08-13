@@ -1,10 +1,10 @@
-use rand::RngCore;
+use rand::Rng;
 use subtle::ConstantTimeEq;
 
 /// Issue a URL-safe plaintext device token (shown once).
 pub fn issue_plaintext_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     // hex is fine for Android Basic header
     hex::encode(bytes)
 }
