@@ -1,7 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use rand::RngCore;
+use rand::Rng;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::base32;
@@ -61,7 +61,7 @@ impl FromStr for RecoveryKey {
 /// Generate a fresh recovery key (CSPRNG).
 pub fn generate_recovery_key() -> RecoveryKey {
     let mut bytes = [0u8; DEK_LEN];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     RecoveryKey(bytes)
 }
 

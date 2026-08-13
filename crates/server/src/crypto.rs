@@ -3,7 +3,7 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -50,10 +50,10 @@ pub fn encrypt_secret_versioned(
 
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| CryptoError::Encrypt)?;
     let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .map_err(|_| CryptoError::Encrypt)?;
 
     Ok((nonce_bytes.to_vec(), ciphertext, version))
@@ -68,7 +68,7 @@ pub fn decrypt_secret_versioned(
     if nonce_bytes.len() != 12 {
         return Err(CryptoError::BadNonce);
     }
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|_| CryptoError::BadNonce)?;
 
     let derive = if version <= LEGACY_KEY_VERSION {
         derive_key_v1
@@ -79,7 +79,7 @@ pub fn decrypt_secret_versioned(
     // Try current
     let key = derive(&ring.current);
     if let Ok(cipher) = Aes256Gcm::new_from_slice(&key) {
-        if let Ok(plain) = cipher.decrypt(nonce, ciphertext) {
+        if let Ok(plain) = cipher.decrypt(&nonce, ciphertext) {
             return String::from_utf8(plain).map_err(|_| CryptoError::Decrypt);
         }
     }
@@ -88,7 +88,7 @@ pub fn decrypt_secret_versioned(
     if let Some(prev) = &ring.previous {
         let key = derive(prev);
         if let Ok(cipher) = Aes256Gcm::new_from_slice(&key) {
-            if let Ok(plain) = cipher.decrypt(nonce, ciphertext) {
+            if let Ok(plain) = cipher.decrypt(&nonce, ciphertext) {
                 return String::from_utf8(plain).map_err(|_| CryptoError::Decrypt);
             }
         }

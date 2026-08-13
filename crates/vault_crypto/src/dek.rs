@@ -1,7 +1,7 @@
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
-use rand::{CryptoRng, RngCore};
+use rand::{CryptoRng, Rng};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -57,17 +57,17 @@ impl WrappedDek {
 /// Generate a random DEK.
 pub fn generate_dek() -> Dek {
     let mut bytes = [0u8; DEK_LEN];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     Dek(bytes)
 }
 
 /// Wrap `dek` to `recipient` using ephemeral X25519 ECDH + HKDF + AES-GCM.
 pub fn wrap_dek(dek: &Dek, recipient: &IdentityPublic) -> Result<WrappedDek, Error> {
-    wrap_dek_with_rng(dek, recipient, &mut rand::thread_rng())
+    wrap_dek_with_rng(dek, recipient, &mut rand::rng())
 }
 
 /// Deterministic wrap for tests/vectors (caller supplies RNG / fixed eph key material).
-pub fn wrap_dek_with_rng<R: RngCore + CryptoRng>(
+pub fn wrap_dek_with_rng<R: Rng + CryptoRng>(
     dek: &Dek,
     recipient: &IdentityPublic,
     rng: &mut R,
@@ -91,11 +91,11 @@ pub fn wrap_dek_with_rng<R: RngCore + CryptoRng>(
 
     let cipher = Aes256Gcm::new_from_slice(&wrap_key).map_err(|_| Error::Encrypt)?;
     wrap_key.zeroize();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     // AAD empty for wrap; binding is via ECDH recipient.
     let ct = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: dek.as_bytes(),
                 aad: b"",
@@ -133,10 +133,10 @@ pub fn unwrap_dek(wrapped: &WrappedDek, secret: &IdentitySecret) -> Result<Dek, 
 
     let cipher = Aes256Gcm::new_from_slice(&wrap_key).map_err(|_| Error::Decrypt)?;
     wrap_key.zeroize();
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|_| Error::InvalidWrappedDek)?;
     let plain = cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: ct,
                 aad: b"",
@@ -165,10 +165,10 @@ pub fn wrap_dek_with_eph(
     }
     let cipher = Aes256Gcm::new_from_slice(&wrap_key).map_err(|_| Error::Encrypt)?;
     wrap_key.zeroize();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let ct = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: dek.as_bytes(),
                 aad: b"",
