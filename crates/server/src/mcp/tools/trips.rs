@@ -24,6 +24,7 @@ struct TripRow {
     avg_speed_kph: Option<f64>,
     max_speed_kph: Option<f64>,
     fuel_used_l: Option<f64>,
+    fuel_used_moving_l: Option<f64>,
     analysis_status: String,
     analyzed_at: Option<DateTime<Utc>>,
     analyzed: bool,
@@ -46,6 +47,7 @@ pub struct TripDto {
     pub avg_speed: Option<f64>,
     pub max_speed: Option<f64>,
     pub fuel_used: Option<f64>,
+    pub fuel_used_moving: Option<f64>,
     pub analysis_status: String,
     pub analyzed_at: Option<DateTime<Utc>>,
     pub analyzed: bool,
@@ -66,6 +68,9 @@ fn to_dto(mut r: TripRow, system: crate::units::UnitSystem) -> TripDto {
     if let Some(v) = r.fuel_used_l {
         r.fuel_used_l = Some(convert_fuel_l(v, system));
     }
+    if let Some(v) = r.fuel_used_moving_l {
+        r.fuel_used_moving_l = Some(convert_fuel_l(v, system));
+    }
     TripDto {
         id: r.id,
         car_id: r.car_id,
@@ -80,6 +85,7 @@ fn to_dto(mut r: TripRow, system: crate::units::UnitSystem) -> TripDto {
         avg_speed: r.avg_speed_kph,
         max_speed: r.max_speed_kph,
         fuel_used: r.fuel_used_l,
+        fuel_used_moving: r.fuel_used_moving_l,
         analysis_status: r.analysis_status,
         analyzed_at: r.analyzed_at,
         analyzed: r.analyzed,
@@ -107,6 +113,7 @@ const TRIP_SELECT: &str = r#"
             stats.avg_speed_kph,
             stats.max_speed_kph,
             stats.fuel_used_l,
+            stats.fuel_used_moving_l,
             t.analysis_status,
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
@@ -161,6 +168,48 @@ const TRIP_SELECT: &str = r#"
                     AND x.lead_t > x.t
                     AND x.lead_t <= x.t + interval '5 minutes'
                 ) AS fuel_used_l,
+                (
+                  SELECT SUM(
+                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
+                  )::float8
+                  FROM (
+                    SELECT
+                      CASE
+                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
+                         AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
+                         AND COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
+                         AND COALESCE(t.density_gl_snapshot, c.density_gl, 740) > 0
+                         AND tp2.fuel_consumption_rate >= 0.7 * (
+                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            )
+                        THEN (
+                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            ) * COALESCE(t.ve_snapshot, c.ve, 0.85) * 0.14
+                        ELSE tp2.fuel_consumption_rate
+                      END AS rate,
+                      COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0)::float8 AS spd,
+                      tp2.recorded_at AS t,
+                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
+                    FROM track_points tp2
+                    WHERE tp2.track_id = t.id
+                  ) x
+                  WHERE x.rate IS NOT NULL
+                    AND x.spd >= 1
+                    AND x.lead_t IS NOT NULL
+                    AND x.lead_t > x.t
+                    AND x.lead_t <= x.t + interval '5 minutes'
+                ) AS fuel_used_moving_l,
                 CASE
                   WHEN COUNT(*) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
                   ELSE 0::float8

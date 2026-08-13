@@ -6,7 +6,8 @@ use crate::api::{
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{
-    fmt_distance, fmt_distance_value, fmt_fuel, fmt_odometer_delta, use_unit_prefs, UnitPrefs,
+    avg_economy, fmt_distance, fmt_distance_value, fmt_economy, fmt_fuel, fmt_odometer_delta,
+    use_unit_prefs, UnitPrefs,
 };
 
 fn pretty_started_local(s: &str) -> String {
@@ -150,6 +151,7 @@ pub fn DashboardPage() -> impl IntoView {
                             <th>"Distance"</th>
                             <th>"Duration"</th>
                             <th>"Fuel"</th>
+                            <th>"Moving"</th>
                             <th></th>
                         </tr>
                     </thead>
@@ -162,6 +164,14 @@ pub fn DashboardPage() -> impl IntoView {
                                 let p = prefs.get();
                                 let dist = fmt_distance(t.distance_m, &p);
                                 let fuel = fmt_fuel(t.fuel_used_l, &p);
+                                let moving = fmt_economy(
+                                    avg_economy(
+                                        t.fuel_used_moving_l,
+                                        t.economy_distance_m.or(t.distance_m),
+                                        &p,
+                                    ),
+                                    &p,
+                                );
                                 view! {
                                     <tr>
                                         <td>{t.car_name.clone()}</td>
@@ -169,6 +179,7 @@ pub fn DashboardPage() -> impl IntoView {
                                         <td>{dist}</td>
                                         <td>{format!("{:.0} min", t.duration_s.unwrap_or(0.0) / 60.0)}</td>
                                         <td>{fuel}</td>
+                                        <td>{moving}</td>
                                         <td>
                                             <A href=format!("/app/trips/{id}")>
                                                 <span class="icon-label">

@@ -92,15 +92,34 @@ pub fn sanitize_fuel_rate_lph(
     }
 }
 
+/// Minimum vehicle speed (km/h) treated as "moving" for economy splits.
+pub const MOVING_MIN_SPEED_KPH: f64 = 1.0;
+
 #[derive(Debug, Clone, Copy)]
 pub struct RateSample {
     pub t: DateTime<Utc>,
     pub rate_lph: Option<f64>,
+    /// Vehicle speed for moving-only integrals; `None` counts as stationary.
+    pub speed_kph: Option<f64>,
 }
 
 /// Left-Riemann integral of fuel rate (L/h) over time → liters.
 /// Skips null rates and gaps outside `(0, max_gap]`.
 pub fn integrate_fuel_l(samples: &[RateSample], max_gap: Duration) -> Option<f64> {
+    integrate_fuel_l_filtered(samples, max_gap, /*moving_only=*/ false)
+}
+
+/// Like [`integrate_fuel_l`], but only segments whose left sample is at/above
+/// [`MOVING_MIN_SPEED_KPH`] (null speed = idle).
+pub fn integrate_fuel_l_moving(samples: &[RateSample], max_gap: Duration) -> Option<f64> {
+    integrate_fuel_l_filtered(samples, max_gap, /*moving_only=*/ true)
+}
+
+fn integrate_fuel_l_filtered(
+    samples: &[RateSample],
+    max_gap: Duration,
+    moving_only: bool,
+) -> Option<f64> {
     if samples.len() < 2 {
         return None;
     }
@@ -108,6 +127,12 @@ pub fn integrate_fuel_l(samples: &[RateSample], max_gap: Duration) -> Option<f64
     let mut segments = 0_u32;
     for w in samples.windows(2) {
         let (a, b) = (w[0], w[1]);
+        if moving_only {
+            let spd = a.speed_kph.filter(|s| s.is_finite()).unwrap_or(0.0);
+            if spd < MOVING_MIN_SPEED_KPH {
+                continue;
+            }
+        }
         let Some(rate) = a.rate_lph.filter(|r| r.is_finite() && *r >= 0.0) else {
             continue;
         };
@@ -194,10 +219,12 @@ mod tests {
             RateSample {
                 t: t(0),
                 rate_lph: Some(2.0),
+                            speed_kph: None,
             },
             RateSample {
                 t: t(1800),
                 rate_lph: Some(2.0),
+                            speed_kph: None,
             },
         ];
         assert!(
@@ -211,10 +238,12 @@ mod tests {
             RateSample {
                 t: t(0),
                 rate_lph: Some(10.0),
+                            speed_kph: None,
             },
             RateSample {
                 t: t(600), // 10 min > 5 min
                 rate_lph: Some(10.0),
+                            speed_kph: None,
             },
         ];
         assert!(integrate_fuel_l(&s, MAX_RATE_GAP).is_none());
@@ -226,14 +255,17 @@ mod tests {
             RateSample {
                 t: t(0),
                 rate_lph: None,
+                            speed_kph: None,
             },
             RateSample {
                 t: t(60),
                 rate_lph: Some(3.0),
+                            speed_kph: None,
             },
             RateSample {
                 t: t(120),
                 rate_lph: Some(3.0),
+                            speed_kph: None,
             },
         ];
         // only second segment: 3 L/h * 60s
@@ -404,4 +436,67 @@ mod tests {
         );
         assert!((with - without).abs() < 1e-12);
     }
+
+    #[test]
+    fn integrate_moving_skips_idle_speed() {
+        let s = [
+            RateSample {
+                t: t(0),
+                rate_lph: Some(4.0),
+                speed_kph: Some(0.0),
+            },
+            RateSample {
+                t: t(1800), // 0.5 h idle
+                rate_lph: Some(4.0),
+                speed_kph: Some(50.0),
+            },
+            RateSample {
+                t: t(3600), // 0.5 h moving
+                rate_lph: Some(4.0),
+                speed_kph: Some(50.0),
+            },
+        ];
+        let full = integrate_fuel_l(&s, Duration::hours(2)).unwrap();
+        let moving = integrate_fuel_l_moving(&s, Duration::hours(2)).unwrap();
+        assert!((full - 4.0).abs() < 1e-9, "full={full}"); // 4 L/h * 1 h
+        assert!((moving - 2.0).abs() < 1e-9, "moving={moving}"); // only second half
+    }
+
+    #[test]
+    fn integrate_moving_equals_full_when_always_moving() {
+        let s = [
+            RateSample {
+                t: t(0),
+                rate_lph: Some(2.0),
+                speed_kph: Some(30.0),
+            },
+            RateSample {
+                t: t(1800),
+                rate_lph: Some(2.0),
+                speed_kph: Some(40.0),
+            },
+        ];
+        let full = integrate_fuel_l(&s, Duration::hours(2)).unwrap();
+        let moving = integrate_fuel_l_moving(&s, Duration::hours(2)).unwrap();
+        assert!((full - moving).abs() < 1e-12);
+    }
+
+    #[test]
+    fn integrate_moving_all_idle_is_none() {
+        let s = [
+            RateSample {
+                t: t(0),
+                rate_lph: Some(1.5),
+                speed_kph: Some(0.0),
+            },
+            RateSample {
+                t: t(600),
+                rate_lph: Some(1.5),
+                speed_kph: None, // null = idle
+            },
+        ];
+        assert!(integrate_fuel_l_moving(&s, Duration::hours(2)).is_none());
+        assert!(integrate_fuel_l(&s, Duration::hours(2)).unwrap() > 0.0);
+    }
+
 }

@@ -792,6 +792,7 @@ mod tests {
                 avg_speed_kph: Some(40.0),
                 max_speed_kph: Some(80.0),
                 fuel_used_l: Some(1.0),
+                fuel_used_moving_l: Some(0.8),
                 displacement_l: Some(1.0),
                 stoich_afr: Some(14.0),
                 density_gl: Some(745.0),

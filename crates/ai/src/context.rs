@@ -41,6 +41,8 @@ pub struct TripOverview {
     pub avg_speed_kph: Option<f64>,
     pub max_speed_kph: Option<f64>,
     pub fuel_used_l: Option<f64>,
+    #[serde(default)]
+    pub fuel_used_moving_l: Option<f64>,
     pub displacement_l: Option<f64>,
     pub stoich_afr: Option<f64>,
     pub density_gl: Option<f64>,
