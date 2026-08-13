@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::api::TripPoint;
-use crate::units::{instant_economy, use_unit_prefs, UnitSystem};
+use crate::units::{headline_economy, instant_economy, use_unit_prefs, UnitSystem};
 use crate::components::{Icon, IconColor, IconSize};
 
 #[wasm_bindgen(inline_js = r#"
@@ -1229,7 +1229,11 @@ struct SignalChip {
     value: String,
 }
 
-fn build_signal_chips(raw: &[TripPoint], prefs: &crate::units::UnitPrefs) -> Vec<SignalChip> {
+fn build_signal_chips(
+    raw: &[TripPoint],
+    prefs: &crate::units::UnitPrefs,
+    trip_economy: Option<f64>,
+) -> Vec<SignalChip> {
     let mut chips = Vec::new();
     let speeds: Vec<f64> = raw.iter().filter_map(coalesce_speed).collect();
     if let (Some(avg), Some(max)) = (
@@ -1262,7 +1266,7 @@ fn build_signal_chips(raw: &[TripPoint], prefs: &crate::units::UnitPrefs) -> Vec
             instant_economy_point(coalesce_speed(p), p.fuel_consumption_rate, prefs.system)
         })
         .collect();
-    if let Some(avg_eco) = mean_finite(eco_vals.into_iter()) {
+    if let Some(avg_eco) = headline_economy(trip_economy, mean_finite(eco_vals.into_iter())) {
         chips.push(SignalChip {
             label: "Economy".into(),
             value: format!("{avg_eco:.1} {}", prefs.labels.fuel_economy),
@@ -1293,7 +1297,10 @@ fn build_signal_chips(raw: &[TripPoint], prefs: &crate::units::UnitPrefs) -> Vec
 
 /// Sectioned trip telemetry charts built from full OBD point payloads.
 #[component]
-pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
+pub fn TripTelemetryDashboard(
+    points: Signal<Vec<TripPoint>>,
+    #[prop(optional)] trip_economy: Option<Signal<Option<f64>>>,
+) -> impl IntoView {
     let prefs = use_unit_prefs();
     let smooth = RwSignal::new(true);
     let category = RwSignal::new(load_category_filter());
@@ -1304,7 +1311,8 @@ pub fn TripTelemetryDashboard(points: Signal<Vec<TripPoint>>) -> impl IntoView {
         if raw.is_empty() {
             return Vec::new();
         }
-        build_signal_chips(&raw, &unit_prefs)
+        let trip_eco = trip_economy.and_then(|s| s.get());
+        build_signal_chips(&raw, &unit_prefs, trip_eco)
     });
 
     let model = Memo::new(move |_| {

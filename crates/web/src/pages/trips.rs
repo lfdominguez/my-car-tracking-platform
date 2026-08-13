@@ -1135,7 +1135,14 @@ pub fn TripDetailPage() -> impl IntoView {
                 </h2>
                 <p class="muted">"Summary badges, overview charts by default, category filters, and smooth trends — expand ⓘ on any chart for what it means."</p>
             </div>
-            <TripTelemetryDashboard points=points.into()/>
+            <TripTelemetryDashboard
+                points=points.into()
+                trip_economy=Signal::derive(move || {
+                    let t = trip.get()?;
+                    let p = prefs.get();
+                    avg_economy(t.fuel_used_l, t.economy_distance_m.or(t.distance_m), &p)
+                })
+            />
         </div>
     }
 }

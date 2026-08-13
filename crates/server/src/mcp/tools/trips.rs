@@ -127,7 +127,30 @@ const TRIP_SELECT: &str = r#"
                   )::float8
                   FROM (
                     SELECT
-                      tp2.fuel_consumption_rate AS rate,
+                      CASE
+                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
+                         AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
+                         AND COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
+                         AND COALESCE(t.density_gl_snapshot, c.density_gl, 740) > 0
+                         AND tp2.fuel_consumption_rate >= 0.7 * (
+                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            )
+                        THEN (
+                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            ) * COALESCE(t.ve_snapshot, c.ve, 0.85) * 0.14
+                        ELSE tp2.fuel_consumption_rate
+                      END AS rate,
                       tp2.recorded_at AS t,
                       LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
                     FROM track_points tp2

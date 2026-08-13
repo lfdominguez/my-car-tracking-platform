@@ -11,6 +11,87 @@ pub const ODO_MIN_KM: f64 = 0.2;
 /// Minimum fuel-level drop (%) to trust tank gauge delta.
 pub const LEVEL_MIN_DROP_PCT: f64 = 0.5;
 
+/// Dry air density used for naturally-aspirated peak-air estimate (kg/m³, ~25 °C).
+pub const AIR_DENSITY_KG_M3: f64 = 1.184;
+/// Low-MAP fraction of atmosphere used only when replacing peak-air idle fraud.
+///
+/// Mid-range idle MAP (~0.25–0.30) still overstates fuel on long stopped segments when
+/// MAF is stuck at atmospheric air. Prefer the **maximum plausible economy** bound
+/// (minimum credible idle) so trip MPG can track the dash within a few mpg.
+pub const IDLE_MAP_FRACTION: f64 = 0.14;
+/// Default volumetric efficiency when the car/trip snapshot has none.
+pub const DEFAULT_VE: f64 = 0.85;
+/// Treat below this speed as stopped for idle-rate sanitizing.
+pub const IDLE_SPEED_MAX_KPH: f64 = 1.0;
+pub const IDLE_RPM_MIN: f64 = 400.0;
+pub const IDLE_RPM_MAX: f64 = 1500.0;
+/// Rate ≥ this × peak-air fuel at the same RPM is treated as “wide-open at idle RPM”.
+pub const PEAK_AIR_DETECT_RATIO: f64 = 0.70;
+
+/// Peak naturally-aspirated fuel (L/h) if the engine ingested air at atmospheric
+/// pressure and 100% VE: `V × (rpm/2/60) × ρ_air / AFR / density`.
+///
+/// Cheap OBD paths sometimes emit this as `fuel_consumption_rate` while stopped
+/// (MAF ≈ peak air at idle RPM). Replacement idle is `peak × VE × IDLE_MAP_FRACTION`.
+pub fn peak_fuel_lph(displacement_l: f64, rpm: f64, afr: f64, density_gl: f64) -> Option<f64> {
+    if !(displacement_l > 0.0 && rpm > 0.0 && afr > 0.0 && density_gl > 0.0) {
+        return None;
+    }
+    if ![displacement_l, rpm, afr, density_gl]
+        .iter()
+        .all(|v| v.is_finite())
+    {
+        return None;
+    }
+    let air_g_s = displacement_l * rpm * AIR_DENSITY_KG_M3 / 120.0;
+    Some(air_g_s / afr / density_gl * 3600.0)
+}
+
+/// Replace idle rates that match wide-open air at idle RPM with a VE×low-MAP idle.
+/// Leaves plausible idle and all moving samples unchanged.
+///
+/// Detection compares against peak air at 100% VE (what broken MAF paths emit).
+/// Replacement uses `peak × ve × IDLE_MAP_FRACTION` — the max-plausible economy
+/// bound under corrupt idle MAF.
+pub fn sanitize_fuel_rate_lph(
+    rate_lph: f64,
+    speed_kph: Option<f64>,
+    rpm: Option<f64>,
+    displacement_l: Option<f64>,
+    afr: Option<f64>,
+    density_gl: Option<f64>,
+    ve: Option<f64>,
+) -> f64 {
+    if !rate_lph.is_finite() || rate_lph < 0.0 {
+        return rate_lph;
+    }
+    let speed = speed_kph.unwrap_or(0.0);
+    let Some(rpm) = rpm.filter(|r| r.is_finite()) else {
+        return rate_lph;
+    };
+    if speed >= IDLE_SPEED_MAX_KPH || !(IDLE_RPM_MIN..=IDLE_RPM_MAX).contains(&rpm) {
+        return rate_lph;
+    }
+    let Some(disp) = displacement_l.filter(|d| d.is_finite() && *d > 0.0) else {
+        return rate_lph;
+    };
+    let afr = afr.filter(|a| a.is_finite() && *a > 0.0).unwrap_or(14.08);
+    let dens = density_gl
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .unwrap_or(740.0);
+    let ve = ve
+        .filter(|v| v.is_finite() && *v > 0.0 && *v <= 1.5)
+        .unwrap_or(DEFAULT_VE);
+    let Some(peak) = peak_fuel_lph(disp, rpm, afr, dens) else {
+        return rate_lph;
+    };
+    if rate_lph >= peak * PEAK_AIR_DETECT_RATIO {
+        peak * ve * IDLE_MAP_FRACTION
+    } else {
+        rate_lph
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RateSample {
     pub t: DateTime<Utc>,
@@ -204,5 +285,123 @@ mod tests {
     #[test]
     fn level_fuel_tiny_drop_none() {
         assert!(fuel_from_level_l(Some(50.0), Some(49.8), Some(52.0)).is_none());
+    }
+
+    /// 2025 Corolla 2.0L @ 650 rpm, atmospheric 100% VE ≈ 4.43 L/h.
+    fn corolla_peak_idle_lph() -> f64 {
+        peak_fuel_lph(2.0, 650.0, 14.08, 740.0).unwrap()
+    }
+
+    #[test]
+    fn peak_fuel_matches_wide_open_idle_air() {
+        let peak = corolla_peak_idle_lph();
+        assert!(
+            (peak - 4.43).abs() < 0.05,
+            "expected ~4.43 L/h peak idle air, got {peak}"
+        );
+    }
+
+    #[test]
+    fn sanitizes_wide_open_idle_rate_from_real_corolla_trip() {
+        // Trip 079acb97: stopped, 650 rpm, 4.57 L/h (≈ peak air, not idle).
+        // Max-plausible economy bound: peak × VE × low-MAP fraction (~0.53 L/h).
+        let got = sanitize_fuel_rate_lph(
+            4.57,
+            Some(0.0),
+            Some(650.0),
+            Some(2.0),
+            Some(14.08),
+            Some(740.0),
+            Some(0.85),
+        );
+        let expect = corolla_peak_idle_lph() * 0.85 * IDLE_MAP_FRACTION;
+        assert!(
+            (got - expect).abs() < 1e-6,
+            "idle peak-air rate should drop to VE×MAP idle bound, got {got} want {expect}"
+        );
+        assert!(
+            got > 0.45 && got < 0.65,
+            "max-plausible corrupt-idle bound ~0.5 L/h, got {got}"
+        );
+    }
+
+    #[test]
+    fn corrupt_idle_sanitizer_matches_dash_mpg_band_on_corolla_trip() {
+        // 079acb97 shape: ~489 s peak-air idle @ ~643 rpm + 0.1292 L moving, 2.2 km odo.
+        // Dash showed ~26 mpg; mid MAP (0.25) only reached ~18–20.
+        let peak = peak_fuel_lph(2.0, 643.0, 14.08, 740.0).unwrap();
+        let idle_lph = sanitize_fuel_rate_lph(
+            4.57,
+            Some(0.0),
+            Some(643.0),
+            Some(2.0),
+            Some(14.08),
+            Some(740.0),
+            Some(0.85),
+        );
+        let fuel_l = idle_lph * (489.1 / 3600.0) + 0.1292;
+        let miles = 2.2 * 0.621_371_192;
+        let gallons = fuel_l / 3.785_411_784;
+        let mpg = miles / gallons;
+        assert!(
+            (idle_lph - peak * 0.85 * IDLE_MAP_FRACTION).abs() < 1e-9,
+            "replacement should be peak×VE×IDLE_MAP_FRACTION"
+        );
+        assert!(
+            mpg > 24.5 && mpg < 27.5,
+            "expected ~26 mpg dash band after max-plausible idle, got {mpg:.1} (fuel {fuel_l:.4} L)"
+        );
+    }
+
+    #[test]
+    fn keeps_realistic_idle_rate() {
+        // Sister trip c4c7335b: 0.97 L/h at idle is already plausible.
+        let got = sanitize_fuel_rate_lph(
+            0.97,
+            Some(0.0),
+            Some(650.0),
+            Some(2.0),
+            Some(14.08),
+            Some(740.0),
+            Some(0.85),
+        );
+        assert!((got - 0.97).abs() < 1e-9);
+    }
+
+    #[test]
+    fn keeps_moving_rate() {
+        let got = sanitize_fuel_rate_lph(
+            2.29,
+            Some(55.0),
+            Some(1500.0),
+            Some(2.0),
+            Some(14.08),
+            Some(740.0),
+            Some(0.85),
+        );
+        assert!((got - 2.29).abs() < 1e-9);
+    }
+
+    #[test]
+    fn defaults_ve_when_missing() {
+        let with = sanitize_fuel_rate_lph(
+            4.57,
+            Some(0.0),
+            Some(650.0),
+            Some(2.0),
+            Some(14.08),
+            Some(740.0),
+            Some(DEFAULT_VE),
+        );
+        let without = sanitize_fuel_rate_lph(
+            4.57,
+            Some(0.0),
+            Some(650.0),
+            Some(2.0),
+            Some(14.08),
+            Some(740.0),
+            None,
+        );
+        assert!((with - without).abs() < 1e-12);
     }
 }

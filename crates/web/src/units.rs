@@ -186,6 +186,13 @@ pub fn fmt_economy(v: Option<f64>, prefs: &UnitPrefs) -> String {
     }
 }
 
+/// Headline trip economy: prefer distance÷fuel (what a dash trip computer uses).
+/// Arithmetic mean of instant MPG/L100 overstates US mpg on mixed trips.
+pub fn headline_economy(trip: Option<f64>, instant_mean: Option<f64>) -> Option<f64> {
+    trip.filter(|v| v.is_finite() && *v > 0.0)
+        .or(instant_mean.filter(|v| v.is_finite() && *v > 0.0))
+}
+
 /// Instant economy from already-converted speed + fuel rate.
 pub fn instant_economy(speed: Option<f64>, fuel_rate: Option<f64>, system: UnitSystem) -> Option<f64> {
     let s = speed?;
@@ -199,4 +206,28 @@ pub fn instant_economy(speed: Option<f64>, fuel_rate: Option<f64>, system: UnitS
         // MPG = mph / (gal/h)
         UnitSystem::Us => s / f,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headline_economy_prefers_trip_over_instant_mean() {
+        assert_eq!(headline_economy(Some(19.8), Some(43.8)), Some(19.8));
+        assert_eq!(headline_economy(None, Some(43.8)), Some(43.8));
+        assert_eq!(headline_economy(Some(0.0), Some(43.8)), Some(43.8));
+    }
+
+    #[test]
+    fn trip_mpg_is_distance_over_fuel_not_mean_of_instants() {
+        let prefs = UnitPrefs {
+            system: UnitSystem::Us,
+            labels: UnitLabels::us(),
+        };
+        // Sanitized trip 079acb97-ish: 1.367 mi / 0.069 gal ≈ 19.8 mpg vs 43.8 instant mean.
+        let trip = avg_economy(Some(0.069), Some(1.367), &prefs).unwrap();
+        assert!((trip - 19.8).abs() < 0.3);
+        assert!(43.8 - trip > 20.0);
+    }
 }
