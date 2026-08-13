@@ -388,8 +388,10 @@ pub struct TripSummary {
     pub duration_s: Option<f64>,
     pub avg_speed_kph: Option<f64>,
     pub max_speed_kph: Option<f64>,
-    /// Σ fuel_consumption_rate × Δt (gap-capped).
+    /// Σ fuel_consumption_rate × Δt (gap-capped), including idle.
     pub fuel_used_l: Option<f64>,
+    /// Same integral as fuel_used_l but only while vehicle speed ≥ 1 km/h.
+    pub fuel_used_moving_l: Option<f64>,
     /// Parallel cross-check from tank % Δ × tank capacity (L).
     pub fuel_from_level_l: Option<f64>,
     pub analysis_status: String,
@@ -419,6 +421,7 @@ struct TripSummaryRow {
     avg_speed_kph: Option<f64>,
     max_speed_kph: Option<f64>,
     fuel_used_l: Option<f64>,
+    fuel_used_moving_l: Option<f64>,
     odo_start_km: Option<f64>,
     odo_end_km: Option<f64>,
     fuel_level_start_pct: Option<f64>,
@@ -459,6 +462,7 @@ impl TripSummaryRow {
             avg_speed_kph: self.avg_speed_kph,
             max_speed_kph: self.max_speed_kph,
             fuel_used_l: self.fuel_used_l,
+            fuel_used_moving_l: self.fuel_used_moving_l,
             fuel_from_level_l,
             analysis_status: self.analysis_status,
             analyzed_at: self.analyzed_at,
@@ -509,6 +513,7 @@ fn seal_trip_if_vault(mut t: TripSummary) -> TripSummary {
         t.avg_speed_kph = None;
         t.max_speed_kph = None;
         t.fuel_used_l = None;
+        t.fuel_used_moving_l = None;
         t.fuel_from_level_l = None;
         t.last_point_at = None;
     }
@@ -598,6 +603,9 @@ fn apply_trip_summary_units(mut t: TripSummary, system: UnitSystem) -> TripSumma
     if let Some(v) = t.fuel_used_l {
         t.fuel_used_l = Some(convert_fuel_l(v, system));
     }
+    if let Some(v) = t.fuel_used_moving_l {
+        t.fuel_used_moving_l = Some(convert_fuel_l(v, system));
+    }
     if let Some(v) = t.fuel_from_level_l {
         t.fuel_from_level_l = Some(convert_fuel_l(v, system));
     }
@@ -661,6 +669,7 @@ async fn list_trips(
             stats.avg_speed_kph,
             stats.max_speed_kph,
             stats.fuel_used_l,
+            stats.fuel_used_moving_l,
             stats.odo_start_km,
             stats.odo_end_km,
             stats.fuel_level_start_pct,
@@ -722,6 +731,49 @@ async fn list_trips(
                     AND x.lead_t > x.t
                     AND x.lead_t <= x.t + interval '5 minutes'
                 ) AS fuel_used_l,
+                (
+                  SELECT SUM(
+                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
+                  )::float8
+                  FROM (
+                    SELECT
+                      -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
+                      CASE
+                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
+                         AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
+                         AND COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
+                         AND COALESCE(t.density_gl_snapshot, c.density_gl, 740) > 0
+                         AND tp2.fuel_consumption_rate >= 0.7 * (
+                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            )
+                        THEN (
+                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            ) * COALESCE(t.ve_snapshot, c.ve, 0.85) * 0.14
+                        ELSE tp2.fuel_consumption_rate
+                      END AS rate,
+                      COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0)::float8 AS spd,
+                      tp2.recorded_at AS t,
+                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
+                    FROM track_points tp2
+                    WHERE tp2.track_id = t.id
+                  ) x
+                  WHERE x.rate IS NOT NULL
+                    AND x.spd >= 1
+                    AND x.lead_t IS NOT NULL
+                    AND x.lead_t > x.t
+                    AND x.lead_t <= x.t + interval '5 minutes'
+                ) AS fuel_used_moving_l,
                 (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at ASC)
                   FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_start_km,
                 (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at DESC)
@@ -791,6 +843,7 @@ async fn get_trip(
               ELSE NULL
             END AS duration_s,
             stats.avg_speed_kph, stats.max_speed_kph, stats.fuel_used_l,
+            stats.fuel_used_moving_l,
             stats.odo_start_km, stats.odo_end_km,
             stats.fuel_level_start_pct, stats.fuel_level_end_pct,
             COALESCE(t.tank_capacity_l_snapshot, c.tank_capacity_l) AS tank_capacity_l,
@@ -850,6 +903,49 @@ async fn get_trip(
                     AND x.lead_t > x.t
                     AND x.lead_t <= x.t + interval '5 minutes'
                 ) AS fuel_used_l,
+                (
+                  SELECT SUM(
+                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
+                  )::float8
+                  FROM (
+                    SELECT
+                      -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
+                      CASE
+                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
+                         AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
+                         AND COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
+                         AND COALESCE(t.density_gl_snapshot, c.density_gl, 740) > 0
+                         AND tp2.fuel_consumption_rate >= 0.7 * (
+                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            )
+                        THEN (
+                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            ) * COALESCE(t.ve_snapshot, c.ve, 0.85) * 0.14
+                        ELSE tp2.fuel_consumption_rate
+                      END AS rate,
+                      COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0)::float8 AS spd,
+                      tp2.recorded_at AS t,
+                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
+                    FROM track_points tp2
+                    WHERE tp2.track_id = t.id
+                  ) x
+                  WHERE x.rate IS NOT NULL
+                    AND x.spd >= 1
+                    AND x.lead_t IS NOT NULL
+                    AND x.lead_t > x.t
+                    AND x.lead_t <= x.t + interval '5 minutes'
+                ) AS fuel_used_moving_l,
                 (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at ASC)
                   FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_start_km,
                 (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at DESC)

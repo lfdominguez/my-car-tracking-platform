@@ -467,6 +467,14 @@ pub fn TripsPage() -> impl IntoView {
                     let avg = fmt_speed(t.avg_speed_kph, &p);
                     let max = fmt_speed(t.max_speed_kph, &p);
                     let fuel = fmt_fuel(t.fuel_used_l, &p);
+                    let moving_econ = fmt_economy(
+                        avg_economy(
+                            t.fuel_used_moving_l,
+                            t.economy_distance_m.or(t.distance_m),
+                            &p,
+                        ),
+                        &p,
+                    );
                     let points = t.point_count;
                     let trips_sig = trips;
                     let err_sig = error;
@@ -542,6 +550,10 @@ pub fn TripsPage() -> impl IntoView {
                                     <div class="metric-chip">
                                         <span class="metric-chip-label">"Fuel"</span>
                                         <span class="metric-chip-value">{fuel}</span>
+                                    </div>
+                                    <div class="metric-chip">
+                                        <span class="metric-chip-label">"Moving"</span>
+                                        <span class="metric-chip-value">{moving_econ}</span>
                                     </div>
                                     <div class="metric-chip">
                                         <span class="metric-chip-label">"Points"</span>
@@ -674,6 +686,7 @@ pub fn TripDetailPage() -> impl IntoView {
                                         t.avg_speed_kph = meta.avg_speed_kph;
                                         t.max_speed_kph = meta.max_speed_kph;
                                         t.fuel_used_l = meta.fuel_used_l;
+                                        t.fuel_used_moving_l = meta.fuel_used_moving_l;
                                         if let Some(n) = meta.started_at {
                                             // keep skeleton started_at if empty
                                             let _ = n;
@@ -958,14 +971,19 @@ pub fn TripDetailPage() -> impl IntoView {
                         avg_economy(t.fuel_used_l, econ_dist, &p),
                         &p,
                     );
+                    let l100_moving = fmt_economy(
+                        avg_economy(t.fuel_used_moving_l, econ_dist, &p),
+                        &p,
+                    );
                     let econ_hint = if t.economy_distance_m.is_some()
                         && t.distance_m.is_some()
                         && t.economy_distance_m != t.distance_m
                     {
-                        "fuel ÷ odometer distance".into()
+                        "full fuel (incl. idle) ÷ odometer distance".into()
                     } else {
-                        "fuel ÷ GPS distance".into()
+                        "full fuel (incl. idle) ÷ GPS distance".into()
                     };
+                    let econ_moving_hint = "fuel while speed ≥ 1 km/h ÷ same distance".into();
                     let econ_label: &'static str = match p.system {
                         crate::units::UnitSystem::Metric => "Avg L/100km",
                         crate::units::UnitSystem::Us => "Avg mpg",
@@ -986,6 +1004,7 @@ pub fn TripDetailPage() -> impl IntoView {
                             <KpiCard label="Max speed" value=fmt_speed(t.max_speed_kph, &prefs.get()) hint=None />
                             <KpiCard label="Fuel used" value=fmt_fuel(t.fuel_used_l, &prefs.get()) hint=Some(fuel_hint) />
                             <KpiCard label=econ_label value=l100 hint=Some(econ_hint) />
+                            <KpiCard label="While moving" value=l100_moving hint=Some(econ_moving_hint) />
                             <KpiCard label="Samples" value=format!("{}", t.point_count) hint=None />
                         </div>
                     }

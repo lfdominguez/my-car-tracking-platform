@@ -44,6 +44,8 @@ pub struct TrackMetaV1 {
     pub max_speed_kph: Option<f64>,
     pub fuel_used_l: Option<f64>,
     #[serde(default)]
+    pub fuel_used_moving_l: Option<f64>,
+    #[serde(default)]
     pub fuel_from_level_l: Option<f64>,
 }
 
@@ -308,6 +310,7 @@ pub fn build_analysis_context_json(
             "avg_speed_kph": trip.avg_speed_kph.or(avg_speed),
             "max_speed_kph": trip.max_speed_kph.or(max_speed),
             "fuel_used_l": trip.fuel_used_l,
+            "fuel_used_moving_l": trip.fuel_used_moving_l,
             "displacement_l": null,
             "stoich_afr": null,
             "density_gl": null,
@@ -446,6 +449,7 @@ async fn migrate_trip(dek: &Dek, car_uuid: Uuid, trip: &Trip) -> Result<(), Stri
         avg_speed_kph: trip.avg_speed_kph,
         max_speed_kph: trip.max_speed_kph,
         fuel_used_l: trip.fuel_used_l,
+        fuel_used_moving_l: trip.fuel_used_moving_l,
         fuel_from_level_l: trip.fuel_from_level_l,
     };
     let plain = serde_json::to_vec(&meta).map_err(|e| e.to_string())?;

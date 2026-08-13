@@ -205,6 +205,50 @@ pub async fn build_trip_analysis_context(
                   AND lead_t > t
                   AND lead_t <= t + interval '5 minutes'
             ) AS fuel_used_l,
+            (
+                SELECT SUM(
+                    rate * EXTRACT(EPOCH FROM (lead_t - t)) / 3600.0
+                )::float8
+                FROM (
+                    SELECT
+                      CASE
+                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
+                         AND COALESCE(tr.displacement_l_snapshot, c.displacement_l, 0) > 0
+                         AND COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
+                         AND COALESCE(tr.density_gl_snapshot, c.density_gl, 740) > 0
+                         AND tp2.fuel_consumption_rate >= 0.7 * (
+                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            )
+                        THEN (
+                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
+                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
+                              * 1.184 / 120.0
+                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
+                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
+                              * 3600.0
+                            ) * COALESCE(tr.ve_snapshot, c.ve, 0.85) * 0.14
+                        ELSE tp2.fuel_consumption_rate
+                      END AS rate,
+                      COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0)::float8 AS spd,
+                      tp2.recorded_at AS t,
+                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
+                    FROM track_points tp2
+                    JOIN tracks tr ON tr.id = tp2.track_id
+                    JOIN cars c ON c.id = tr.car_id
+                    WHERE tp2.track_id = $1
+                ) s
+                WHERE rate IS NOT NULL
+                  AND spd >= 1
+                  AND lead_t IS NOT NULL
+                  AND lead_t > t
+                  AND lead_t <= t + interval '5 minutes'
+            ) AS fuel_used_moving_l,
             (SELECT COUNT(*) FROM track_points WHERE track_id = $1)::bigint AS point_count
         FROM tracks t
         WHERE t.id = $1
@@ -228,6 +272,7 @@ pub async fn build_trip_analysis_context(
         avg_speed_kph: stats.avg_speed_kph,
         max_speed_kph: stats.max_speed_kph,
         fuel_used_l: stats.fuel_used_l,
+        fuel_used_moving_l: stats.fuel_used_moving_l,
         displacement_l: track.displacement_l,
         stoich_afr: track.stoich_afr,
         density_gl: track.density_gl,
@@ -305,6 +350,7 @@ struct StatsRow {
     avg_speed_kph: Option<f64>,
     max_speed_kph: Option<f64>,
     fuel_used_l: Option<f64>,
+    fuel_used_moving_l: Option<f64>,
     point_count: Option<i64>,
 }
 

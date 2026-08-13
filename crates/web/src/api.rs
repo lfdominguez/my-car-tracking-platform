@@ -130,6 +130,8 @@ pub struct Trip {
     pub max_speed_kph: Option<f64>,
     pub fuel_used_l: Option<f64>,
     #[serde(default)]
+    pub fuel_used_moving_l: Option<f64>,
+    #[serde(default)]
     pub fuel_from_level_l: Option<f64>,
     #[serde(default = "default_analysis_status")]
     pub analysis_status: String,
