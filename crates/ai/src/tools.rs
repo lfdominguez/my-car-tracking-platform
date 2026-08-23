@@ -4,8 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use rig::completion::ToolDefinition;
-use rig::tool::Tool;
+use rig::tool::{Tool, ToolContext};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
@@ -59,18 +58,18 @@ impl Tool for GetTripOverview {
     type Args = EmptyArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Trip/car overview: distance, duration, speeds, fuel used, fuel_type (grade), fuel_class (GASOLINE/DIESEL/HYBRID/FULL_ELECTRIC — always present), battery SoC/kWh when hybrid/EV, engine snapshot, unit labels.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {},
-            }),
-        }
+    fn description(&self) -> String {
+        "Trip/car overview: distance, duration, speeds, fuel used, fuel_type (grade), fuel_class (GASOLINE/DIESEL/HYBRID/FULL_ELECTRIC — always present), battery SoC/kWh when hybrid/EV, engine snapshot, unit labels.".into()
     }
 
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {},
+        })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         let o = &self.ctx.0.overview;
         let payload = json!({
             "overview": o,
@@ -94,15 +93,15 @@ impl Tool for GetSpeedProfile {
     type Args = EmptyArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Speed percentiles, hard accel/brake counts, moving share.".into(),
-            parameters: json!({ "type": "object", "properties": {} }),
-        }
+    fn description(&self) -> String {
+        "Speed percentiles, hard accel/brake counts, moving share.".into()
     }
 
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.speed)
     }
 }
@@ -120,15 +119,15 @@ impl Tool for GetEngineStats {
     type Args = EmptyArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "RPM/load/MAF/MAP aggregates and high-RPM share.".into(),
-            parameters: json!({ "type": "object", "properties": {} }),
-        }
+    fn description(&self) -> String {
+        "RPM/load/MAF/MAP aggregates and high-RPM share.".into()
     }
 
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.engine)
     }
 }
@@ -146,15 +145,15 @@ impl Tool for GetFuelMixtureStats {
     type Args = EmptyArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Fuel rate, level, short/long term fuel trims, lambda ranges.".into(),
-            parameters: json!({ "type": "object", "properties": {} }),
-        }
+    fn description(&self) -> String {
+        "Fuel rate, level, short/long term fuel trims, lambda ranges.".into()
     }
 
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.fuel)
     }
 }
@@ -172,15 +171,15 @@ impl Tool for GetThermalElectricalStats {
     type Args = EmptyArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Coolant, IAT, ambient, module voltage, atmospheric pressure ranges.".into(),
-            parameters: json!({ "type": "object", "properties": {} }),
-        }
+    fn description(&self) -> String {
+        "Coolant, IAT, ambient, module voltage, atmospheric pressure ranges.".into()
     }
 
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.thermal)
     }
 }
@@ -198,15 +197,15 @@ impl Tool for GetStopSummary {
     type Args = EmptyArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Stops where speed ~0 for >= 60s (count, total/longest duration, list).".into(),
-            parameters: json!({ "type": "object", "properties": {} }),
-        }
+    fn description(&self) -> String {
+        "Stops where speed ~0 for >= 60s (count, total/longest duration, list).".into()
     }
 
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.stops)
     }
 }
@@ -224,15 +223,15 @@ impl Tool for GetTrafficSummary {
     type Args = EmptyArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Road congestion / traffic analysis summary for this trip if it was already analyzed (overall index, time and distance shares by congestion class, frame count). If unavailable, available=false.".into(),
-            parameters: json!({ "type": "object", "properties": {} }),
-        }
+    fn description(&self) -> String {
+        "Road congestion / traffic analysis summary for this trip if it was already analyzed (overall index, time and distance shares by congestion class, frame count). If unavailable, available=false.".into()
     }
 
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.traffic)
     }
 }
@@ -250,15 +249,15 @@ impl Tool for GetRoutePositionProfile {
     type Args = EmptyArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Place/road type along the route at every ~5% of trip duration (OSM highway match). Use this BEFORE interpreting slow speeds as city traffic jams — residential_street / living_street / service_access often mean housing complexes, driveways, or private roads, not urban congestion. Returns samples with pct, lat/lon, speed, osm_highway, position_type, plus type_counts. available=false if no OSM matches.".into(),
-            parameters: json!({ "type": "object", "properties": {} }),
-        }
+    fn description(&self) -> String {
+        "Place/road type along the route at every ~5% of trip duration (OSM highway match). Use this BEFORE interpreting slow speeds as city traffic jams — residential_street / living_street / service_access often mean housing complexes, driveways, or private roads, not urban congestion. Returns samples with pct, lat/lon, speed, osm_highway, position_type, plus type_counts. available=false if no OSM matches.".into()
     }
 
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.route_positions)
     }
 }
@@ -296,26 +295,26 @@ impl Tool for GetPointWindow {
     type Args = PointWindowArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Summarize telemetry in a time window [start, end] (ISO-8601). Returns window aggregates (min/avg/max for speed, RPM, load, fuel rate, coolant, voltage; min/max trims/lambda) plus a few slim anchors (default 5, max 8: time, lat/lon, speed, rpm, load, fuel_rate, coolant) — not a full raw point dump. Prefer trip-level tools for whole-trip stats; use this only for local drill-down.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "start": { "type": "string", "description": "ISO-8601 start time (inclusive)" },
-                    "end": { "type": "string", "description": "ISO-8601 end time (inclusive)" },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Number of slim anchor points (default 5, max 8). Does not return dense raw series."
-                    }
-                },
-                "required": ["start", "end"]
-            }),
-        }
+    fn description(&self) -> String {
+        "Summarize telemetry in a time window [start, end] (ISO-8601). Returns window aggregates (min/avg/max for speed, RPM, load, fuel rate, coolant, voltage; min/max trims/lambda) plus a few slim anchors (default 5, max 8: time, lat/lon, speed, rpm, load, fuel_rate, coolant) — not a full raw point dump. Prefer trip-level tools for whole-trip stats; use this only for local drill-down.".into()
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "start": { "type": "string", "description": "ISO-8601 start time (inclusive)" },
+                "end": { "type": "string", "description": "ISO-8601 end time (inclusive)" },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of slim anchor points (default 5, max 8). Does not return dense raw series."
+                }
+            },
+            "required": ["start", "end"]
+        })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let payload = build_point_window_payload(
             &self.ctx.0.samples,
             args.start,
@@ -518,29 +517,29 @@ impl Tool for EvaluateMath {
     type Args = EvaluateMathArgs;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Evaluate a safe math expression. Use for L/100km, MPG, unit conversions, and general arithmetic. Helpers: l_per_100km(liters,km), mpg_us(liters,km), kph_to_mph, mph_to_kph, km_to_mi, mi_to_km, m_to_mi, mi_to_m, l_to_gal_us, gal_us_to_l, seconds_to_hours, pow, log, sqrt, min, max, abs, ln, exp, floor, ceil, round. Optional `variables` is a JSON object mapping names to numbers only (never a stringified JSON blob; never put formulas in values — put math in `expression`). Returns JSON {expression, result, error}. Example args: {\"expression\":\"hard_accel_events / moving_hours\",\"variables\":{\"hard_accel_events\":113,\"moving_hours\":0.27}}.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "Math expression (max 500 chars). Put operators and formulas here (e.g. a/(b*c))."
-                    },
-                    "variables": {
-                        "type": "object",
-                        "description": "Optional name → number bindings only (plain JSON object, not a string). Values must be numbers, not expressions.",
-                        "additionalProperties": { "type": "number" }
-                    }
-                },
-                "required": ["expression"]
-            }),
-        }
+    fn description(&self) -> String {
+        "Evaluate a safe math expression. Use for L/100km, MPG, unit conversions, and general arithmetic. Helpers: l_per_100km(liters,km), mpg_us(liters,km), kph_to_mph, mph_to_kph, km_to_mi, mi_to_km, m_to_mi, mi_to_m, l_to_gal_us, gal_us_to_l, seconds_to_hours, pow, log, sqrt, min, max, abs, ln, exp, floor, ceil, round. Optional `variables` is a JSON object mapping names to numbers only (never a stringified JSON blob; never put formulas in values — put math in `expression`). Returns JSON {expression, result, error}. Example args: {\"expression\":\"hard_accel_events / moving_hours\",\"variables\":{\"hard_accel_events\":113,\"moving_hours\":0.27}}.".into()
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "Math expression (max 500 chars). Put operators and formulas here (e.g. a/(b*c))."
+                },
+                "variables": {
+                    "type": "object",
+                    "description": "Optional name → number bindings only (plain JSON object, not a string). Values must be numbers, not expressions.",
+                    "additionalProperties": { "type": "number" }
+                }
+            },
+            "required": ["expression"]
+        })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let out = evaluate_expression(&args.expression, &args.variables);
         dump(&out)
     }
@@ -677,87 +676,87 @@ impl Tool for SubmitAnalysisReport {
     type Args = AnalysisReport;
     type Output = String;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.into(),
-            description: "Submit the final structured analysis report. Call exactly once when done. Summary must name places/road environments visited. Every claim across fields must include brief quantitative proof from tools (counts, ranges, durations) — no bare qualitative labels.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "Short executive summary: places/road types visited (from get_route_position_profile when available) PLUS key findings each with brief numbers (e.g. stop counts, max coolant °C, hard_brake_events). No unproven qualitative-only claims."
-                    },
-                    "mechanical_findings": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": { "type": "string", "description": "Short finding label" },
-                                "evidence": {
-                                    "type": "string",
-                                    "description": "Required proof with tool metrics (min/avg/max, counts, durations, thresholds). Example: 'Coolant max 91°C (normal band); module voltage min 13.8 V while moving.'"
-                                },
-                                "severity": { "type": "string", "enum": ["low", "medium", "high"] },
-                                "recommendation": { "type": "string" }
-                            },
-                            "required": ["title", "evidence"]
-                        }
-                    },
-                    "driving_style": {
-                        "type": "object",
-                        "properties": {
-                            "assessment": {
-                                "type": "string",
-                                "description": "Overall style with proof (e.g. 'Stop-heavy residential drive: 4 stops ≥60s, hard_accel=8, hard_brake=12, p95 speed 48 kph')."
-                            },
-                            "positives": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                    "description": "Positive with brief metric proof"
-                                }
-                            },
-                            "improvements": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                    "description": "Improvement with brief metric proof (what happened + numbers)"
-                                }
-                            }
-                        },
-                        "required": ["assessment"]
-                    },
-                    "financial": {
-                        "type": "object",
-                        "properties": {
-                            "fuel_used_note": {
-                                "type": "string",
-                                "description": "Fuel used with numbers from tools (volume, distance, rate)"
-                            },
-                            "efficiency_notes": {
-                                "type": "string",
-                                "description": "Efficiency assessment with computed L/100km or equivalent metrics"
-                            },
-                            "potential_savings": {
-                                "type": "string",
-                                "description": "Savings idea tied to measured behavior counts/rates; no invented prices"
-                            },
-                            "cost_estimate": { "type": ["number", "null"] }
-                        }
-                    },
-                    "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
-                    "markdown": {
-                        "type": "string",
-                        "description": "Full narrative markdown; every factual claim must cite brief tool-backed numbers (counts, min/avg/max, durations, shares)."
-                    }
-                },
-                "required": ["summary", "driving_style", "financial", "markdown"]
-            }),
-        }
+    fn description(&self) -> String {
+        "Submit the final structured analysis report. Call exactly once when done. Summary must name places/road environments visited. Every claim across fields must include brief quantitative proof from tools (counts, ranges, durations) — no bare qualitative labels.".into()
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Short executive summary: places/road types visited (from get_route_position_profile when available) PLUS key findings each with brief numbers (e.g. stop counts, max coolant °C, hard_brake_events). No unproven qualitative-only claims."
+                },
+                "mechanical_findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string", "description": "Short finding label" },
+                            "evidence": {
+                                "type": "string",
+                                "description": "Required proof with tool metrics (min/avg/max, counts, durations, thresholds). Example: 'Coolant max 91°C (normal band); module voltage min 13.8 V while moving.'"
+                            },
+                            "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+                            "recommendation": { "type": "string" }
+                        },
+                        "required": ["title", "evidence"]
+                    }
+                },
+                "driving_style": {
+                    "type": "object",
+                    "properties": {
+                        "assessment": {
+                            "type": "string",
+                            "description": "Overall style with proof (e.g. 'Stop-heavy residential drive: 4 stops ≥60s, hard_accel=8, hard_brake=12, p95 speed 48 kph')."
+                        },
+                        "positives": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "description": "Positive with brief metric proof"
+                            }
+                        },
+                        "improvements": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "description": "Improvement with brief metric proof (what happened + numbers)"
+                            }
+                        }
+                    },
+                    "required": ["assessment"]
+                },
+                "financial": {
+                    "type": "object",
+                    "properties": {
+                        "fuel_used_note": {
+                            "type": "string",
+                            "description": "Fuel used with numbers from tools (volume, distance, rate)"
+                        },
+                        "efficiency_notes": {
+                            "type": "string",
+                            "description": "Efficiency assessment with computed L/100km or equivalent metrics"
+                        },
+                        "potential_savings": {
+                            "type": "string",
+                            "description": "Savings idea tied to measured behavior counts/rates; no invented prices"
+                        },
+                        "cost_estimate": { "type": ["number", "null"] }
+                    }
+                },
+                "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
+                "markdown": {
+                    "type": "string",
+                    "description": "Full narrative markdown; every factual claim must cite brief tool-backed numbers (counts, min/avg/max, durations, shares)."
+                }
+            },
+            "required": ["summary", "driving_style", "financial", "markdown"]
+        })
+    }
+
+    async fn call(&self, _context: &mut ToolContext, args: Self::Args) -> Result<Self::Output, Self::Error> {
         args.validate().map_err(ToolErr)?;
         let mut guard = self
             .slot
@@ -863,7 +862,7 @@ mod tests {
         let tool = GetRoutePositionProfile {
             ctx: CtxHandle(Arc::new(ctx)),
         };
-        let out = tool.call(EmptyArgs {}).await.unwrap();
+        let out = tool.call(&mut ToolContext::new(), EmptyArgs {}).await.unwrap();
         assert!(out.contains("service_access"));
         assert!(out.contains("\"available\": true") || out.contains("\"available\":true"));
     }
@@ -882,7 +881,7 @@ mod tests {
         let tool = GetTrafficSummary {
             ctx: CtxHandle(Arc::new(ctx)),
         };
-        let out = tool.call(EmptyArgs {}).await.unwrap();
+        let out = tool.call(&mut ToolContext::new(), EmptyArgs {}).await.unwrap();
         assert!(out.contains("\"available\": true") || out.contains("\"available\":true"));
         assert!(out.contains("0.42"));
         assert!(out.contains("ready"));
@@ -892,7 +891,7 @@ mod tests {
     async fn overview_tool_returns_json() {
         let ctx = CtxHandle(Arc::new(sample_ctx()));
         let tool = GetTripOverview { ctx };
-        let out = tool.call(EmptyArgs {}).await.unwrap();
+        let out = tool.call(&mut ToolContext::new(), EmptyArgs {}).await.unwrap();
         assert!(out.contains("Test"));
         assert!(out.contains("distance_m"));
     }
@@ -901,7 +900,7 @@ mod tests {
     async fn evaluate_math_tool_works() {
         let tool = EvaluateMath;
         let out = tool
-            .call(EvaluateMathArgs {
+            .call(&mut ToolContext::new(), EvaluateMathArgs {
                 expression: "l_per_100km(fuel_l, dist_km)".into(),
                 variables: BTreeMap::from([
                     ("fuel_l".into(), 2.0),
@@ -1093,7 +1092,7 @@ mod tests {
             ctx: CtxHandle(Arc::new(ctx)),
         };
         let out = tool
-            .call(PointWindowArgs {
+            .call(&mut ToolContext::new(), PointWindowArgs {
                 start: t0,
                 end: t0 + chrono::Duration::seconds(9),
                 limit: 5,
@@ -1130,7 +1129,7 @@ mod tests {
             confidence: crate::report::Confidence::Medium,
             markdown: "# hi".into(),
         };
-        tool.call(report).await.unwrap();
+        tool.call(&mut ToolContext::new(), report).await.unwrap();
         assert!(slot.take().is_some());
     }
 }
