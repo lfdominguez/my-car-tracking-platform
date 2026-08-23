@@ -14,8 +14,8 @@ ai = { workspace = true }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "cors", "set-header"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "json"] }
+tower-http = { version = "0.7", features = ["fs", "trace", "compression-gzip", "cors", "set-header"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -29,7 +29,7 @@ hex = "0.4"
 rand = "0.10"
 base64 = "0.23"
 oauth2 = "5"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 time = "0.3"
 sha2 = "0.11"
@@ -40,7 +40,7 @@ async-trait = "0.1"
 anyhow = "1"
 aes-gcm = "0.11"
 subtle = "2"
-governor = "0.8"
+governor = "0.10"
 rmcp = { version = "3.1", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
 schemars = "1"
 http = "1"
@@ -49,7 +49,7 @@ http = "1"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 serde_json = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "cookies"] }
 tokio = { version = "1", features = ["full"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
 base64 = "0.23"

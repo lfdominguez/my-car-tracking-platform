@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use rig::completion::ToolDefinition;
-use rig::tool::Tool;
+use rig::tool::{Tool, ToolContext, tool_definition};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
@@ -41,7 +41,7 @@ pub async fn analyze_trip(
     let handle = CtxHandle(Arc::new(ctx));
     let slot = ReportSlot(Arc::new(Mutex::new(None)));
     let tools = ToolBundle::new(handle, slot.clone());
-    let tool_defs = tools.openai_tools().await;
+    let tool_defs = tools.openai_tools();
 
     let client = OpenRouterClient::new(api_key)?;
 
@@ -201,19 +201,19 @@ impl ToolBundle {
         }
     }
 
-    async fn openai_tools(&self) -> Vec<Value> {
+    fn openai_tools(&self) -> Vec<Value> {
         let defs = [
-            self.overview.definition(String::new()).await,
-            self.speed.definition(String::new()).await,
-            self.engine.definition(String::new()).await,
-            self.fuel.definition(String::new()).await,
-            self.thermal.definition(String::new()).await,
-            self.stops.definition(String::new()).await,
-            self.traffic.definition(String::new()).await,
-            self.route_positions.definition(String::new()).await,
-            self.points.definition(String::new()).await,
-            self.math.definition(String::new()).await,
-            self.submit.definition(String::new()).await,
+            tool_definition(&self.overview),
+            tool_definition(&self.speed),
+            tool_definition(&self.engine),
+            tool_definition(&self.fuel),
+            tool_definition(&self.thermal),
+            tool_definition(&self.stops),
+            tool_definition(&self.traffic),
+            tool_definition(&self.route_positions),
+            tool_definition(&self.points),
+            tool_definition(&self.math),
+            tool_definition(&self.submit),
         ];
         defs.into_iter().map(tool_def_to_openai).collect()
     }
@@ -228,55 +228,55 @@ impl ToolBundle {
         match name {
             GetTripOverview::NAME => self
                 .overview
-                .call(parse_empty(args_raw)?)
+                .call(&mut ToolContext::new(), parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),
             GetSpeedProfile::NAME => self
                 .speed
-                .call(parse_empty(args_raw)?)
+                .call(&mut ToolContext::new(), parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),
             GetEngineStats::NAME => self
                 .engine
-                .call(parse_empty(args_raw)?)
+                .call(&mut ToolContext::new(), parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),
             GetFuelMixtureStats::NAME => self
                 .fuel
-                .call(parse_empty(args_raw)?)
+                .call(&mut ToolContext::new(), parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),
             GetThermalElectricalStats::NAME => self
                 .thermal
-                .call(parse_empty(args_raw)?)
+                .call(&mut ToolContext::new(), parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),
             GetStopSummary::NAME => self
                 .stops
-                .call(parse_empty(args_raw)?)
+                .call(&mut ToolContext::new(), parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),
             GetTrafficSummary::NAME => self
                 .traffic
-                .call(parse_empty(args_raw)?)
+                .call(&mut ToolContext::new(), parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),
             GetRoutePositionProfile::NAME => self
                 .route_positions
-                .call(parse_empty(args_raw)?)
+                .call(&mut ToolContext::new(), parse_empty(args_raw)?)
                 .await
                 .map_err(|e| e.0),
             GetPointWindow::NAME => {
                 let args: PointWindowArgs = parse_json_args(args_raw)?;
-                self.points.call(args).await.map_err(|e| e.0)
+                self.points.call(&mut ToolContext::new(), args).await.map_err(|e| e.0)
             }
             EvaluateMath::NAME => {
                 let args: EvaluateMathArgs = parse_json_args(args_raw)?;
-                self.math.call(args).await.map_err(|e| e.0)
+                self.math.call(&mut ToolContext::new(), args).await.map_err(|e| e.0)
             }
             SubmitAnalysisReport::NAME => {
                 let args: AnalysisReport = parse_json_args(args_raw)?;
-                self.submit.call(args).await.map_err(|e| e.0)
+                self.submit.call(&mut ToolContext::new(), args).await.map_err(|e| e.0)
             }
             other => Err(format!("unknown tool: {other}")),
         }
