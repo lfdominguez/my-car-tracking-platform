@@ -22,6 +22,10 @@ pub struct CarProfileV1 {
     pub name: String,
     pub make_model: String,
     pub fuel_type: String,
+    #[serde(default)]
+    pub fuel_class: String,
+    #[serde(default)]
+    pub battery_capacity_kwh: Option<f64>,
     pub stoich_afr: f64,
     pub density_gl: f64,
     pub displacement_l: f64,
@@ -407,6 +411,8 @@ pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String
         name: full.name.clone(),
         make_model: full.make_model.clone(),
         fuel_type: full.fuel_type.clone(),
+        fuel_class: full.fuel_class.clone(),
+        battery_capacity_kwh: full.battery_capacity_kwh,
         stoich_afr: full.stoich_afr,
         density_gl: full.density_gl,
         displacement_l: full.displacement_l,

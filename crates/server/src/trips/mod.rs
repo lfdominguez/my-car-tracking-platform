@@ -1,6 +1,9 @@
 //! Trip list/detail/points/map APIs.
 
 mod fuel_stats;
+mod telemetry_sanitize;
+
+pub use telemetry_sanitize::{energy_from_soc_kwh, sanitize_speed_rpm, SpeedRpmPoint};
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
@@ -381,6 +384,8 @@ pub struct TripSummary {
     pub finished_at: Option<DateTime<Utc>>,
     pub finished: bool,
     pub fuel_type_snapshot: String,
+    #[serde(default)]
+    pub fuel_class_snapshot: String,
     pub point_count: i64,
     pub distance_m: Option<f64>,
     /// Distance used for L/100 km (odometer Δ when sane, else GPS).
@@ -415,6 +420,7 @@ struct TripSummaryRow {
     finished_at: Option<DateTime<Utc>>,
     finished: bool,
     fuel_type_snapshot: String,
+    fuel_class_snapshot: String,
     point_count: i64,
     distance_m: Option<f64>,
     duration_s: Option<f64>,
@@ -455,6 +461,7 @@ impl TripSummaryRow {
             finished_at: self.finished_at,
             finished: self.finished,
             fuel_type_snapshot: self.fuel_type_snapshot,
+            fuel_class_snapshot: self.fuel_class_snapshot,
             point_count: self.point_count,
             distance_m: self.distance_m,
             economy_distance_m,
@@ -501,6 +508,10 @@ pub struct TripPoint {
     pub atmospheric_pressure: Option<f64>,
     pub intake_air_temperature: Option<f64>,
     pub mass_air_flow: Option<f64>,
+    #[serde(default)]
+    pub battery_soc_pct: Option<f64>,
+    #[serde(default)]
+    pub battery_power_kw: Option<f64>,
 }
 
 fn seal_trip_if_vault(mut t: TripSummary) -> TripSummary {
@@ -659,6 +670,7 @@ async fn list_trips(
             t.finished_at,
             t.finished,
             t.fuel_type_snapshot,
+            COALESCE(NULLIF(t.fuel_class_snapshot, ''), 'GASOLINE') AS fuel_class_snapshot,
             COALESCE(stats.point_count, 0) AS point_count,
             stats.distance_m,
             CASE
@@ -698,6 +710,9 @@ async fn list_trips(
                     SELECT
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
+                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
                          AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
@@ -739,6 +754,9 @@ async fn list_trips(
                     SELECT
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
+                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
                          AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
@@ -835,6 +853,7 @@ async fn get_trip(
         SELECT
             t.id, t.car_id, c.name AS car_name, t.started_at, t.finished_at, t.finished,
             t.fuel_type_snapshot,
+            COALESCE(NULLIF(t.fuel_class_snapshot, ''), 'GASOLINE') AS fuel_class_snapshot,
             COALESCE(stats.point_count, 0) AS point_count,
             stats.distance_m,
             CASE
@@ -870,6 +889,9 @@ async fn get_trip(
                     SELECT
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
+                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
                          AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
@@ -911,6 +933,9 @@ async fn get_trip(
                     SELECT
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
+                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
                          AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
@@ -1160,7 +1185,7 @@ async fn trip_points(
         return Ok(Json(vec![]));
     }
 
-    let rows = sqlx::query_as::<_, TripPoint>(
+    let mut rows = sqlx::query_as::<_, TripPoint>(
         r#"
         SELECT
             recorded_at,
@@ -1187,7 +1212,9 @@ async fn trip_points(
             lambda_cmd,
             atmospheric_pressure,
             intake_air_temperature,
-            mass_air_flow
+            mass_air_flow,
+            battery_soc_pct,
+            battery_power_kw
         FROM track_points
         WHERE track_id = $1
         ORDER BY recorded_at
@@ -1196,12 +1223,35 @@ async fn trip_points(
     .bind(id)
     .fetch_all(&state.pool)
     .await?;
+    sanitize_trip_points(&mut rows);
     let system = user.unit_system;
     let rows = rows
         .into_iter()
         .map(|p| apply_trip_point_units(p, system))
         .collect();
     Ok(Json(rows))
+}
+
+fn sanitize_trip_points(rows: &mut [TripPoint]) {
+    let mut series: Vec<SpeedRpmPoint> = rows
+        .iter()
+        .map(|p| SpeedRpmPoint {
+            t: p.recorded_at,
+            speed_kph: p.vehicle_speed_kph.or(p.engine_vel),
+            rpm: p.vehicle_engine_rpm.or(p.engine_rpm),
+        })
+        .collect();
+    sanitize_speed_rpm(&mut series);
+    for (p, s) in rows.iter_mut().zip(series) {
+        if p.vehicle_speed_kph.is_some() || p.engine_vel.is_some() {
+            p.vehicle_speed_kph = s.speed_kph;
+            p.engine_vel = s.speed_kph;
+        }
+        if p.vehicle_engine_rpm.is_some() || p.engine_rpm.is_some() {
+            p.vehicle_engine_rpm = s.rpm;
+            p.engine_rpm = s.rpm;
+        }
+    }
 }
 
 async fn trip_map(

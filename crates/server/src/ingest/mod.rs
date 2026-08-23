@@ -73,6 +73,10 @@ pub struct TrackSampleRequest {
     pub atmospheric_pressure: Option<f64>,
     pub intake_air_temperature: Option<f64>,
     pub mass_air_flow: Option<f64>,
+    #[serde(default)]
+    pub battery_soc_pct: Option<f64>,
+    #[serde(default)]
+    pub battery_power_kw: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,7 +112,7 @@ async fn track_start(
 
     let car = sqlx::query_as::<_, CarFuelSnap>(
         r#"
-        SELECT fuel_type, stoich_afr, density_gl, displacement_l, ve, tank_capacity_l
+        SELECT fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve, tank_capacity_l
         FROM cars WHERE id = $1
         "#,
     )
@@ -141,9 +145,10 @@ async fn track_start(
         r#"
         INSERT INTO tracks (
             id, car_id, device_id, legacy_key, started_at, finished,
-            fuel_type_snapshot, stoich_afr_snapshot, density_gl_snapshot,
+            fuel_type_snapshot, fuel_class_snapshot, battery_capacity_kwh_snapshot,
+            stoich_afr_snapshot, density_gl_snapshot,
             displacement_l_snapshot, ve_snapshot, tank_capacity_l_snapshot
-        ) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9,$10,$11)
+        ) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9,$10,$11,$12,$13)
         "#,
     )
     .bind(track_id)
@@ -152,6 +157,8 @@ async fn track_start(
     .bind(legacy_key)
     .bind(legacy_key)
     .bind(&car.fuel_type)
+    .bind(&car.fuel_class)
+    .bind(car.battery_capacity_kwh)
     .bind(car.stoich_afr)
     .bind(car.density_gl)
     .bind(car.displacement_l)
@@ -343,7 +350,8 @@ async fn insert_sample(
             odometer_value_km, engine_coolant_temp_c,
             manifold_absolute_pressure_kpa, control_module_voltage,
             engine_on_time, lambda_cmd, atmospheric_pressure, intake_air_temperature,
-            vehicle_speed_kph, vehicle_engine_rpm, mass_air_flow
+            vehicle_speed_kph, vehicle_engine_rpm, mass_air_flow,
+            battery_soc_pct, battery_power_kw
         ) VALUES (
             $1, $2,
             ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography,
@@ -355,7 +363,8 @@ async fn insert_sample(
             $16, $17,
             $18, $19,
             $20, $21, $22, $23,
-            $24, $25, $26
+            $24, $25, $26,
+            $27, $28
         )
         "#,
     )
@@ -385,6 +394,8 @@ async fn insert_sample(
     .bind(sample.vehicle_speed_kph)
     .bind(sample.vehicle_engine_rpm)
     .bind(sample.mass_air_flow)
+    .bind(sample.battery_soc_pct)
+    .bind(sample.battery_power_kw)
     .execute(&state.pool)
     .await;
 
@@ -428,6 +439,8 @@ fn parse_legacy_key(id: &str) -> Option<DateTime<Utc>> {
 #[derive(Debug, sqlx::FromRow)]
 struct CarFuelSnap {
     fuel_type: String,
+    fuel_class: String,
+    battery_capacity_kwh: Option<f64>,
     stoich_afr: f64,
     density_gl: f64,
     displacement_l: f64,

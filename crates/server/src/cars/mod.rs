@@ -121,6 +121,10 @@ pub struct CarRow {
     pub make_model: String,
     pub photo_path: Option<String>,
     pub fuel_type: String,
+    #[serde(default)]
+    pub fuel_class: String,
+    #[serde(default)]
+    pub battery_capacity_kwh: Option<f64>,
     pub stoich_afr: f64,
     pub density_gl: f64,
     pub displacement_l: f64,
@@ -149,10 +153,12 @@ pub struct CreateCarRequest {
     pub name: String,
     pub make_model: Option<String>,
     pub fuel_type: Option<String>,
+    pub fuel_class: Option<String>,
     pub stoich_afr: Option<f64>,
     pub density_gl: Option<f64>,
     pub displacement_l: Option<f64>,
     pub ve: Option<f64>,
+    pub battery_capacity_kwh: Option<f64>,
     pub notes: Option<String>,
 }
 
@@ -161,10 +167,12 @@ pub struct UpdateCarRequest {
     pub name: Option<String>,
     pub make_model: Option<String>,
     pub fuel_type: Option<String>,
+    pub fuel_class: Option<String>,
     pub stoich_afr: Option<f64>,
     pub density_gl: Option<f64>,
     pub displacement_l: Option<f64>,
     pub ve: Option<f64>,
+    pub battery_capacity_kwh: Option<f64>,
     pub notes: Option<String>,
 }
 
@@ -175,7 +183,7 @@ async fn list_cars(
     let rows = sqlx::query_as::<_, CarRow>(
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
-               c.fuel_type, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
+               c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
                c.notes, c.created_at, c.updated_at,
                'owner'::text AS role,
                (u.vault_status = 'active') AS vault_sealed
@@ -184,7 +192,7 @@ async fn list_cars(
         WHERE c.owner_user_id = $1
         UNION ALL
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
-               c.fuel_type, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
+               c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
                c.notes, c.created_at, c.updated_at,
                cs.role,
                (u.vault_status = 'active') AS vault_sealed
@@ -210,14 +218,26 @@ async fn create_car(
         return Err(AppError::BadRequest("name required".into()));
     }
     let id = Uuid::new_v4();
+    let (fuel_class, fuel_type) = shared::normalize_fuel(
+        body.fuel_class.as_deref(),
+        body.fuel_type.as_deref(),
+    );
+    let stoich = body
+        .stoich_afr
+        .or_else(|| fuel_type.stoich_afr())
+        .unwrap_or(defaults::FUEL_STOICH_AFR);
+    let density = body
+        .density_gl
+        .or_else(|| fuel_type.density_gl())
+        .unwrap_or(defaults::FUEL_DENSITY_GL);
     let row = sqlx::query_as::<_, CarRow>(
         r#"
         INSERT INTO cars (
-            id, owner_user_id, name, make_model, fuel_type,
+            id, owner_user_id, name, make_model, fuel_type, fuel_class, battery_capacity_kwh,
             stoich_afr, density_gl, displacement_l, ve, notes
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         RETURNING id, owner_user_id, name, make_model, photo_path,
-                  fuel_type, stoich_afr, density_gl, displacement_l, ve,
+                  fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
                   notes, created_at, updated_at, 'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,
@@ -226,9 +246,11 @@ async fn create_car(
     .bind(user.id)
     .bind(body.name.trim())
     .bind(body.make_model.unwrap_or_default())
-    .bind(body.fuel_type.unwrap_or_else(|| defaults::FUEL_TYPE.into()))
-    .bind(body.stoich_afr.unwrap_or(defaults::FUEL_STOICH_AFR))
-    .bind(body.density_gl.unwrap_or(defaults::FUEL_DENSITY_GL))
+    .bind(fuel_type.as_str())
+    .bind(fuel_class.as_str())
+    .bind(body.battery_capacity_kwh)
+    .bind(stoich)
+    .bind(density)
     .bind(body.displacement_l.unwrap_or(defaults::ENGINE_DISPLACEMENT_L))
     .bind(body.ve.unwrap_or(defaults::ENGINE_VE))
     .bind(body.notes)
@@ -247,7 +269,7 @@ async fn create_car(
                 updated_at = NOW()
             WHERE id = $1
             RETURNING id, owner_user_id, name, make_model, photo_path,
-                      fuel_type, stoich_afr, density_gl, displacement_l, ve,
+                      fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
                       notes, created_at, updated_at, 'owner'::text AS role,
                       TRUE AS vault_sealed
             "#,
@@ -275,7 +297,7 @@ async fn get_car(
     let row = sqlx::query_as::<_, CarRow>(
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
-               c.fuel_type, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
+               c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
                c.notes, c.created_at, c.updated_at, $2::text AS role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
@@ -300,7 +322,7 @@ async fn update_car(
     let current = sqlx::query_as::<_, CarRow>(
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
-               c.fuel_type, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
+               c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
                c.notes, c.created_at, c.updated_at, 'owner'::text AS role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
@@ -312,21 +334,37 @@ async fn update_car(
     .fetch_one(&state.pool)
     .await?;
 
+    let (fuel_class, fuel_type) = if body.fuel_class.is_some() || body.fuel_type.is_some() {
+        shared::normalize_fuel(
+            body.fuel_class.as_deref().or(Some(current.fuel_class.as_str())),
+            body.fuel_type.as_deref().or(Some(current.fuel_type.as_str())),
+        )
+    } else {
+        (
+            shared::FuelClass::parse(&current.fuel_class),
+            shared::FuelType::parse(&current.fuel_type),
+        )
+    };
+    let stoich = body.stoich_afr.unwrap_or(current.stoich_afr);
+    let density = body.density_gl.unwrap_or(current.density_gl);
+    let battery = body.battery_capacity_kwh.or(current.battery_capacity_kwh);
     let row = sqlx::query_as::<_, CarRow>(
         r#"
         UPDATE cars SET
             name = $2,
             make_model = $3,
             fuel_type = $4,
-            stoich_afr = $5,
-            density_gl = $6,
-            displacement_l = $7,
-            ve = $8,
-            notes = $9,
+            fuel_class = $5,
+            battery_capacity_kwh = $6,
+            stoich_afr = $7,
+            density_gl = $8,
+            displacement_l = $9,
+            ve = $10,
+            notes = $11,
             updated_at = NOW()
         WHERE id = $1
         RETURNING id, owner_user_id, name, make_model, photo_path,
-                  fuel_type, stoich_afr, density_gl, displacement_l, ve,
+                  fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
                   notes, created_at, updated_at, 'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,
@@ -334,9 +372,11 @@ async fn update_car(
     .bind(id)
     .bind(body.name.unwrap_or(current.name))
     .bind(body.make_model.unwrap_or(current.make_model))
-    .bind(body.fuel_type.unwrap_or(current.fuel_type))
-    .bind(body.stoich_afr.unwrap_or(current.stoich_afr))
-    .bind(body.density_gl.unwrap_or(current.density_gl))
+    .bind(fuel_type.as_str())
+    .bind(fuel_class.as_str())
+    .bind(battery)
+    .bind(stoich)
+    .bind(density)
     .bind(body.displacement_l.unwrap_or(current.displacement_l))
     .bind(body.ve.unwrap_or(current.ve))
     .bind(body.notes.or(current.notes))
@@ -469,7 +509,7 @@ async fn upload_photo(
         UPDATE cars SET photo_path = $2, updated_at = NOW()
         WHERE id = $1
         RETURNING id, owner_user_id, name, make_model, photo_path,
-                  fuel_type, stoich_afr, density_gl, displacement_l, ve,
+                  fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
                   notes, created_at, updated_at, 'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,

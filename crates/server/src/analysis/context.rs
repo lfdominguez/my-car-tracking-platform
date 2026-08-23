@@ -30,6 +30,8 @@ struct TrackCarRow {
     car_name: String,
     make_model: Option<String>,
     fuel_type: String,
+    fuel_class: String,
+    battery_capacity_kwh: Option<f64>,
     started_at: DateTime<Utc>,
     finished_at: Option<DateTime<Utc>>,
     finished: bool,
@@ -65,6 +67,7 @@ struct PointRow {
     atmospheric_pressure: Option<f64>,
     odometer_value_km: Option<f64>,
     engine_on_time: Option<f64>,
+    battery_soc_pct: Option<f64>,
 }
 
 impl PointRow {
@@ -73,6 +76,28 @@ impl PointRow {
     }
     fn rpm(&self) -> Option<f64> {
         self.vehicle_engine_rpm.or(self.engine_rpm)
+    }
+}
+
+fn sanitize_analysis_points(points: &mut [PointRow]) {
+    let mut series: Vec<crate::trips::SpeedRpmPoint> = points
+        .iter()
+        .map(|p| crate::trips::SpeedRpmPoint {
+            t: p.recorded_at,
+            speed_kph: p.speed(),
+            rpm: p.rpm(),
+        })
+        .collect();
+    crate::trips::sanitize_speed_rpm(&mut series);
+    for (p, s) in points.iter_mut().zip(series) {
+        if p.vehicle_speed_kph.is_some() || p.engine_vel.is_some() {
+            p.vehicle_speed_kph = s.speed_kph;
+            p.engine_vel = s.speed_kph;
+        }
+        if p.vehicle_engine_rpm.is_some() || p.engine_rpm.is_some() {
+            p.vehicle_engine_rpm = s.rpm;
+            p.engine_rpm = s.rpm;
+        }
     }
 }
 
@@ -89,6 +114,8 @@ pub async fn build_trip_analysis_context(
             c.name AS car_name,
             c.make_model,
             COALESCE(t.fuel_type_snapshot, c.fuel_type, 'E10') AS fuel_type,
+            COALESCE(NULLIF(t.fuel_class_snapshot, ''), NULLIF(c.fuel_class, ''), 'GASOLINE') AS fuel_class,
+            COALESCE(t.battery_capacity_kwh_snapshot, c.battery_capacity_kwh) AS battery_capacity_kwh,
             t.started_at,
             t.finished_at,
             t.finished,
@@ -107,7 +134,7 @@ pub async fn build_trip_analysis_context(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    let points = sqlx::query_as::<_, PointRow>(
+    let mut points = sqlx::query_as::<_, PointRow>(
         r#"
         SELECT
             recorded_at,
@@ -132,7 +159,8 @@ pub async fn build_trip_analysis_context(
             control_module_voltage,
             atmospheric_pressure,
             odometer_value_km,
-            engine_on_time
+            engine_on_time,
+            battery_soc_pct
         FROM track_points
         WHERE track_id = $1
         ORDER BY recorded_at ASC
@@ -141,6 +169,7 @@ pub async fn build_trip_analysis_context(
     .bind(track_id)
     .fetch_all(pool)
     .await?;
+    sanitize_analysis_points(&mut points);
 
     // Distance / duration / fuel similar to trips module
     let stats = sqlx::query_as::<_, StatsRow>(
@@ -170,6 +199,9 @@ pub async fn build_trip_analysis_context(
                 FROM (
                     SELECT
                       CASE
+                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
                          AND COALESCE(tr.displacement_l_snapshot, c.displacement_l, 0) > 0
@@ -212,6 +244,9 @@ pub async fn build_trip_analysis_context(
                 FROM (
                     SELECT
                       CASE
+                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
+                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
                          AND COALESCE(tr.displacement_l_snapshot, c.displacement_l, 0) > 0
@@ -263,6 +298,15 @@ pub async fn build_trip_analysis_context(
         car_name: track.car_name,
         make_model: track.make_model,
         fuel_type: track.fuel_type,
+        fuel_class: track.fuel_class,
+        battery_capacity_kwh: track.battery_capacity_kwh,
+        energy_used_kwh: crate::trips::energy_from_soc_kwh(
+            points.iter().find_map(|p| p.battery_soc_pct),
+            points.iter().rev().find_map(|p| p.battery_soc_pct),
+            track.battery_capacity_kwh,
+        ),
+        battery_soc_start_pct: points.iter().find_map(|p| p.battery_soc_pct),
+        battery_soc_end_pct: points.iter().rev().find_map(|p| p.battery_soc_pct),
         started_at: Some(track.started_at),
         finished_at: track.finished_at,
         finished: track.finished,

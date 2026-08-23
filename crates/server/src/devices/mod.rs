@@ -214,6 +214,8 @@ struct CarFuelRow {
     id: Uuid,
     name: String,
     fuel_type: String,
+    fuel_class: String,
+    battery_capacity_kwh: Option<f64>,
     stoich_afr: f64,
     density_gl: f64,
     displacement_l: f64,
@@ -273,7 +275,7 @@ async fn provisioning(
 
     let car = sqlx::query_as::<_, CarFuelRow>(
         r#"
-        SELECT id, name, fuel_type, stoich_afr, density_gl, displacement_l, ve
+        SELECT id, name, fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve
         FROM cars WHERE id = $1
         "#,
     )
@@ -289,10 +291,12 @@ async fn provisioning(
         sample_url: format!("{base}/api/track/sample"),
         samples_url: format!("{base}/api/track/samples"),
         fuel_type: car.fuel_type,
+        fuel_class: car.fuel_class,
         fuel_stoich_afr: car.stoich_afr,
         fuel_density_gl: car.density_gl,
         engine_displacement_l: car.displacement_l,
         engine_ve: car.ve,
+        battery_capacity_kwh: car.battery_capacity_kwh,
         car_id: car.id.to_string(),
         car_name: car.name,
     }))

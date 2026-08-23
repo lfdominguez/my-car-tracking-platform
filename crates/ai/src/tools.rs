@@ -62,7 +62,7 @@ impl Tool for GetTripOverview {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Trip/car overview: distance, duration, speeds, fuel used, fuel type, engine snapshot, unit labels.".into(),
+            description: "Trip/car overview: distance, duration, speeds, fuel used, fuel_type (grade), fuel_class (GASOLINE/DIESEL/HYBRID/FULL_ELECTRIC — always present), battery SoC/kWh when hybrid/EV, engine snapshot, unit labels.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {},
@@ -783,6 +783,11 @@ mod tests {
                 car_name: "Test".into(),
                 make_model: Some("Car".into()),
                 fuel_type: "E10".into(),
+                fuel_class: "GASOLINE".into(),
+                battery_capacity_kwh: None,
+                energy_used_kwh: None,
+                battery_soc_start_pct: None,
+                battery_soc_end_pct: None,
                 started_at: Some(t0),
                 finished_at: Some(t0 + chrono::Duration::minutes(30)),
                 finished: true,

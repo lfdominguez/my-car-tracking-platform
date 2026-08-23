@@ -40,6 +40,8 @@ async fn decrypt_vault_car_names(sess: &crate::vault::VaultSession, mut c: Vec<C
             car.name = p.name;
             car.make_model = p.make_model;
             car.fuel_type = p.fuel_type;
+            car.fuel_class = p.fuel_class;
+            car.battery_capacity_kwh = p.battery_capacity_kwh;
             car.notes = p.notes;
         }
     }
@@ -151,7 +153,7 @@ pub fn CarsPage() -> impl IntoView {
                                             <td>
                                                 <span class="icon-label">
                                                     <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Success />
-                                                    {c.fuel_type.clone()}
+                                                    {format!("{} {}", c.fuel_class, c.fuel_type).trim().to_string()}
                                                 </span>
                                             </td>
                                             <td>
@@ -206,6 +208,8 @@ pub fn CarsPage() -> impl IntoView {
                                             name: n.clone(),
                                             make_model: m.clone(),
                                             fuel_type: created.fuel_type.clone(),
+                                            fuel_class: created.fuel_class.clone(),
+                                            battery_capacity_kwh: created.battery_capacity_kwh,
                                             stoich_afr: created.stoich_afr,
                                             density_gl: created.density_gl,
                                             displacement_l: created.displacement_l,
@@ -260,7 +264,9 @@ pub fn CarDetailPage() -> impl IntoView {
     let share_email = RwSignal::new(String::new());
     let share_role = RwSignal::new("viewer".to_string());
 
+    let fuel_class = RwSignal::new("GASOLINE".into());
     let fuel_type = RwSignal::new("E10".into());
+    let battery_kwh = RwSignal::new(String::new());
     let stoich = RwSignal::new("14.08".into());
     let density = RwSignal::new("745".into());
     let displacement = RwSignal::new("1.0".into());
@@ -292,6 +298,8 @@ pub fn CarDetailPage() -> impl IntoView {
                                 c.name = p.name.clone();
                                 c.make_model = p.make_model.clone();
                                 c.fuel_type = p.fuel_type.clone();
+                                c.fuel_class = p.fuel_class.clone();
+                                c.battery_capacity_kwh = p.battery_capacity_kwh;
                                 c.stoich_afr = p.stoich_afr;
                                 c.density_gl = p.density_gl;
                                 c.displacement_l = p.displacement_l;
@@ -309,6 +317,16 @@ pub fn CarDetailPage() -> impl IntoView {
                     name.set(c.name.clone());
                     make_model.set(c.make_model.clone());
                     fuel_type.set(c.fuel_type.clone());
+                    fuel_class.set(if c.fuel_class.is_empty() {
+                        "GASOLINE".into()
+                    } else {
+                        c.fuel_class.clone()
+                    });
+                    battery_kwh.set(
+                        c.battery_capacity_kwh
+                            .map(|v| v.to_string())
+                            .unwrap_or_default(),
+                    );
                     stoich.set(c.stoich_afr.to_string());
                     density.set(c.density_gl.to_string());
                     displacement.set(c.displacement_l.to_string());
@@ -430,14 +448,26 @@ pub fn CarDetailPage() -> impl IntoView {
                     <input prop:value=move || name.get() on:input=move |ev| name.set(event_target_value(&ev))/></div>
                 <div class="form-row"><label>"Make / model"</label>
                     <input prop:value=move || make_model.get() on:input=move |ev| make_model.set(event_target_value(&ev))/></div>
-                <div class="form-row"><label>"Fuel type"</label>
+                <div class="form-row"><label>"Powertrain"</label>
+                    <select prop:value=move || fuel_class.get() on:change=move |ev| fuel_class.set(event_target_value(&ev))>
+                        <option value="GASOLINE">"Gasoline"</option>
+                        <option value="DIESEL">"Diesel"</option>
+                        <option value="HYBRID">"Hybrid"</option>
+                        <option value="FULL_ELECTRIC">"Full Electric"</option>
+                    </select>
+                </div>
+                <div class="form-row"><label>"Fuel grade"</label>
                     <select prop:value=move || fuel_type.get() on:change=move |ev| fuel_type.set(event_target_value(&ev))>
                         <option value="E0">"E0"</option>
                         <option value="E10">"E10"</option>
                         <option value="E27">"E27"</option>
                         <option value="E100">"E100"</option>
+                        <option value="B7">"B7 diesel"</option>
                         <option value="CUSTOM">"CUSTOM"</option>
                     </select>
+                </div>
+                <div class="form-row"><label>"HV battery kWh"</label>
+                    <input prop:value=move || battery_kwh.get() on:input=move |ev| battery_kwh.set(event_target_value(&ev)) placeholder="optional"/>
                 </div>
                 <div class="form-row"><label>"Stoich AFR"</label>
                     <input prop:value=move || stoich.get() on:input=move |ev| stoich.set(event_target_value(&ev))/></div>
@@ -452,10 +482,13 @@ pub fn CarDetailPage() -> impl IntoView {
                     move |_| {
                     let id = params.with(|p| p.get("id").unwrap_or_default());
                     let sealed = car.get().map(|c| c.vault_sealed).unwrap_or(false);
+                    let batt = battery_kwh.get().parse::<f64>().ok().filter(|v| *v > 0.0);
                     let profile = CarProfileV1 {
                         name: name.get(),
                         make_model: make_model.get(),
                         fuel_type: fuel_type.get(),
+                        fuel_class: fuel_class.get(),
+                        battery_capacity_kwh: batt,
                         stoich_afr: stoich.get().parse::<f64>().unwrap_or(14.08),
                         density_gl: density.get().parse::<f64>().unwrap_or(745.0),
                         displacement_l: displacement.get().parse::<f64>().unwrap_or(1.0),
@@ -466,6 +499,8 @@ pub fn CarDetailPage() -> impl IntoView {
                         "name": profile.name,
                         "make_model": profile.make_model,
                         "fuel_type": profile.fuel_type,
+                        "fuel_class": profile.fuel_class,
+                        "battery_capacity_kwh": profile.battery_capacity_kwh,
                         "stoich_afr": profile.stoich_afr,
                         "density_gl": profile.density_gl,
                         "displacement_l": profile.displacement_l,
@@ -487,6 +522,8 @@ pub fn CarDetailPage() -> impl IntoView {
                                 "name": "",
                                 "make_model": "",
                                 "fuel_type": profile.fuel_type,
+                                "fuel_class": profile.fuel_class,
+                                "battery_capacity_kwh": profile.battery_capacity_kwh,
                                 "stoich_afr": profile.stoich_afr,
                                 "density_gl": profile.density_gl,
                                 "displacement_l": profile.displacement_l,
@@ -497,6 +534,8 @@ pub fn CarDetailPage() -> impl IntoView {
                                     c.name = profile.name;
                                     c.make_model = profile.make_model;
                                     c.fuel_type = profile.fuel_type;
+                                    c.fuel_class = profile.fuel_class;
+                                    c.battery_capacity_kwh = profile.battery_capacity_kwh;
                                     c.vault_sealed = true;
                                     car.set(Some(c));
                                 }

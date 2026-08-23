@@ -69,6 +69,10 @@ pub struct Car {
     pub make_model: String,
     pub photo_path: Option<String>,
     pub fuel_type: String,
+    #[serde(default)]
+    pub fuel_class: String,
+    #[serde(default)]
+    pub battery_capacity_kwh: Option<f64>,
     pub stoich_afr: f64,
     pub density_gl: f64,
     pub displacement_l: f64,
@@ -647,10 +651,16 @@ pub fn provisioning_payload_json(token: &str, car: &Car) -> Result<String, ApiEr
         sample_url: format!("{base}/api/track/sample"),
         samples_url: format!("{base}/api/track/samples"),
         fuel_type: car.fuel_type.clone(),
+        fuel_class: if car.fuel_class.is_empty() {
+            "GASOLINE".into()
+        } else {
+            car.fuel_class.clone()
+        },
         fuel_stoich_afr: car.stoich_afr,
         fuel_density_gl: car.density_gl,
         engine_displacement_l: car.displacement_l,
         engine_ve: car.ve,
+        battery_capacity_kwh: car.battery_capacity_kwh,
         car_id: car.id.clone(),
         car_name: car.name.clone(),
     };

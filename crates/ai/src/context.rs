@@ -31,6 +31,16 @@ pub struct TripOverview {
     pub car_name: String,
     pub make_model: Option<String>,
     pub fuel_type: String,
+    /// Always present: GASOLINE / DIESEL / HYBRID / FULL_ELECTRIC.
+    pub fuel_class: String,
+    #[serde(default)]
+    pub battery_capacity_kwh: Option<f64>,
+    #[serde(default)]
+    pub energy_used_kwh: Option<f64>,
+    #[serde(default)]
+    pub battery_soc_start_pct: Option<f64>,
+    #[serde(default)]
+    pub battery_soc_end_pct: Option<f64>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub finished: bool,

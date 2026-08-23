@@ -95,6 +95,21 @@ pub fn sanitize_fuel_rate_lph(
 /// Minimum vehicle speed (km/h) treated as "moving" for economy splits.
 pub const MOVING_MIN_SPEED_KPH: f64 = 1.0;
 
+/// Zero / drop liquid L/h for EV and hybrid-electric (RPM=0) segments.
+pub fn apply_powertrain_to_rate(
+    rate_lph: Option<f64>,
+    rpm: Option<f64>,
+    class: shared::FuelClass,
+) -> Option<f64> {
+    if !class.uses_liquid_fuel() {
+        return None;
+    }
+    if class.liquid_fuel_requires_rpm() && rpm.unwrap_or(0.0) <= 0.0 {
+        return Some(0.0);
+    }
+    rate_lph
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RateSample {
     pub t: DateTime<Utc>,
