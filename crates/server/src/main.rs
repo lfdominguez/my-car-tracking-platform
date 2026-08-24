@@ -22,6 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = db::ensure_postgis(&pool).await {
         tracing::warn!(error = %e, "could not CREATE EXTENSION postgis (may already exist or lack privileges)");
     }
+    if let Err(e) = db::ensure_timescaledb(&pool).await {
+        tracing::warn!(error = %e, "could not CREATE EXTENSION timescaledb (may already exist or lack privileges)");
+    }
     db::migrate(&pool).await?;
 
     match server::analysis::fail_interrupted_jobs(&pool).await {

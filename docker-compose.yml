@@ -1,6 +1,7 @@
 services:
   db:
-    image: postgis/postgis:16-3.4
+    image: timescale/timescaledb-ha:pg16
+    # timescaledb-ha bundles the timescaledb + postgis extensions on PG16.
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ctp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}

@@ -30,3 +30,11 @@ pub async fn ensure_postgis(pool: &PgPool) -> Result<(), DbError> {
         .await?;
     Ok(())
 }
+
+/// Ensure TimescaleDB is available (extension may require superuser on first boot).
+pub async fn ensure_timescaledb(pool: &PgPool) -> Result<(), DbError> {
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS timescaledb")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
