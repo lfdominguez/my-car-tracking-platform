@@ -1,15 +1,29 @@
 use hkdf::Hkdf;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::Zeroize;
 
 use crate::error::Error;
 use crate::recovery::RecoveryKey;
 use crate::{HKDF_INFO_IDENTITY, X25519_LEN};
 
 /// X25519 identity secret derived from the recovery key.
-#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct IdentitySecret(StaticSecret);
+
+impl Zeroize for IdentitySecret {
+    fn zeroize(&mut self) {
+        // x25519-dalek 3.0.0 implements ZeroizeOnDrop but not Zeroize for StaticSecret.
+        // Overwriting self.0 drops the old secret (triggering its ZeroizeOnDrop) and
+        // replaces it with a zeroed value.
+        self.0 = StaticSecret::from([0u8; X25519_LEN]);
+    }
+}
+
+impl Drop for IdentitySecret {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
 
 impl IdentitySecret {
     pub fn from_bytes(bytes: [u8; X25519_LEN]) -> Self {
