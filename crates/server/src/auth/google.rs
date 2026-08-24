@@ -6,8 +6,8 @@ use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use oauth2::basic::BasicClient;
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, RedirectUrl, Scope,
-    TokenResponse, TokenUrl,
+    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, HttpRequest, HttpResponse,
+    RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -73,9 +73,10 @@ async fn google_callback(
 
     let client = build_oauth_client(&state)?;
     let http = outbound_client().map_err(|e| AppError::internal(e.to_string()))?;
+    let adapter = |req: HttpRequest| reqwest_oauth2_adapter(http.clone(), req);
     let token = client
         .exchange_code(AuthorizationCode::new(q.code))
-        .request_async(&http)
+        .request_async(&adapter)
         .await
         .map_err(|e| AppError::internal(format!("token exchange failed: {e}")))?;
 
@@ -232,6 +233,38 @@ mod tests {
         assert!(oauth_state_matches(Some("csrf-token-1"), Some("csrf-token-1")));
         assert!(!oauth_state_matches(Some("csrf-token-1"), Some("csrf-token-2")));
     }
+}
+
+/// Bridge reqwest 0.13 to oauth2 5's `Fn(HttpRequest) -> Future` blanket impl.
+/// oauth2 5 bundles reqwest 0.12 support only; we adapt manually to keep reqwest 0.13.
+async fn reqwest_oauth2_adapter(
+    client: reqwest::Client,
+    req: HttpRequest,
+) -> Result<HttpResponse, reqwest::Error> {
+    let method = req.method().clone();
+    let url = req.uri().to_string();
+    let req_headers = req.headers().clone();
+    let body = req.into_body();
+
+    let mut rb = client.request(method, url);
+    for (name, value) in &req_headers {
+        rb = rb.header(name, value);
+    }
+    if !body.is_empty() {
+        rb = rb.body(body);
+    }
+
+    let resp = rb.send().await?;
+    let status = resp.status();
+    let version = resp.version();
+    let resp_headers = resp.headers().clone();
+    let bytes = resp.bytes().await?.to_vec();
+
+    let mut builder = axum::http::Response::builder().status(status).version(version);
+    for (name, value) in &resp_headers {
+        builder = builder.header(name, value);
+    }
+    Ok(builder.body(bytes).expect("valid HTTP response from reqwest"))
 }
 
 async fn upsert_google_user(state: &AppState, profile: &GoogleProfile) -> AppResult<Uuid> {
