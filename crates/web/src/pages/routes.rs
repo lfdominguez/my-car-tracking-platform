@@ -2,7 +2,7 @@
 
 use leptos::prelude::*;
 use leptos_router::components::A;
-use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::hooks::use_params_map;
 
 use crate::api::{
     list_cars, route_opt_corridor, route_opt_corridor_map, route_opt_recompute, route_opt_summary,
@@ -75,7 +75,6 @@ pub fn RoutesPage() -> impl IntoView {
     let busy = RwSignal::new(false);
     let message = RwSignal::new(Option::<String>::None);
     let prefs = use_unit_prefs();
-    let navigate = StoredValue::new(use_navigate());
 
     Effect::new(move |_| {
         leptos::task::spawn_local(async move {
@@ -188,56 +187,6 @@ pub fn RoutesPage() -> impl IntoView {
         }}
 
         <h2 class="section-title" style="margin-top:1.25rem">
-            <Icon name="star" color=IconColor::Warn />
-            "Insights"
-        </h2>
-        {move || {
-            let s = summary.get();
-            let insights = s.map(|s| s.insights).unwrap_or_default();
-            if insights.is_empty() {
-                return view! {
-                    <div class="card routes-insight routes-insight-empty">
-                        <p class="muted" style="margin:0">
-                            "No insights yet. Finish trips on a repeating origin→destination so the corridor can form — baselines appear after the first trip; path comparisons need alternate lines or more samples."
-                        </p>
-                    </div>
-                }.into_any();
-            }
-            view! {
-                <div class="routes-insight-grid">
-                    <For
-                        each=move || summary.get().map(|s| s.insights).unwrap_or_default()
-                        key=|i| i.id.clone()
-                        children=move |i| {
-                            let kind = i.kind.clone();
-                            let kind_label = insight_kind_label(&kind).to_string();
-                            let kind_class = format!("routes-insight-kind {}", insight_kind_class(&kind));
-                            view! {
-                                <div class="card routes-insight">
-                                    <div class=kind_class>{kind_label}</div>
-                                    <h3>{i.title.clone()}</h3>
-                                    <p class="muted" style="margin:0">{i.body.clone()}</p>
-                                    <button
-                                        class="btn secondary"
-                                        style="margin-top:0.65rem"
-                                        on:click=move |_| {
-                                            let cid = i.corridor_id.clone();
-                                            navigate.with_value(|nav| {
-                                                nav(&format!("/app/routes/{cid}"), Default::default());
-                                            });
-                                        }
-                                    >
-                                        "Open corridor"
-                                    </button>
-                                </div>
-                            }
-                        }
-                    />
-                </div>
-            }.into_any()
-        }}
-
-        <h2 class="section-title" style="margin-top:1.5rem">
             <Icon name="map-trifold" color=IconColor::Accent />
             "Corridors"
         </h2>

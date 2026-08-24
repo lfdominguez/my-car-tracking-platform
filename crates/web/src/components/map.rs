@@ -1247,6 +1247,40 @@ let __routeOptMap = null;
 let __routeOptHost = null;
 let __routeOptPopup = null;
 
+/** OpenFreeMap Liberty sometimes references sprite icons not in the sprite sheet. */
+function bindStyleImageFallback(map) {
+  if (map.__styleImageFallbackBound) return;
+  map.__styleImageFallbackBound = true;
+  map.on('styleimagemissing', (e) => {
+    const id = e && e.id;
+    if (!id || map.hasImage(id)) return;
+    try {
+      // 1×1 transparent placeholder — silences console spam; POI icon stays blank.
+      map.addImage(id, { width: 1, height: 1, data: new Uint8Array(4) });
+    } catch (_) { /* ignore races */ }
+  });
+}
+
+function bindWebGlRecovery(map, entry) {
+  if (map.__webglRecoveryBound) return;
+  map.__webglRecoveryBound = true;
+  map.on('webglcontextlost', (e) => {
+    // Allow the browser to restore the context instead of permanent blank map.
+    try { if (e && e.originalEvent && e.originalEvent.preventDefault) e.originalEvent.preventDefault(); } catch (_) {}
+    try { if (e && e.preventDefault) e.preventDefault(); } catch (_) {}
+    console.warn('Map WebGL context lost; waiting for restore');
+  });
+  map.on('webglcontextrestored', () => {
+    console.warn('Map WebGL context restored; re-adding images and layers');
+    try {
+      // Custom images are gone after context loss.
+      map.__styleImageFallbackBound = false;
+      bindStyleImageFallback(map);
+      map.resize();
+    } catch (_) {}
+  });
+}
+
 function routeOptDisplayLabel(props) {
   if (!props) return '';
   const raw = props.label || '';
