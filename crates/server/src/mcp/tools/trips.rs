@@ -241,7 +241,7 @@ pub async fn list_trips(
         LIMIT $5
         "
     );
-    let rows = sqlx::query_as::<_, TripRow>(&sql)
+    let rows = sqlx::query_as::<_, TripRow>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(ctx.user.id)
         .bind(car_id)
         .bind(from)
@@ -266,7 +266,7 @@ pub async fn get_trip(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<TripDto> {
     can_read_car(&ctx.state.pool, ctx.user.id, car_id).await?;
 
     let sql = format!("{TRIP_SELECT} WHERE t.id = $1");
-    let row = sqlx::query_as::<_, TripRow>(&sql)
+    let row = sqlx::query_as::<_, TripRow>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(trip_id)
         .fetch_optional(&ctx.state.pool)
         .await?
