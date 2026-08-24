@@ -277,6 +277,7 @@ pub fn CarDetailPage() -> impl IntoView {
     let photo_input: NodeRef<leptos::html::Input> = NodeRef::new();
     // Cache-buster so the browser reloads the image after upload.
     let photo_rev = RwSignal::new(0u32);
+    let is_default = RwSignal::new(false);
 
     let vault = use_vault_session();
 
@@ -331,6 +332,9 @@ pub fn CarDetailPage() -> impl IntoView {
                     density.set(c.density_gl.to_string());
                     displacement.set(c.displacement_l.to_string());
                     ve.set(c.ve.to_string());
+                    is_default.set(
+                        crate::default_car::load_default_car_id().as_deref() == Some(id2.as_str()),
+                    );
                     car.set(Some(c));
                 }
                 Err(e) => error.set(Some(e.to_string())),
@@ -551,6 +555,19 @@ pub fn CarDetailPage() -> impl IntoView {
                 }}>
                     <Icon name="floppy-disk" />
                     "Save"
+                </button>
+                <button class="btn secondary" on:click=move |_| {
+                    let id = params.with(|p| p.get("id").unwrap_or_default());
+                    if is_default.get_untracked() {
+                        crate::default_car::clear_default_car_id();
+                        is_default.set(false);
+                    } else {
+                        crate::default_car::save_default_car_id(&id);
+                        is_default.set(true);
+                    }
+                }>
+                    <Icon name="star" />
+                    {move || if is_default.get() { "Default car ✓" } else { "Set as default" }}
                 </button>
             </div>
 

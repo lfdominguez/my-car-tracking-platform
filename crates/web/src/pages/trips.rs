@@ -6,9 +6,9 @@ use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::api::{
-    delete_trip, fetch_trip_analysis, finish_trip, get_trip, list_trips, start_trip_analysis,
-    start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames, vault_create_job, Trip,
-    TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame,
+    delete_trip, fetch_trip_analysis, finish_trip, get_trip, list_cars, list_trips,
+    start_trip_analysis, start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames,
+    vault_create_job, Car, Trip, TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame,
 };
 use crate::vault::{
     build_analysis_context_json, decrypt_ai_report, decrypt_track_meta, decrypt_track_points,
@@ -178,6 +178,20 @@ fn save_trips_filter(f: TripListFilter) {
     let _ = storage.set_item(TRIPS_FILTER_STORAGE_KEY, f.as_str());
 }
 
+fn read_url_car_id() -> Option<String> {
+    let win = web_sys::window()?;
+    let search = win.location().search().ok()?;
+    let search = search.trim_start_matches('?').to_string();
+    for part in search.split('&') {
+        if let Some(val) = part.strip_prefix("car_id=") {
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn local_midnight(date: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
     use chrono::{Local, TimeZone};
     let naive = date
@@ -279,14 +293,29 @@ pub fn TripsPage() -> impl IntoView {
     let filter = RwSignal::new(load_trips_filter());
     let search = RwSignal::new(String::new());
     let fetch_gen = RwSignal::new(0u64);
+    let cars_list = RwSignal::new(Vec::<Car>::new());
+
+    let initial_car_id = read_url_car_id()
+        .or_else(crate::default_car::load_default_car_id);
+    let car_filter_id = RwSignal::new(initial_car_id);
 
     let vault = use_vault_session();
 
     Effect::new(move |_| {
+        leptos::task::spawn_local(async move {
+            if let Ok(c) = list_cars().await {
+                cars_list.set(c);
+            }
+        });
+    });
+
+    Effect::new(move |_| {
         let sess = vault.clone();
         let f = filter.get();
+        let car_id = car_filter_id.get();
         save_trips_filter(f);
-        let opts = trip_list_opts_for_filter(f);
+        let mut opts = trip_list_opts_for_filter(f);
+        opts.car_id = car_id;
         let req_id = fetch_gen.get_untracked().wrapping_add(1);
         fetch_gen.set(req_id);
         leptos::task::spawn_local(async move {
@@ -366,6 +395,25 @@ pub fn TripsPage() -> impl IntoView {
                 }).collect_view()}
             </div>
             <div class="trips-filter-tools">
+                <select
+                    class="trips-car-select"
+                    prop:value=move || car_filter_id.get().unwrap_or_default()
+                    on:change=move |ev| {
+                        let val = event_target_value(&ev);
+                        car_filter_id.set(if val.is_empty() { None } else { Some(val) });
+                    }
+                >
+                    <option value="">"All cars"</option>
+                    <For
+                        each=move || cars_list.get()
+                        key=|c| c.id.clone()
+                        children=move |c| {
+                            let id = c.id.clone();
+                            let n = c.name.clone();
+                            view! { <option value=id>{n}</option> }
+                        }
+                    />
+                </select>
                 <label class="trips-search">
                     <span class="sr-only">"Search trips"</span>
                     <input
