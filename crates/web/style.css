@@ -321,6 +321,59 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .table { width: 100%; border-collapse: collapse; }
 .table th, .table td { text-align: left; padding: 0.65rem 0.4rem; border-bottom: 1px solid var(--border); }
 .table th { color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+
+/* Mobile: rows become single-line summary cards instead of a table
+   squeezed sideways (a real "responsive density strategy" call-out from
+   the design system's own foundations docs). Scoped to .dash-trips-table
+   rather than every .table — routes/settings/cars tables aren't verified
+   against this pattern yet. */
+@media (max-width: 640px) {
+  .dash-trips-table thead {
+    display: none;
+  }
+  .dash-trips-table, .dash-trips-table tbody, .dash-trips-table tr {
+    display: block;
+    width: 100%;
+  }
+  .dash-trips-table tr {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-chip);
+    padding: 0.7rem 0.8rem;
+    margin-bottom: 0.6rem;
+  }
+  .dash-trips-table tr:last-child {
+    margin-bottom: 0;
+  }
+  .dash-trips-table td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.2rem 0;
+    border-bottom: none;
+  }
+  .dash-trips-table td[data-label]:not([data-label=""])::before {
+    content: attr(data-label);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .dash-trips-table td:first-child {
+    font-weight: 700;
+    font-size: 1rem;
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.3rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .dash-trips-table td:last-child {
+    justify-content: center;
+    border-top: 1px solid var(--border);
+    margin-top: 0.4rem;
+    padding-top: 0.5rem;
+  }
+}
 .badge {
   display: inline-flex; align-items: center; gap: 0.25rem;
   padding: 0.15rem 0.5rem; border-radius: 999px;

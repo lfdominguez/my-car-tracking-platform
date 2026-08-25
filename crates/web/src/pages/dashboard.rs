@@ -177,7 +177,7 @@ pub fn DashboardPage() -> impl IntoView {
                     </div>
                 }
             >
-                <table class="table">
+                <table class="table dash-trips-table">
                     <thead>
                         <tr>
                             <th>"Car"</th>
@@ -208,13 +208,13 @@ pub fn DashboardPage() -> impl IntoView {
                                 );
                                 view! {
                                     <tr>
-                                        <td>{t.car_name.clone()}</td>
-                                        <td class="num">{pretty_started_local(&t.started_at)}</td>
-                                        <td class="num">{dist}</td>
-                                        <td class="num">{format!("{:.0} min", t.duration_s.unwrap_or(0.0) / 60.0)}</td>
-                                        <td class="num">{fuel}</td>
-                                        <td class="num">{moving}</td>
-                                        <td>
+                                        <td data-label="Car">{t.car_name.clone()}</td>
+                                        <td class="num" data-label="Started">{pretty_started_local(&t.started_at)}</td>
+                                        <td class="num" data-label="Distance">{dist}</td>
+                                        <td class="num" data-label="Duration">{format!("{:.0} min", t.duration_s.unwrap_or(0.0) / 60.0)}</td>
+                                        <td class="num" data-label="Fuel">{fuel}</td>
+                                        <td class="num" data-label="Moving">{moving}</td>
+                                        <td data-label="">
                                             <A href=format!("/app/trips/{id}")>
                                                 <span class="icon-label">
                                                     "Open"
