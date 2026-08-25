@@ -1,0 +1,257 @@
+/*
+  Generated consumable layer — DERIVED from tokens/semantic.json, which is derived
+  from tokens/raw.json. Do not hand-edit a value here without updating semantic.json
+  first; this file exists so Leptos views and style.css have zero-cost CSS custom
+  properties to consume without a build step reading JSON at runtime.
+
+  Mount point: import this file before style.css. Theme is selected by a single
+  `data-theme="dark" | "light"` attribute on <html> — see theme-switcher/.
+*/
+
+:root {
+  /* ---- Typography ---- */
+  --font-family-display: 'Domine', Georgia, 'Times New Roman', serif;
+  --font-family-body: 'DM Sans', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  --font-family-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  --font-weight-display-medium: 500;
+  --font-weight-display-semibold: 600;
+  --font-weight-display-bold: 700;
+  --font-weight-body-regular: 400;
+  --font-weight-body-medium: 500;
+  --font-weight-body-bold: 700;
+  --font-weight-mono-regular: 400;
+  --font-weight-mono-medium: 500;
+  --font-weight-mono-bold: 700;
+
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 16px;
+  --text-lg: 19px;
+  --text-xl: 23px;
+  --text-2xl: 28px;
+  --text-3xl: 33px;
+  --text-4xl: 40px;
+
+  --leading-tight: 1.1;
+  --leading-snug: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  --tracking-tighter: -0.02em;
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0em;
+  --tracking-wide: 0.08em;
+
+  /* ---- Space (4px unit) ---- */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+
+  --space-row-y: var(--space-1);
+  --space-row-x: var(--space-3);
+  --space-card-pad: var(--space-4);
+  --space-panel-gap: var(--space-2);
+  --space-section-y-mobile: var(--space-8);
+  --space-section-y-desktop: var(--space-12);
+  --space-gutter-mobile: var(--space-4);
+  --space-gutter-desktop: var(--space-6);
+  --space-stack-tight: var(--space-1);
+  --space-stack-loose: var(--space-4);
+
+  /* ---- Radius ---- */
+  --radius-surface: 0px;   /* cards, inputs, buttons, modals, table cells — the style signature */
+  --radius-chip: 2px;      /* badges, tags, small status chips */
+  --radius-avatar: 9999px; /* avatars, car thumbnails — the one circular exception */
+  --radius-signature: 0px; /* brand fingerprint token — sharp grid, alias of radius-surface */
+
+  /* ---- Motion ---- */
+  --motion-duration-instant: 0ms;
+  --motion-duration-fast: 150ms;
+  --motion-duration-medium: 250ms;
+  --motion-duration-entry: 320ms;
+  --motion-duration-bump: 360ms;
+  --motion-duration-ambient-pulse: 1200ms;
+  --motion-duration-ambient-shimmer: 1500ms;
+  --motion-duration-stagger-step: 40ms;
+
+  --motion-ease-linear: linear;
+  --motion-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-spring-bump: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --motion-ease-ambient: cubic-bezier(0.4, 0, 0.6, 1);
+
+  /* ---- Breakpoints ----
+     CSS cannot read custom properties inside @media conditions — these exist as the
+     single source of truth for authors/JS (matchMedia) to reference; @media rules in
+     style.css must hardcode the same px values. Keep both in sync by hand. */
+  --breakpoint-sm: 480px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+  --breakpoint-2xl: 1536px;
+
+  /* Color: dark is this product's primary mode (see foundations/08-dark-mode-strategy.md)
+     — :root carries the dark values as a pre-hydration-safe fallback. The inline boot
+     script (theme-switcher/inline-boot.html) sets [data-theme] before first paint, so
+     this fallback is a safety net, not the steady state for light-mode users. */
+  --color-bg-canvas: #0a0a0a;
+  --color-bg-surface: #171717;
+  --color-bg-surface-raised: #1f1f1f;
+  --color-bg-surface-overlay: #262626;
+
+  --color-fg-ink: #f5f5f4;
+  --color-fg-body: #d4d4d3;
+  --color-fg-muted: #888884;
+  --color-fg-on-accent: #0a0a0a;
+
+  --color-border-default: rgba(245, 245, 244, 0.08);
+  --color-border-strong: rgba(245, 245, 244, 0.16);
+
+  --color-accent: #f5f5f4;
+  --color-accent-hover: #e5e5e4;
+  --color-accent-active: #d4d4d3;
+
+  --color-success: #34d058;
+  --color-success-subtle: rgba(52, 208, 88, 0.14);
+  --color-warning: #f1a72b;
+  --color-warning-subtle: rgba(241, 167, 43, 0.14);
+  --color-danger: #f85149;
+  --color-danger-subtle: rgba(248, 81, 73, 0.14);
+  --color-info: #58a6ff;
+  --color-info-subtle: rgba(88, 166, 255, 0.14);
+
+  --color-overlay-scrim: rgba(10, 10, 10, 0.72);
+  --shadow-overlay: 0 0 0 1px rgba(245, 245, 244, 0.08), 0 12px 32px rgba(0, 0, 0, 0.55);
+
+  --color-chart-series-1: #58a6ff;
+  --color-chart-series-2: #f1a72b;
+  --color-chart-series-3: #34d058;
+  --color-chart-series-4: #bc8cff;
+  --color-chart-series-5: #39c5cf;
+  --color-chart-series-6: #f778ba;
+
+  --color-map-route: #58a6ff;
+  --color-map-route-active: #f5f5f4;
+  --color-map-marker-start: #34d058;
+  --color-map-marker-end: #f85149;
+  --color-map-marker-poi: #888884;
+}
+
+[data-theme='dark'] {
+  --color-bg-canvas: #0a0a0a;
+  --color-bg-surface: #171717;
+  --color-bg-surface-raised: #1f1f1f;
+  --color-bg-surface-overlay: #262626;
+
+  --color-fg-ink: #f5f5f4;
+  --color-fg-body: #d4d4d3;
+  --color-fg-muted: #888884;
+  --color-fg-on-accent: #0a0a0a;
+
+  --color-border-default: rgba(245, 245, 244, 0.08);
+  --color-border-strong: rgba(245, 245, 244, 0.16);
+
+  --color-accent: #f5f5f4;
+  --color-accent-hover: #e5e5e4;
+  --color-accent-active: #d4d4d3;
+
+  --color-success: #34d058;
+  --color-success-subtle: rgba(52, 208, 88, 0.14);
+  --color-warning: #f1a72b;
+  --color-warning-subtle: rgba(241, 167, 43, 0.14);
+  --color-danger: #f85149;
+  --color-danger-subtle: rgba(248, 81, 73, 0.14);
+  --color-info: #58a6ff;
+  --color-info-subtle: rgba(88, 166, 255, 0.14);
+
+  --color-overlay-scrim: rgba(10, 10, 10, 0.72);
+  --shadow-overlay: 0 0 0 1px rgba(245, 245, 244, 0.08), 0 12px 32px rgba(0, 0, 0, 0.55);
+
+  --color-chart-series-1: #58a6ff;
+  --color-chart-series-2: #f1a72b;
+  --color-chart-series-3: #34d058;
+  --color-chart-series-4: #bc8cff;
+  --color-chart-series-5: #39c5cf;
+  --color-chart-series-6: #f778ba;
+
+  --color-map-route: #58a6ff;
+  --color-map-route-active: #f5f5f4;
+  --color-map-marker-start: #34d058;
+  --color-map-marker-end: #f85149;
+  --color-map-marker-poi: #888884;
+
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --color-bg-canvas: #f4f4f5;
+  --color-bg-surface: #ffffff;
+  --color-bg-surface-raised: #ffffff;
+  --color-bg-surface-overlay: #ffffff;
+
+  --color-fg-ink: #18181b;
+  --color-fg-body: #3f3f46;
+  --color-fg-muted: #5f5f66;
+  --color-fg-on-accent: #ffffff;
+
+  --color-border-default: rgba(24, 24, 27, 0.08);
+  --color-border-strong: rgba(24, 24, 27, 0.16);
+
+  --color-accent: #18181b;
+  --color-accent-hover: #3f3f46;
+  --color-accent-active: #52525b;
+
+  --color-success: #1a7f37;
+  --color-success-subtle: rgba(26, 127, 55, 0.1);
+  --color-warning: #8a5b00;
+  --color-warning-subtle: rgba(138, 91, 0, 0.1);
+  --color-danger: #cf222e;
+  --color-danger-subtle: rgba(207, 34, 46, 0.1);
+  --color-info: #0969da;
+  --color-info-subtle: rgba(9, 105, 218, 0.1);
+
+  --color-overlay-scrim: rgba(24, 24, 27, 0.48);
+  --shadow-overlay: 0 0 0 1px rgba(24, 24, 27, 0.08), 0 12px 32px rgba(24, 24, 27, 0.1);
+
+  --color-chart-series-1: #0969da;
+  --color-chart-series-2: #8a5b00;
+  --color-chart-series-3: #1a7f37;
+  --color-chart-series-4: #8250df;
+  --color-chart-series-5: #1b7c83;
+  --color-chart-series-6: #bf3989;
+
+  --color-map-route: #0969da;
+  --color-map-route-active: #18181b;
+  --color-map-marker-start: #1a7f37;
+  --color-map-marker-end: #cf222e;
+  --color-map-marker-poi: #5f5f66;
+
+  color-scheme: light;
+}
+
+/* prefers-reduced-motion: collapse all durations to instant, keep opacity-only fades.
+   Individual components still decide whether a transition should exist at all —
+   this only removes the *time* an already-present transition takes. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-duration-fast: 0ms;
+    --motion-duration-medium: 0ms;
+    --motion-duration-entry: 0ms;
+    --motion-duration-bump: 0ms;
+    --motion-duration-ambient-pulse: 0ms;
+    --motion-duration-ambient-shimmer: 0ms;
+    --motion-duration-stagger-step: 0ms;
+  }
+}

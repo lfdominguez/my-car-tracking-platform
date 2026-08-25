@@ -10,6 +10,7 @@ use leptos_router::components::{ParentRoute, Route, Router, Routes};
 use leptos_router::path;
 
 use crate::components::layout::AppLayout;
+use crate::components::provide_theme;
 use crate::pages::cars::{CarDetailPage, CarsPage};
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::settings::SettingsPage;
@@ -24,6 +25,7 @@ fn main() {
     console_error_panic_hook::set_once();
     mount_to_body(|| {
         provide_vault_session();
+        provide_theme();
         view! {
             <Router>
                 <Routes fallback=|| view! { <NotFoundPage/> }>

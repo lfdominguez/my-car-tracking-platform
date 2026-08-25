@@ -1,0 +1,17 @@
+{
+  "answers": {
+    "industry": "logistics-fleet-mgmt",
+    "project_type": "app-dashboard — SPA \"intelligent car tracking\" platform surfacing insight extracted from day-to-day trip/telemetry data",
+    "audience": "Broad consumer audience: car enthusiasts and everyday drivers who want to know what's happening with their car and see its internal metrics/data",
+    "primary_goal": "At-a-glance intelligent summary of day-to-day trip and vehicle data within the SPA, reachable in as few clicks as possible",
+    "tone": "efficient, precise, data-forward, low-friction",
+    "must_have": "dark-mode, mobile-support, metrics, graphs, maps, minimal-clicks-to-key-data",
+    "forbidden": "-",
+    "reference_brands": "-",
+    "stack": "Rust + Leptos WASM SPA (crates/web, Trunk build) — not react/nextjs/vue",
+    "region": "Global — Uruguay, Mexico, USA and beyond (Americas-wide, likely es/en)",
+    "success_metric": "-"
+  },
+  "complete": true,
+  "missing": []
+}

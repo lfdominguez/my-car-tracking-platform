@@ -1,0 +1,116 @@
+{
+  "$comment": "Private workshop layer. Nothing downstream (Leptos views, style.css) references these keys directly — semantic.json maps up to consumable names, and tokens.css is generated from semantic.json. If a value used more than once here doesn't yet have a semantic name, that's a bug in semantic.json, not a reason to inline the raw value downstream.",
+
+  "color": {
+    "neutral": {
+      "black-soft": "#0a0a0a",
+      "zinc-925": "#171717",
+      "zinc-900": "#1f1f1f",
+      "zinc-850": "#262626",
+      "zinc-700": "#3f3f46",
+      "zinc-600": "#52525b",
+      "zinc-500": "#71717a",
+      "zinc-450": "#5f5f66",
+      "zinc-350": "#a1a1aa",
+      "zinc-200": "#d4d4d3",
+      "zinc-150": "#e5e5e4",
+      "zinc-100": "#f4f4f5",
+      "zinc-50": "#fafafa",
+      "white-soft": "#f5f5f4",
+      "ink-950": "#18181b",
+      "white-pure": "#ffffff"
+    },
+    "success": { "500": "#34d058", "700": "#1a7f37" },
+    "warning": { "500": "#f1a72b", "800": "#8a5b00" },
+    "danger":  { "500": "#f85149", "700": "#cf222e" },
+    "info":    { "400": "#58a6ff", "700": "#0969da" },
+    "chart": {
+      "violet-400": "#bc8cff", "violet-700": "#8250df",
+      "teal-400": "#39c5cf",   "teal-700": "#1b7c83",
+      "rose-400": "#f778ba",   "rose-700": "#bf3989"
+    },
+    "alpha": {
+      "hairline-on-dark": "rgba(245,245,244,0.08)",
+      "hairline-on-dark-strong": "rgba(245,245,244,0.16)",
+      "hairline-on-light": "rgba(24,24,27,0.08)",
+      "hairline-on-light-strong": "rgba(24,24,27,0.16)",
+      "overlay-scrim-dark": "rgba(10,10,10,0.72)",
+      "overlay-scrim-light": "rgba(24,24,27,0.48)",
+      "success-tint-dark": "rgba(52,208,88,0.14)",
+      "success-tint-light": "rgba(26,127,55,0.10)",
+      "warning-tint-dark": "rgba(241,167,43,0.14)",
+      "warning-tint-light": "rgba(138,91,0,0.10)",
+      "danger-tint-dark": "rgba(248,81,73,0.14)",
+      "danger-tint-light": "rgba(207,34,46,0.10)",
+      "info-tint-dark": "rgba(88,166,255,0.14)",
+      "info-tint-light": "rgba(9,105,218,0.10)"
+    },
+    "shadow": {
+      "overlay-dark": "0 0 0 1px rgba(245,245,244,0.08), 0 12px 32px rgba(0,0,0,0.55)",
+      "overlay-light": "0 0 0 1px rgba(24,24,27,0.08), 0 12px 32px rgba(24,24,27,0.10)"
+    }
+  },
+
+  "font": {
+    "family": {
+      "display": "'Domine', Georgia, 'Times New Roman', serif",
+      "body": "'DM Sans', -apple-system, 'Segoe UI', system-ui, sans-serif",
+      "mono": "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace"
+    },
+    "weight": {
+      "domine-medium": 500, "domine-semibold": 600, "domine-bold": 700,
+      "dmsans-regular": 400, "dmsans-medium": 500, "dmsans-bold": 700,
+      "mono-regular": 400, "mono-medium": 500, "mono-bold": 700
+    },
+    "size": {
+      "2xs": "11px", "xs": "12px", "sm": "13px", "base": "16px",
+      "lg": "19px", "xl": "23px", "2xl": "28px", "3xl": "33px", "4xl": "40px"
+    },
+    "line-height": {
+      "tight": 1.1, "snug": 1.25, "normal": 1.5, "relaxed": 1.65
+    },
+    "letter-spacing": {
+      "tighter": "-0.02em", "tight": "-0.01em", "normal": "0em", "wide": "0.08em"
+    }
+  },
+
+  "space": {
+    "0": "0px", "1": "4px", "2": "8px", "3": "12px", "4": "16px",
+    "5": "20px", "6": "24px", "8": "32px", "10": "40px", "12": "48px",
+    "16": "64px", "20": "80px", "24": "96px"
+  },
+
+  "radius": {
+    "none": "0px",
+    "chip": "2px",
+    "full": "9999px"
+  },
+
+  "motion": {
+    "duration": {
+      "instant": "0ms",
+      "fast": "150ms",
+      "medium": "250ms",
+      "entry": "320ms",
+      "bump": "360ms",
+      "ambient-pulse": "1200ms",
+      "ambient-shimmer": "1500ms",
+      "stagger-step": "40ms"
+    },
+    "easing": {
+      "linear": "linear",
+      "enter": "cubic-bezier(0.16, 1, 0.3, 1)",
+      "exit": "cubic-bezier(0.4, 0, 1, 1)",
+      "spring-bump": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+      "ambient": "cubic-bezier(0.4, 0, 0.6, 1)"
+    }
+  },
+
+  "breakpoint": {
+    "sm": "480px",
+    "md": "768px",
+    "lg": "1024px",
+    "xl": "1280px",
+    "2xl": "1536px"
+  }
+}

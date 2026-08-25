@@ -5,7 +5,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::api::{get_me, logout, Me};
-use crate::components::{Icon, IconColor};
+use crate::components::{Icon, IconColor, ThemeToggle};
 use crate::units::{UnitPrefs, UnitPrefsSignal};
 
 #[component]
@@ -106,6 +106,7 @@ pub fn AppLayout() -> impl IntoView {
                     <span>"Car Tracking"</span>
                 </div>
                 <span class="mobile-topbar-spacer" aria-hidden="true"></span>
+                <ThemeToggle/>
             </header>
             <aside class="sidebar" id="app-sidebar">
                 <div class="brand">
@@ -178,17 +179,20 @@ pub fn AppLayout() -> impl IntoView {
                                 </div>
                             }
                         })}
-                        <button class="btn" on:click=move |_| {
-                            leptos::task::spawn_local(async move {
-                                let _ = logout().await;
-                                if let Some(win) = web_sys::window() {
-                                    let _ = win.location().set_href("/");
-                                }
-                            });
-                        }>
-                            <Icon name="sign-out" />
-                            "Log out"
-                        </button>
+                        <div class="row">
+                            <button class="btn" on:click=move |_| {
+                                leptos::task::spawn_local(async move {
+                                    let _ = logout().await;
+                                    if let Some(win) = web_sys::window() {
+                                        let _ = win.location().set_href("/");
+                                    }
+                                });
+                            }>
+                                <Icon name="sign-out" />
+                                "Log out"
+                            </button>
+                            <ThemeToggle/>
+                        </div>
                     </Show>
                 </div>
             </aside>

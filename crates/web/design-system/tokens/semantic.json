@@ -1,0 +1,132 @@
+{
+  "$comment": "Consumable layer. tokens.css is generated from this file (see tokens/tokens.css). Leptos views and style.css reference CSS variables that trace back to these names — never a raw hex. Every color token below carries an independent light/dark value; none is a computed inversion of the other (see foundations/08-dark-mode-strategy.md for the reasoning behind each pair).",
+
+  "color": {
+    "bg-canvas":          { "light": "{raw.color.neutral.zinc-100}", "dark": "{raw.color.neutral.black-soft}" },
+    "bg-surface":         { "light": "{raw.color.neutral.white-pure}", "dark": "{raw.color.neutral.zinc-925}" },
+    "bg-surface-raised":  { "light": "{raw.color.neutral.white-pure}", "dark": "{raw.color.neutral.zinc-900}" },
+    "bg-surface-overlay": { "light": "{raw.color.neutral.white-pure}", "dark": "{raw.color.neutral.zinc-850}" },
+
+    "fg-ink":     { "light": "{raw.color.neutral.ink-950}", "dark": "{raw.color.neutral.white-soft}" },
+    "fg-body":    { "light": "{raw.color.neutral.zinc-700}", "dark": "{raw.color.neutral.zinc-200}" },
+    "fg-muted":   { "light": "{raw.color.neutral.zinc-450}", "dark": "{raw.color.neutral.zinc-500}" },
+    "fg-on-accent": { "light": "{raw.color.neutral.white-pure}", "dark": "{raw.color.neutral.black-soft}" },
+
+    "border-default": { "light": "{raw.color.alpha.hairline-on-light}", "dark": "{raw.color.alpha.hairline-on-dark}" },
+    "border-strong":  { "light": "{raw.color.alpha.hairline-on-light-strong}", "dark": "{raw.color.alpha.hairline-on-dark-strong}" },
+
+    "accent":         { "light": "{raw.color.neutral.ink-950}", "dark": "{raw.color.neutral.white-soft}" },
+    "accent-hover":   { "light": "{raw.color.neutral.zinc-700}", "dark": "{raw.color.neutral.zinc-150}" },
+    "accent-active":  { "light": "{raw.color.neutral.zinc-600}", "dark": "{raw.color.neutral.zinc-200}" },
+
+    "success":        { "light": "{raw.color.success.700}", "dark": "{raw.color.success.500}" },
+    "success-subtle": { "light": "{raw.color.alpha.success-tint-light}", "dark": "{raw.color.alpha.success-tint-dark}" },
+    "warning":        { "light": "{raw.color.warning.800}", "dark": "{raw.color.warning.500}" },
+    "warning-subtle": { "light": "{raw.color.alpha.warning-tint-light}", "dark": "{raw.color.alpha.warning-tint-dark}" },
+    "danger":         { "light": "{raw.color.danger.700}", "dark": "{raw.color.danger.500}" },
+    "danger-subtle":  { "light": "{raw.color.alpha.danger-tint-light}", "dark": "{raw.color.alpha.danger-tint-dark}" },
+    "info":           { "light": "{raw.color.info.700}", "dark": "{raw.color.info.400}" },
+    "info-subtle":    { "light": "{raw.color.alpha.info-tint-light}", "dark": "{raw.color.alpha.info-tint-dark}" },
+
+    "overlay-scrim":  { "light": "{raw.color.alpha.overlay-scrim-light}", "dark": "{raw.color.alpha.overlay-scrim-dark}" },
+    "shadow-overlay": { "light": "{raw.color.shadow.overlay-light}", "dark": "{raw.color.shadow.overlay-dark}" },
+
+    "chart-series-1": { "light": "{raw.color.info.700}", "dark": "{raw.color.info.400}" },
+    "chart-series-2": { "light": "{raw.color.warning.800}", "dark": "{raw.color.warning.500}" },
+    "chart-series-3": { "light": "{raw.color.success.700}", "dark": "{raw.color.success.500}" },
+    "chart-series-4": { "light": "{raw.color.chart.violet-700}", "dark": "{raw.color.chart.violet-400}" },
+    "chart-series-5": { "light": "{raw.color.chart.teal-700}", "dark": "{raw.color.chart.teal-400}" },
+    "chart-series-6": { "light": "{raw.color.chart.rose-700}", "dark": "{raw.color.chart.rose-400}" },
+
+    "map-route":        { "light": "{raw.color.info.700}", "dark": "{raw.color.info.400}" },
+    "map-route-active": { "light": "{raw.color.neutral.ink-950}", "dark": "{raw.color.neutral.white-soft}" },
+    "map-marker-start": { "light": "{raw.color.success.700}", "dark": "{raw.color.success.500}" },
+    "map-marker-end":   { "light": "{raw.color.danger.700}", "dark": "{raw.color.danger.500}" },
+    "map-marker-poi":   { "light": "{raw.color.neutral.zinc-450}", "dark": "{raw.color.neutral.zinc-500}" }
+  },
+
+  "font": {
+    "family-display": "{raw.font.family.display}",
+    "family-body": "{raw.font.family.body}",
+    "family-mono": "{raw.font.family.mono}",
+
+    "weight-display-medium": "{raw.font.weight.domine-medium}",
+    "weight-display-semibold": "{raw.font.weight.domine-semibold}",
+    "weight-display-bold": "{raw.font.weight.domine-bold}",
+    "weight-body-regular": "{raw.font.weight.dmsans-regular}",
+    "weight-body-medium": "{raw.font.weight.dmsans-medium}",
+    "weight-body-bold": "{raw.font.weight.dmsans-bold}",
+    "weight-mono-regular": "{raw.font.weight.mono-regular}",
+    "weight-mono-medium": "{raw.font.weight.mono-medium}",
+    "weight-mono-bold": "{raw.font.weight.mono-bold}",
+
+    "text-2xs": "{raw.font.size.2xs}",
+    "text-xs": "{raw.font.size.xs}",
+    "text-sm": "{raw.font.size.sm}",
+    "text-base": "{raw.font.size.base}",
+    "text-lg": "{raw.font.size.lg}",
+    "text-xl": "{raw.font.size.xl}",
+    "text-2xl": "{raw.font.size.2xl}",
+    "text-3xl": "{raw.font.size.3xl}",
+    "text-4xl": "{raw.font.size.4xl}",
+
+    "leading-tight": "{raw.font.line-height.tight}",
+    "leading-snug": "{raw.font.line-height.snug}",
+    "leading-normal": "{raw.font.line-height.normal}",
+    "leading-relaxed": "{raw.font.line-height.relaxed}",
+
+    "tracking-tighter": "{raw.font.letter-spacing.tighter}",
+    "tracking-tight": "{raw.font.letter-spacing.tight}",
+    "tracking-normal": "{raw.font.letter-spacing.normal}",
+    "tracking-wide": "{raw.font.letter-spacing.wide}"
+  },
+
+  "space": {
+    "0": "{raw.space.0}", "1": "{raw.space.1}", "2": "{raw.space.2}", "3": "{raw.space.3}",
+    "4": "{raw.space.4}", "5": "{raw.space.5}", "6": "{raw.space.6}", "8": "{raw.space.8}",
+    "10": "{raw.space.10}", "12": "{raw.space.12}", "16": "{raw.space.16}", "20": "{raw.space.20}", "24": "{raw.space.24}",
+
+    "row-y": "{raw.space.1}",
+    "row-x": "{raw.space.3}",
+    "card-pad": "{raw.space.4}",
+    "panel-gap": "{raw.space.2}",
+    "section-y-mobile": "{raw.space.8}",
+    "section-y-desktop": "{raw.space.12}",
+    "gutter-mobile": "{raw.space.4}",
+    "gutter-desktop": "{raw.space.6}",
+    "stack-tight": "{raw.space.1}",
+    "stack-loose": "{raw.space.4}"
+  },
+
+  "radius": {
+    "surface": "{raw.radius.none}",
+    "chip": "{raw.radius.chip}",
+    "avatar": "{raw.radius.full}",
+    "signature": "{raw.radius.none}"
+  },
+
+  "motion": {
+    "duration-instant": "{raw.motion.duration.instant}",
+    "duration-fast": "{raw.motion.duration.fast}",
+    "duration-medium": "{raw.motion.duration.medium}",
+    "duration-entry": "{raw.motion.duration.entry}",
+    "duration-bump": "{raw.motion.duration.bump}",
+    "duration-ambient-pulse": "{raw.motion.duration.ambient-pulse}",
+    "duration-ambient-shimmer": "{raw.motion.duration.ambient-shimmer}",
+    "duration-stagger-step": "{raw.motion.duration.stagger-step}",
+
+    "ease-linear": "{raw.motion.easing.linear}",
+    "ease-enter": "{raw.motion.easing.enter}",
+    "ease-exit": "{raw.motion.easing.exit}",
+    "ease-spring-bump": "{raw.motion.easing.spring-bump}",
+    "ease-ambient": "{raw.motion.easing.ambient}"
+  },
+
+  "breakpoint": {
+    "sm": "{raw.breakpoint.sm}",
+    "md": "{raw.breakpoint.md}",
+    "lg": "{raw.breakpoint.lg}",
+    "xl": "{raw.breakpoint.xl}",
+    "2xl": "{raw.breakpoint.2xl}"
+  }
+}

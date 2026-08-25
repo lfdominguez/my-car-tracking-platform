@@ -2,9 +2,32 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
+  <!-- Theme boot: must run before any CSS paints, so it's inline and the very
+       first thing in <head>. Sets [data-theme] on <html> (design-system/
+       theme-switcher/) before the WASM app hydrates, avoiding a flash of the
+       wrong theme. Precedence: localStorage > prefers-color-scheme > dark
+       (this product's default mode). -->
+  <script>
+    (function () {
+      var DARK_COLOR = "#0a0a0a", LIGHT_COLOR = "#f4f4f5";
+      try {
+        var stored = localStorage.getItem("theme");
+        var theme = stored === "light" || stored === "dark"
+          ? stored
+          : (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark");
+        document.documentElement.setAttribute("data-theme", theme);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", theme === "light" ? LIGHT_COLOR : DARK_COLOR);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+    })();
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
-  <meta name="theme-color" content="#0b1220"/>
-  <meta name="color-scheme" content="dark"/>
+  <meta name="theme-color" content="#0a0a0a"/>
+  <meta name="color-scheme" content="dark light"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
@@ -16,15 +39,23 @@
   <link rel="icon" href="/icons/favicon.ico" sizes="any"/>
   <link rel="icon" type="image/png" href="/icons/favicon-32.png" sizes="32x32"/>
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/>
+  <!-- Design-system tokens (crates/web/design-system/tokens/tokens.css): no url()
+       references, safe for Trunk's CSS pipeline. Must load before style.css,
+       which consumes these custom properties. -->
+  <link data-trunk rel="css" href="design-system/tokens/tokens.css"/>
   <link data-trunk rel="css" href="style.css"/>
   <link data-trunk rel="rust" data-wasm-opt="z"/>
   <!-- Vendor assets (self-hosted for CSP script-src 'self'). -->
   <link data-trunk rel="copy-file" href="public/qrcode.min.js"/>
   <link data-trunk rel="copy-file" href="public/sw.js"/>
   <link data-trunk rel="copy-file" href="public/pwa-register.js"/>
+  <link data-trunk rel="copy-file" href="public/fonts.css"/>
   <link data-trunk rel="copy-file" href="public/manifest.webmanifest"/>
   <link data-trunk rel="copy-dir" href="public/icons" data-target-path="icons"/>
   <link data-trunk rel="copy-dir" href="public/vendor" data-target-path="vendor"/>
+  <!-- fonts.css is a plain (non-Trunk-processed) stylesheet like the vendor CSS
+       below — its url() references need to survive untouched. -->
+  <link rel="stylesheet" href="/fonts.css"/>
   <link rel="stylesheet" type="text/css" href="/vendor/phosphor-duotone.css"/>
   <link rel="stylesheet" type="text/css" href="/vendor/phosphor-regular.css"/>
   <link rel="stylesheet" href="/vendor/maplibre-gl.css"/>

@@ -1,29 +1,50 @@
 :root {
-  --bg: #0b1220;
-  --panel: #121a2b;
-  --panel-2: #182338;
-  --border: #24314a;
-  --text: #e8eefc;
-  --muted: #93a0b8;
-  --accent: #3b82f6;
-  --accent-2: #22c55e;
-  --danger: #ef4444;
-  --warn: #f59e0b;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  --radius: 14px;
+  /* Design-system integration: these keep their old names (140 call sites
+     below and across pages/components) but now source their values from
+     design-system/tokens/tokens.css, which is theme-reactive via [data-theme]
+     on <html>. Nothing downstream needed to change for dark/light switching
+     to work — see crates/web/design-system/ for the source of truth. */
+  --bg: var(--color-bg-canvas);
+  --panel: var(--color-bg-surface);
+  --panel-2: var(--color-bg-surface-raised);
+  --border: var(--color-border-default);
+  --text: var(--color-fg-ink);
+  --muted: var(--color-fg-muted);
+  --accent: var(--color-accent);
+  --accent-2: var(--color-success);
+  --danger: var(--color-danger);
+  --warn: var(--color-warning);
+  /* data-viz-dense style: no shadows on structural surfaces — depth comes
+     from the surface-lightness ladder instead. See design-system/foundations/
+     04-surfaces-elevation.md. box-shadow: var(--shadow) call sites below all
+     become a no-op; --shadow-overlay (tokens.css) is used for actual
+     floating layers, e.g. modals. */
+  --shadow: none;
+  --radius: var(--radius-surface);
   --icon-default: var(--text);
   --icon-accent: var(--accent);
   --icon-success: var(--accent-2);
   --icon-warn: var(--warn);
   --icon-danger: var(--danger);
   --icon-device: #22d3ee;
-  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-family: var(--font-family-body), "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); min-height: 100%; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-family-display), Georgia, "Times New Roman", serif;
+  font-weight: var(--font-weight-display-semibold);
+}
+
+/* Every metric/number reads in tabular monospace — data-viz-dense's core signature. */
+.kpi-value, .stat-value, .landing-mock-kpi strong, .table td.num {
+  font-family: var(--font-family-mono), ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
 
 .app-shell {
   display: grid;
@@ -178,6 +199,55 @@ h1, h2, h3 { margin: 0 0 0.75rem; }
 }
 .stat-value { font-size: 1.6rem; font-weight: 700; }
 .stat-label { color: var(--muted); font-size: 0.85rem; }
+
+/* Hairline-separated KPI row — no per-metric card wrapper. Replaces the
+   equal-card grid anti-pattern for the dashboard's top-line numbers. */
+.kpi-hairline-row {
+  display: flex;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.25rem;
+}
+.kpi-hairline-item {
+  flex: 1 1 150px;
+  padding: 0.85rem 1.15rem;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.kpi-hairline-item:first-child { border-left: none; }
+.kpi-hairline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* Ambient shimmer loading placeholder — data-viz-dense's own token
+   (--motion-duration-ambient-shimmer), used sparingly for first-load only. */
+.skeleton-block {
+  position: relative;
+  overflow: hidden;
+  background: var(--panel-2);
+  border-radius: var(--radius-chip);
+}
+.skeleton-block::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, var(--color-border-strong), transparent);
+  animation: skeleton-shimmer var(--motion-duration-ambient-shimmer, 1500ms) linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block::after { animation: none; }
+}
+@keyframes skeleton-shimmer {
+  to { transform: translateX(100%); }
+}
 .btn.btn-sm {
   padding: 0.3rem 0.65rem;
   font-size: 0.8rem;
@@ -1402,15 +1472,10 @@ a.icon-label:hover { text-decoration: underline; }
   display: flex;
   flex-direction: column;
   gap: 0.95rem;
-  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
-  background-image:
-    radial-gradient(circle at 0% 0%, rgba(56, 189, 248, 0.1), transparent 40%),
-    linear-gradient(180deg, rgba(24, 35, 56, 0.4), transparent 55%);
+  transition: border-color var(--motion-duration-fast, 150ms) ease;
 }
 .dash-car-grid > a:hover .dash-car-card {
-  border-color: rgba(56, 189, 248, 0.55);
-  transform: translateY(-2px);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+  border-color: var(--color-border-strong);
 }
 .dash-car-card-top {
   display: flex;
@@ -1423,10 +1488,10 @@ a.icon-label:hover { text-decoration: underline; }
 .dash-car-photo {
   width: 72px;
   height: 72px;
-  border-radius: 14px;
+  border-radius: var(--radius);
   object-fit: cover;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.65);
+  background: var(--panel-2);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1442,22 +1507,34 @@ a.icon-label:hover { text-decoration: underline; }
   font-size: 1.1rem;
   line-height: 1.25;
 }
-.dash-car-sub,
-.dash-car-trips {
+.dash-car-sub {
   font-size: 0.85rem;
   margin-top: 0.15rem;
 }
-.dash-car-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.55rem;
+/* Card body: radial gauge (the visual centerpiece) + a hairline-stacked
+   stat column. Replaces the earlier flat 3-way metric row — the gauge is
+   the "full redesign" move: state-of-charge/fuel reads as a color-coded
+   ring instead of a small bar buried among plain numbers. */
+.dash-car-body {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
 }
-.dash-car-metric {
-  background: rgba(15, 23, 42, 0.45);
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  border-radius: 12px;
-  padding: 0.55rem 0.6rem;
+.dash-car-stats {
+  flex: 1 1 0;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dash-car-stat {
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--border);
+}
+.dash-car-stat:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 .dash-car-metric-label {
   display: flex;
@@ -1470,31 +1547,73 @@ a.icon-label:hover { text-decoration: underline; }
   margin-bottom: 0.25rem;
 }
 .dash-car-metric-value {
+  font-family: var(--font-family-mono), ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
   font-size: 0.98rem;
   line-height: 1.2;
   word-break: break-word;
 }
-.dash-fuel-bar {
-  margin-top: 0.4rem;
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.18);
-  overflow: hidden;
+
+/* Radial gauge — semantic color by threshold (success/warning/danger),
+   matching the same tokens the KPI row and elsewhere use for state. */
+.dash-gauge {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
 }
-.dash-fuel-bar-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #22c55e, #86efac);
-  min-width: 0;
-  transition: width 0.2s ease;
+.dash-gauge-ring {
+  position: relative;
+  width: 72px;
+  height: 72px;
+}
+.dash-gauge-track {
+  stroke: var(--border);
+}
+.dash-gauge-fill {
+  transition: stroke-dashoffset var(--motion-duration-medium, 250ms) ease;
+}
+.dash-gauge--success .dash-gauge-fill { stroke: var(--color-success); }
+.dash-gauge--warning .dash-gauge-fill { stroke: var(--color-warning); }
+.dash-gauge--danger .dash-gauge-fill { stroke: var(--color-danger); }
+.dash-gauge--unknown .dash-gauge-fill { stroke: var(--color-border-strong); }
+.dash-gauge-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dash-gauge-value {
+  font-family: var(--font-family-mono), ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 1rem;
+}
+.dash-gauge-label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
 }
 .dash-global-stats {
   margin-bottom: 1rem;
 }
 @media (max-width: 640px) {
-  .dash-car-metrics {
-    grid-template-columns: 1fr;
+  .dash-car-body {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1.6rem;
+  }
+  .dash-gauge {
+    align-self: center;
+    margin-bottom: 0.4rem;
   }
 }
 
@@ -1815,9 +1934,12 @@ a:hover .routes-corridor-card {
   min-height: 100dvh;
   overflow-x: hidden;
   color: var(--text);
-  background: radial-gradient(1200px 600px at 10% -10%, rgba(59, 130, 246, 0.18), transparent 55%),
-              radial-gradient(900px 500px at 90% 0%, rgba(34, 197, 94, 0.12), transparent 50%),
-              var(--bg);
+  /* background-color + background-image kept separate (not a single
+     `background:` shorthand) — a bare var(--bg) as the final layer of a
+     multi-layer shorthand is a known-fragile pattern across engines. */
+  background-color: var(--bg);
+  background-image: radial-gradient(1200px 600px at 10% -10%, rgba(59, 130, 246, 0.18), transparent 55%),
+              radial-gradient(900px 500px at 90% 0%, rgba(34, 197, 94, 0.12), transparent 50%);
 }
 
 .landing-bg {

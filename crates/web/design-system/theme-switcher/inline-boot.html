@@ -1,0 +1,26 @@
+<!--
+  Paste into <head> of crates/web/index.html, BEFORE the `data-trunk rel="css"` link for
+  tokens.css/style.css. This runs synchronously before first paint — the WASM app takes real
+  time to boot, so without this the page flashes the wrong theme (or the :root dark fallback)
+  for a visible moment on every light-mode load. Keep it tiny and dependency-free; it must not
+  wait on anything.
+
+  Precedence: explicit user choice (localStorage) > OS preference (prefers-color-scheme) >
+  dark (this product's default mode, matching the existing <meta name="color-scheme" content
+  ="dark"> already in index.html).
+-->
+<script>
+  (function () {
+    try {
+      var stored = localStorage.getItem('theme');
+      var theme = stored === 'light' || stored === 'dark'
+        ? stored
+        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+          ? 'light'
+          : 'dark');
+      document.documentElement.setAttribute('data-theme', theme);
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  })();
+</script>

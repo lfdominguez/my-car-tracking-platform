@@ -1,0 +1,30 @@
+/* Self-hosted fonts for the design system (crates/web/design-system/foundations/02-typography.md).
+   Self-hosted (not linked to fonts.googleapis.com) because the app's CSP is
+   font-src 'self' data' — same reasoning as the self-hosted Phosphor icon set.
+   Each family below is Google's variable-font build; declaring several
+   font-weight values against the same src is intentional and correct — the
+   browser renders the requested weight via the file's own wght axis. */
+
+@font-face {
+  font-family: "Domine";
+  font-style: normal;
+  font-weight: 500 700;
+  font-display: swap;
+  src: url("/vendor/fonts/domine.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/vendor/fonts/dm-sans.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/vendor/fonts/jetbrains-mono.woff2") format("woff2");
+}
