@@ -75,7 +75,7 @@ h1, h2, h3, h4, h5, h6 {
   max-height: 100dvh;
   overflow-x: hidden;
   overflow-y: auto;
-  background: linear-gradient(180deg, #10182a, #0d1422);
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
   border-right: 1px solid var(--border);
   padding: 1.25rem;
   display: flex;
@@ -118,12 +118,12 @@ h1, h2, h3, h4, h5, h6 {
 }
 .connectivity-banner.offline {
   border-color: rgba(245, 158, 11, 0.45);
-  background: rgba(120, 53, 15, 0.35);
-  color: #fde68a;
+  background: var(--color-warning-subtle);
+  color: var(--text);
 }
 .connectivity-banner.update {
   border-color: rgba(59, 130, 246, 0.45);
-  background: rgba(30, 58, 138, 0.35);
+  background: var(--color-info-subtle);
   color: var(--text);
 }
 .connectivity-banner .btn {
@@ -255,7 +255,7 @@ h1, h2, h3 { margin: 0 0 0.75rem; }
 .btn.btn-ghost,
 .btn.ghost {
   background: transparent;
-  border-color: #24314a;
+  border-color: var(--border);
   color: var(--muted);
 }
 .btn.btn-ghost:hover,
@@ -272,19 +272,19 @@ h1, h2, h3 { margin: 0 0 0.75rem; }
   justify-content: center;
   gap: 0.45rem;
 }
-.btn.primary { background: var(--accent); border-color: transparent; color: white; }
+.btn.primary { background: var(--color-info); border-color: transparent; color: var(--color-fg-on-accent); }
 .btn.secondary,
 .btn.btn-secondary {
   background: transparent;
   border-color: rgba(59, 130, 246, 0.55);
-  color: #93c5fd;
+  color: var(--color-info);
 }
 .btn.secondary:hover,
 .btn.btn-secondary:hover {
   border-color: #3b82f6;
-  color: #bfdbfe;
+  color: var(--color-info);
 }
-.btn.danger { background: transparent; border-color: var(--danger); color: #fecaca; }
+.btn.danger { background: transparent; border-color: var(--danger); color: var(--color-danger); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .traffic-toolbar {
   display: flex;
@@ -296,7 +296,7 @@ h1, h2, h3 { margin: 0 0 0.75rem; }
   padding: 0.75rem 0.9rem;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.10), rgba(15, 23, 42, 0.35));
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.10), var(--panel-2));
 }
 .traffic-run-btn {
   min-height: 2.35rem;
@@ -313,7 +313,7 @@ h1, h2, h3 { margin: 0 0 0.75rem; }
   margin: 0 0 0.75rem;
 }
 input, select, textarea {
-  width: 100%; background: #0e1626; border: 1px solid var(--border); color: var(--text);
+  width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
   border-radius: 10px; padding: 0.55rem 0.7rem;
 }
 label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.3rem; }
@@ -377,14 +377,14 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .badge {
   display: inline-flex; align-items: center; gap: 0.25rem;
   padding: 0.15rem 0.5rem; border-radius: 999px;
-  background: #1e293b; color: var(--muted); font-size: 0.75rem;
+  background: var(--panel-2); color: var(--muted); font-size: 0.75rem;
 }
-.badge.owner { color: #86efac; background: #052e1a; }
-.badge.editor { color: #93c5fd; background: #0b1f3a; }
-.badge.viewer { color: #fde68a; background: #3a2a08; }
+.badge.owner { color: var(--color-success); background: var(--color-success-subtle); }
+.badge.editor { color: var(--color-info); background: var(--color-info-subtle); }
+.badge.viewer { color: var(--color-warning); background: var(--color-warning-subtle); }
 .map {
   width: 100%; height: 380px; border-radius: 12px; overflow: hidden;
-  border: 1px solid var(--border); background: #0a101c;
+  border: 1px solid var(--border); background: var(--panel-2);
 }
 .chart { width: 100%; height: 280px; }
 .chart.chart-tall { height: 320px; }
@@ -406,7 +406,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .trips-filter-chip {
   appearance: none;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.55);
+  background: var(--panel-2);
   color: var(--muted, #94a3b8);
   border-radius: 999px;
   padding: 0.4rem 0.85rem;
@@ -421,9 +421,9 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   color: var(--text, #e2e8f0);
 }
 .trips-filter-chip.is-active {
-  background: rgba(59, 130, 246, 0.18);
+  background: var(--color-info-subtle);
   border-color: rgba(59, 130, 246, 0.55);
-  color: #93c5fd;
+  color: var(--color-info);
 }
 .trips-filter-meta {
   font-size: 0.85rem;
@@ -445,7 +445,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   padding: 0.4rem 0.7rem;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.55);
+  background: var(--panel-2);
   color: var(--text, #e2e8f0);
   font: inherit;
   font-size: 0.9rem;
@@ -496,7 +496,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   background-image:
     radial-gradient(circle at 100% 0%, rgba(59,130,246,0.12), transparent 42%),
-    linear-gradient(180deg, rgba(24,35,56,0.35), transparent 55%);
+    linear-gradient(180deg, var(--panel-2), transparent 55%);
 }
 .trip-grid > a:hover .trip-card {
   border-color: rgba(59, 130, 246, 0.55);
@@ -521,7 +521,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   gap: 0.5rem;
 }
 .metric-chip {
-  background: rgba(14, 22, 38, 0.85);
+  background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.45rem 0.5rem;
@@ -546,7 +546,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .trip-card-footer {
   margin-top: auto;
   padding-top: 0.15rem;
-  border-top: 1px solid rgba(36, 49, 74, 0.7);
+  border-top: 1px solid var(--border);
   padding-top: 0.65rem;
 }
 .trip-card-actions {
@@ -583,18 +583,18 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   border: 1px solid transparent;
 }
 .pill-ok {
-  color: #86efac;
-  background: rgba(5, 46, 26, 0.85);
+  color: var(--color-success);
+  background: var(--color-success-subtle);
   border-color: rgba(34, 197, 94, 0.35);
 }
 .pill-live {
-  color: #fde68a;
-  background: rgba(58, 42, 8, 0.9);
+  color: var(--color-warning);
+  background: var(--color-warning-subtle);
   border-color: rgba(245, 158, 11, 0.4);
 }
 .pill-warn {
-  color: #fdba74;
-  background: rgba(67, 20, 7, 0.9);
+  color: var(--color-warning);
+  background: var(--color-warning-subtle);
   border-color: rgba(249, 115, 22, 0.45);
   white-space: normal;
   max-width: 14rem;
@@ -774,7 +774,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   border-radius: 12px;
   border: 1px solid rgba(59, 130, 246, 0.18);
   background:
-    linear-gradient(180deg, rgba(36, 49, 74, 0.55), rgba(18, 26, 43, 0.72));
+    linear-gradient(180deg, var(--panel-2), var(--panel));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 .telemetry-signal-label {
@@ -818,7 +818,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   padding: 0.15rem;
   border-radius: 999px;
   border: 1px solid var(--border, #24314a);
-  background: rgba(12, 18, 32, 0.55);
+  background: var(--panel-2);
   scrollbar-width: thin;
 }
 .telemetry-cat-btn {
@@ -836,12 +836,12 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   flex: 0 0 auto;
 }
 .telemetry-cat-btn:hover {
-  color: #e8eefc;
-  background: rgba(36, 49, 74, 0.45);
+  color: var(--text);
+  background: rgba(59, 130, 246, 0.16);
 }
 .telemetry-cat-btn.is-active {
   background: rgba(59, 130, 246, 0.3);
-  color: #e8eefc;
+  color: var(--text);
   box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.45);
 }
 .seg-control {
@@ -849,7 +849,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   padding: 0.15rem;
   border-radius: 999px;
   border: 1px solid var(--border, #24314a);
-  background: rgba(18, 26, 43, 0.9);
+  background: var(--panel-2);
   gap: 0.12rem;
 }
 .seg-btn {
@@ -866,7 +866,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 }
 .seg-btn.is-active {
   background: rgba(34, 197, 94, 0.2);
-  color: #e8eefc;
+  color: var(--text);
   box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.4);
 }
 /* Keep head utility used by Route card */
@@ -920,7 +920,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .telemetry-help summary {
   cursor: pointer;
   list-style: none;
-  color: #93c5fd;
+  color: var(--color-info);
   font-weight: 700;
   user-select: none;
   width: 1.55rem;
@@ -929,7 +929,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   place-items: center;
   border-radius: 999px;
   border: 1px solid rgba(147, 197, 253, 0.28);
-  background: rgba(30, 58, 138, 0.25);
+  background: var(--color-info-subtle);
   line-height: 1;
 }
 .telemetry-help summary::-webkit-details-marker { display: none; }
@@ -938,14 +938,14 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 }
 .telemetry-help[open] summary {
   background: rgba(59, 130, 246, 0.35);
-  color: #e8eefc;
+  color: var(--text);
 }
 .telemetry-help p {
   margin: 0.45rem 0 0.2rem;
   padding: 0.55rem 0.65rem;
   border-radius: 10px;
   border: 1px solid var(--border, #24314a);
-  background: rgba(12, 18, 32, 0.75);
+  background: var(--panel-2);
   line-height: 1.45;
   color: var(--muted, #93a0b8);
   max-width: 36rem;
@@ -972,7 +972,7 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   padding: 0.75rem 0.9rem;
   border-radius: 12px;
   border: 1px solid rgba(59, 130, 246, 0.35);
-  background: rgba(30, 58, 138, 0.22);
+  background: var(--color-info-subtle);
   color: var(--text);
   font-size: 0.92rem;
   line-height: 1.4;
@@ -1092,6 +1092,11 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .icon.warn { color: var(--icon-warn); }
 .icon.danger { color: var(--icon-danger); }
 .icon.device { color: var(--icon-device); }
+/* Icons in buttons follow the button's own text color (e.g. white on .btn.primary)
+   unless a semantic tone class (.accent/.tone-success/etc.) is explicitly set. */
+.btn .icon:not(.accent, .tone-success, .warn, .danger, .device) {
+  color: inherit;
+}
 /* Phosphor duotone secondary layer */
 .icon.ph-duotone::before { opacity: 0.28; }
 
@@ -1267,8 +1272,8 @@ a.icon-label:hover { text-decoration: underline; }
   gap: 0.35rem;
 }
 .pill-ai {
-  background: rgba(168, 85, 247, 0.18);
-  color: #c4b5fd;
+  background: var(--panel-2);
+  color: var(--color-chart-series-4);
   border: 1px solid rgba(168, 85, 247, 0.35);
   font-size: 0.78rem;
   font-weight: 600;
@@ -1276,13 +1281,13 @@ a.icon-label:hover { text-decoration: underline; }
   white-space: nowrap;
 }
 .pill-ai.is-running {
-  background: rgba(59, 130, 246, 0.16);
-  color: #93c5fd;
+  background: var(--panel-2);
+  color: var(--color-info);
   border-color: rgba(59, 130, 246, 0.35);
 }
 .pill-ai.is-failed {
-  background: rgba(239, 68, 68, 0.14);
-  color: #fca5a5;
+  background: var(--panel-2);
+  color: var(--color-danger);
   border-color: rgba(239, 68, 68, 0.35);
 }
 .ai-analysis-card {
@@ -1358,7 +1363,7 @@ a.icon-label:hover { text-decoration: underline; }
   padding: 0.75rem 0.9rem;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.08), rgba(15, 23, 42, 0.35));
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.08), var(--panel-2));
 }
 .ai-status-block {
   display: flex;
@@ -1378,23 +1383,23 @@ a.icon-label:hover { text-decoration: underline; }
   border: 1px solid transparent;
 }
 .ai-status-badge.is-idle {
-  background: rgba(148, 163, 184, 0.12);
-  color: #cbd5e1;
-  border-color: rgba(148, 163, 184, 0.28);
+  background: var(--panel-2);
+  color: var(--muted);
+  border-color: var(--border);
 }
 .ai-status-badge.is-running {
-  background: rgba(59, 130, 246, 0.16);
-  color: #93c5fd;
+  background: var(--panel-2);
+  color: var(--color-info);
   border-color: rgba(59, 130, 246, 0.35);
 }
 .ai-status-badge.is-done {
-  background: rgba(168, 85, 247, 0.18);
-  color: #ddd6fe;
+  background: var(--panel-2);
+  color: var(--color-chart-series-4);
   border-color: rgba(168, 85, 247, 0.4);
 }
 .ai-status-badge.is-failed {
-  background: rgba(239, 68, 68, 0.14);
-  color: #fca5a5;
+  background: var(--panel-2);
+  color: var(--color-danger);
   border-color: rgba(239, 68, 68, 0.35);
 }
 .ai-status-meta {
@@ -1457,7 +1462,7 @@ a.icon-label:hover { text-decoration: underline; }
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 0.75rem 0.85rem;
-  background: rgba(15, 23, 42, 0.35);
+  background: var(--panel-2);
 }
 .ai-block h3 {
   margin: 0 0 0.5rem;
@@ -1477,9 +1482,9 @@ a.icon-label:hover { text-decoration: underline; }
   gap: 0.5rem;
   align-items: center;
 }
-.severity-low { background: rgba(34,197,94,0.15); color: #86efac; }
-.severity-medium { background: rgba(245,158,11,0.15); color: #fcd34d; }
-.severity-high { background: rgba(239,68,68,0.15); color: #fca5a5; }
+.severity-low { background: var(--color-success-subtle); color: var(--color-success); }
+.severity-medium { background: var(--color-warning-subtle); color: var(--color-warning); }
+.severity-high { background: var(--color-danger-subtle); color: var(--color-danger); }
 .settings-card .field {
   display: flex;
   flex-direction: column;
@@ -1490,7 +1495,7 @@ a.icon-label:hover { text-decoration: underline; }
   padding: 0.55rem 0.7rem;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--panel-2);
   color: inherit;
 }
 
@@ -1679,7 +1684,7 @@ a.icon-label:hover { text-decoration: underline; }
   padding: 0.75rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--panel-2);
   margin-bottom: 0.35rem;
 }
 .car-photo-preview-wrap {
@@ -1691,7 +1696,7 @@ a.icon-label:hover { text-decoration: underline; }
   border-radius: 14px;
   object-fit: cover;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.75);
+  background: var(--panel-2);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1725,7 +1730,7 @@ label.btn.car-photo-pick:has(input:disabled) {
   border-radius: 10px;
   object-fit: cover;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.65);
+  background: var(--panel-2);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1777,22 +1782,22 @@ label.btn.car-photo-pick:has(input:disabled) {
   padding: 0.12rem 0.45rem;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--panel-2);
 }
 .routes-insight-kind.is-positive {
-  color: #4ade80;
+  color: var(--color-success);
   border-color: rgba(34, 197, 94, 0.35);
-  background: rgba(34, 197, 94, 0.1);
+  background: var(--color-success-subtle);
 }
 .routes-insight-kind.is-warn {
-  color: #fbbf24;
+  color: var(--color-warning);
   border-color: rgba(245, 158, 11, 0.35);
-  background: rgba(245, 158, 11, 0.1);
+  background: var(--color-warning-subtle);
 }
 .routes-insight-kind.is-neutral {
-  color: #93c5fd;
+  color: var(--color-info);
   border-color: rgba(59, 130, 246, 0.35);
-  background: rgba(59, 130, 246, 0.1);
+  background: var(--color-info-subtle);
 }
 .routes-insight-kind.is-muted {
   color: var(--muted);
@@ -1834,9 +1839,9 @@ a:hover .routes-corridor-card {
   min-height: 280px;
 }
 .banner.warn {
-  background: rgba(245, 158, 11, 0.12);
+  background: var(--color-warning-subtle);
   border: 1px solid rgba(245, 158, 11, 0.35);
-  color: #fbbf24;
+  color: var(--color-warning);
   padding: 0.65rem 0.85rem;
   border-radius: var(--radius);
   margin-bottom: 0.75rem;
@@ -1851,13 +1856,13 @@ a:hover .routes-corridor-card {
   border: 1px solid var(--border);
 }
 .pill.ok {
-  background: rgba(34, 197, 94, 0.12);
-  color: #4ade80;
+  background: var(--color-success-subtle);
+  color: var(--color-success);
   border-color: rgba(34, 197, 94, 0.35);
 }
 .pill.warn {
-  background: rgba(245, 158, 11, 0.12);
-  color: #fbbf24;
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
   border-color: rgba(245, 158, 11, 0.35);
 }
 
@@ -1876,7 +1881,7 @@ a:hover .routes-corridor-card {
   flex-direction: column;
   gap: 0.65rem;
   border-top: 1px solid var(--border, #24314a);
-  background: rgba(15, 23, 42, 0.35);
+  background: var(--panel-2);
 }
 .routes-map-legend-group {
   display: flex;
@@ -2048,8 +2053,8 @@ a:hover .routes-corridor-card {
   gap: 1rem;
   padding: 0.85rem 1.5rem;
   backdrop-filter: blur(14px);
-  background: rgba(11, 18, 32, 0.72);
-  border-bottom: 1px solid rgba(36, 49, 74, 0.85);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
 }
 .landing-brand {
   display: inline-flex;
@@ -2114,7 +2119,7 @@ a:hover .routes-corridor-card {
   align-items: center;
   gap: 0.5rem;
   margin: 0 0 0.85rem;
-  color: #93c5fd;
+  color: var(--color-info);
   font-size: 0.85rem;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -2165,7 +2170,7 @@ a:hover .routes-corridor-card {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  color: #c7d2e5;
+  color: var(--muted);
   font-size: 0.95rem;
 }
 
@@ -2173,7 +2178,7 @@ a:hover .routes-corridor-card {
 .landing-mock {
   border-radius: 18px;
   border: 1px solid rgba(96, 165, 250, 0.28);
-  background: linear-gradient(160deg, rgba(24, 35, 56, 0.95), rgba(12, 18, 32, 0.98));
+  background: linear-gradient(160deg, var(--panel), var(--panel-2));
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
   padding: 1rem 1.1rem 1.15rem;
   transform: perspective(900px) rotateY(-6deg) rotateX(4deg);
@@ -2211,7 +2216,7 @@ a:hover .routes-corridor-card {
   margin-bottom: 0.85rem;
 }
 .landing-mock-kpi {
-  background: rgba(15, 23, 42, 0.65);
+  background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.45rem 0.5rem;
@@ -2232,7 +2237,7 @@ a:hover .routes-corridor-card {
   height: auto;
   border-radius: 12px;
   background: radial-gradient(circle at 30% 40%, rgba(59, 130, 246, 0.15), transparent 55%),
-              #0a1220;
+              var(--panel-2);
   border: 1px solid var(--border);
 }
 .landing-mock-chart {
@@ -2241,7 +2246,7 @@ a:hover .routes-corridor-card {
   gap: 4px;
   padding: 0.55rem;
   border-radius: 12px;
-  background: #0a1220;
+  background: var(--panel-2);
   border: 1px solid var(--border);
   min-height: 100%;
 }
@@ -2266,12 +2271,12 @@ a:hover .routes-corridor-card {
   border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--muted);
-  background: rgba(15, 23, 42, 0.5);
+  background: var(--panel-2);
 }
 
 .landing-trust {
-  border-block: 1px solid rgba(36, 49, 74, 0.8);
-  background: rgba(15, 23, 42, 0.45);
+  border-block: 1px solid var(--border);
+  background: var(--panel-2);
   margin: 0.5rem 0 0;
 }
 .landing-trust-inner {
@@ -2285,7 +2290,7 @@ a:hover .routes-corridor-card {
 }
 .landing-trust-item {
   font-size: 0.88rem;
-  color: #b6c2d9;
+  color: var(--muted);
   white-space: nowrap;
 }
 
@@ -2312,7 +2317,7 @@ a:hover .routes-corridor-card {
   gap: 1rem;
 }
 .landing-feature-card {
-  background: linear-gradient(165deg, rgba(24, 35, 56, 0.9), rgba(15, 23, 42, 0.92));
+  background: linear-gradient(165deg, var(--panel), var(--panel-2));
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 1.2rem 1.15rem 1.25rem;
@@ -2351,7 +2356,7 @@ a:hover .routes-corridor-card {
   font-size: 0.8rem;
   font-weight: 700;
   letter-spacing: 0.12em;
-  color: #60a5fa;
+  color: var(--color-info);
   margin-bottom: 0.55rem;
 }
 .landing-step h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
@@ -2377,11 +2382,11 @@ a:hover .routes-corridor-card {
   box-shadow: var(--shadow);
 }
 .landing-intel-ai {
-  background: linear-gradient(145deg, rgba(59, 130, 246, 0.14), rgba(15, 23, 42, 0.95) 55%);
+  background: linear-gradient(145deg, rgba(59, 130, 246, 0.14), var(--panel-2) 55%);
   border-color: rgba(59, 130, 246, 0.35);
 }
 .landing-intel-routes {
-  background: linear-gradient(145deg, rgba(34, 197, 94, 0.12), rgba(15, 23, 42, 0.95) 55%);
+  background: linear-gradient(145deg, rgba(34, 197, 94, 0.12), var(--panel-2) 55%);
   border-color: rgba(34, 197, 94, 0.3);
 }
 .landing-intel-badge {
@@ -2390,8 +2395,8 @@ a:hover .routes-corridor-card {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #cbd5e1;
-  background: rgba(15, 23, 42, 0.65);
+  color: var(--muted);
+  background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0.25rem 0.65rem;
@@ -2412,7 +2417,7 @@ a:hover .routes-corridor-card {
 .landing-intel-list {
   margin: 0;
   padding-left: 1.1rem;
-  color: #c7d2e5;
+  color: var(--muted);
   font-size: 0.9rem;
   line-height: 1.55;
 }
@@ -2430,7 +2435,7 @@ a:hover .routes-corridor-card {
   padding: 1.1rem 1.15rem;
   border-radius: 14px;
   border: 1px solid var(--border);
-  background: rgba(18, 26, 43, 0.85);
+  background: var(--panel-2);
 }
 .landing-telemetry-item strong { font-size: 1rem; }
 .landing-telemetry-item span { font-size: 0.9rem; line-height: 1.45; }
@@ -2447,7 +2452,7 @@ a:hover .routes-corridor-card {
   border: 1px solid rgba(96, 165, 250, 0.35);
   background:
     radial-gradient(600px 200px at 50% 0%, rgba(59, 130, 246, 0.25), transparent 70%),
-    linear-gradient(180deg, rgba(24, 35, 56, 0.95), rgba(11, 18, 32, 0.98));
+    linear-gradient(180deg, var(--panel), var(--panel-2));
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
 }
 .landing-cta-inner h2 {
@@ -2469,7 +2474,7 @@ a:hover .routes-corridor-card {
   padding: 1.75rem 1.5rem 2.5rem;
   display: grid;
   gap: 0.65rem;
-  border-top: 1px solid rgba(36, 49, 74, 0.85);
+  border-top: 1px solid var(--border);
   text-align: center;
   justify-items: center;
 }
@@ -2549,7 +2554,7 @@ a:hover .routes-corridor-card {
     padding-top: max(0.55rem, env(safe-area-inset-top));
     padding-left: max(0.75rem, env(safe-area-inset-left));
     padding-right: max(0.75rem, env(safe-area-inset-right));
-    background: rgba(13, 20, 34, 0.94);
+    background: var(--panel-2);
     border-bottom: 1px solid var(--border);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
@@ -2576,7 +2581,7 @@ a:hover .routes-corridor-card {
     position: fixed;
     inset: 0;
     z-index: 55;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--color-overlay-scrim);
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.2s ease;

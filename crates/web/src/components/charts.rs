@@ -815,7 +815,7 @@ fn shared_chart_chrome(
             "xAxisIndex": 0,
             "height": 18,
             "bottom": 8,
-            "borderColor": "#24314a",
+            "borderColor": "rgba(148,163,184,0.4)",
             "fillerColor": "rgba(59,130,246,0.25)",
             "handleStyle": { "color": "#3b82f6" },
             "textStyle": { "color": "#93a0b8" },
