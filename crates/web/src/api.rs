@@ -97,9 +97,11 @@ pub struct DashboardCarSummary {
     pub name: String,
     pub make_model: String,
     pub photo_path: Option<String>,
+    pub fuel_class: String,
     pub odometer: Option<f64>,
     pub odometer_at: Option<String>,
     pub fuel_level_pct: Option<f64>,
+    pub battery_soc_pct: Option<f64>,
     pub tracked_distance_m: f64,
     pub trip_count: i64,
 }

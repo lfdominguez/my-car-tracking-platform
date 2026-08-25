@@ -50,9 +50,11 @@ pub struct CarDashboardSummary {
     pub name: String,
     pub make_model: String,
     pub photo_path: Option<String>,
+    pub fuel_class: String,
     pub odometer: Option<f64>,
     pub odometer_at: Option<DateTime<Utc>>,
     pub fuel_level_pct: Option<f64>,
+    pub battery_soc_pct: Option<f64>,
     pub tracked_distance_m: f64,
     pub trip_count: i64,
 }
@@ -135,11 +137,11 @@ async fn summary(
     let car_rows = sqlx::query_as::<_, CarDashboardSummary>(
         r#"
         WITH accessible AS (
-            SELECT c.id, c.name, c.make_model, c.photo_path
+            SELECT c.id, c.name, c.make_model, c.photo_path, c.fuel_class
             FROM cars c
             WHERE c.owner_user_id = $1
             UNION
-            SELECT c.id, c.name, c.make_model, c.photo_path
+            SELECT c.id, c.name, c.make_model, c.photo_path, c.fuel_class
             FROM cars c
             JOIN car_shares cs ON cs.car_id = c.id
             WHERE cs.user_id = $1
@@ -192,21 +194,34 @@ async fn summary(
             WHERE t.car_id IN (SELECT id FROM filtered)
               AND tp.fuel_level_pct IS NOT NULL
             ORDER BY t.car_id, tp.recorded_at DESC
+        ),
+        latest_battery AS (
+            SELECT DISTINCT ON (t.car_id)
+                t.car_id,
+                tp.battery_soc_pct::float8 AS battery_soc_pct
+            FROM track_points tp
+            JOIN tracks t ON t.id = tp.track_id
+            WHERE t.car_id IN (SELECT id FROM filtered)
+              AND tp.battery_soc_pct IS NOT NULL
+            ORDER BY t.car_id, tp.recorded_at DESC
         )
         SELECT
             f.id AS car_id,
             f.name,
             f.make_model,
             f.photo_path,
+            f.fuel_class,
             o.odometer,
             o.odometer_at,
             lf.fuel_level_pct,
+            lb.battery_soc_pct,
             COALESCE(ct.tracked_distance_m, 0)::float8 AS tracked_distance_m,
             COALESCE(ct.trip_count, 0)::bigint AS trip_count
         FROM filtered f
         LEFT JOIN car_trip ct ON ct.car_id = f.id
         LEFT JOIN latest_odo o ON o.car_id = f.id
         LEFT JOIN latest_fuel lf ON lf.car_id = f.id
+        LEFT JOIN latest_battery lb ON lb.car_id = f.id
         ORDER BY f.name
         "#,
     )
@@ -225,9 +240,11 @@ async fn summary(
             name: c.name,
             make_model: c.make_model,
             photo_path: c.photo_path,
+            fuel_class: c.fuel_class,
             odometer: c.odometer.map(|v| convert_odometer_km(v, system)),
             odometer_at: c.odometer_at,
             fuel_level_pct: c.fuel_level_pct,
+            battery_soc_pct: c.battery_soc_pct,
             tracked_distance_m: convert_distance_m(c.tracked_distance_m, system),
             trip_count: c.trip_count,
         })
