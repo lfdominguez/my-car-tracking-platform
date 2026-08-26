@@ -9,7 +9,7 @@
        (this product's default mode). -->
   <script>
     (function () {
-      var DARK_COLOR = "#0a0a0a", LIGHT_COLOR = "#f4f4f5";
+      var DARK_COLOR = "#08090d", LIGHT_COLOR = "#f5f6fa";
       try {
         var stored = localStorage.getItem("theme");
         var theme = stored === "light" || stored === "dark"
@@ -26,8 +26,13 @@
     })();
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
-  <meta name="theme-color" content="#0a0a0a"/>
+  <meta name="theme-color" content="#08090d"/>
   <meta name="color-scheme" content="dark light"/>
+  <!-- The app ships its own token-driven dark and light themes (design-system/
+       tokens). Dark Reader re-darkens an already-dark palette, which flattens the
+       accent ramp and the elevation ladder to gray; this lock tells it to stand
+       down and let the product theme through. -->
+  <meta name="darkreader-lock"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>

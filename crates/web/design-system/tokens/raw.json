@@ -1,53 +1,95 @@
 {
-  "$comment": "Private workshop layer. Nothing downstream (Leptos views, style.css) references these keys directly — semantic.json maps up to consumable names, and tokens.css is generated from semantic.json. If a value used more than once here doesn't yet have a semantic name, that's a bug in semantic.json, not a reason to inline the raw value downstream.",
+  "$comment": "Private workshop layer. Nothing downstream (Leptos views, style.css) references these keys directly — semantic.json maps up to consumable names, and tokens.css is generated from semantic.json. If a value used more than once here doesn't yet have a semantic name, that's a bug in semantic.json, not a reason to inline the raw value downstream. v2 ('instrument cluster'): the monochrome zinc ramp was replaced by a cool blue-tinted neutral ramp plus an electric-blue brand ramp; radius went from a 0px sharp grid to a real scale; an elevation ladder and signature gradients were added.",
 
   "color": {
     "neutral": {
-      "black-soft": "#0a0a0a",
-      "zinc-925": "#171717",
-      "zinc-900": "#1f1f1f",
-      "zinc-850": "#262626",
-      "zinc-700": "#3f3f46",
-      "zinc-600": "#52525b",
-      "zinc-500": "#71717a",
-      "zinc-450": "#5f5f66",
-      "zinc-350": "#a1a1aa",
-      "zinc-200": "#d4d4d3",
-      "zinc-150": "#e5e5e4",
-      "zinc-100": "#f4f4f5",
-      "zinc-50": "#fafafa",
-      "white-soft": "#f5f5f4",
-      "ink-950": "#18181b",
-      "white-pure": "#ffffff"
+      "ink-000": "#08090d",
+      "ink-050": "#0b0d12",
+      "ink-100": "#0f1117",
+      "ink-150": "#161922",
+      "ink-200": "#1d212c",
+      "slate-400": "#5d6579",
+      "slate-500": "#646e83",
+      "slate-550": "#838da3",
+      "slate-600": "#8b93a5",
+      "slate-700": "#3d4759",
+      "mist-200": "#c2c9d6",
+      "mist-050": "#f1f4f9",
+      "paper-100": "#eef0f6",
+      "paper-050": "#f5f6fa",
+      "paper-000": "#ffffff",
+      "ink-950": "#0d1220"
     },
-    "success": { "500": "#34d058", "700": "#1a7f37" },
-    "warning": { "500": "#f1a72b", "800": "#8a5b00" },
-    "danger":  { "500": "#f85149", "700": "#cf222e" },
-    "info":    { "400": "#58a6ff", "700": "#0969da" },
+    "brand": {
+      "blue-300": "#79b0ff",
+      "blue-400": "#5a9aff",
+      "blue-500": "#3f83ee",
+      "blue-600": "#2563eb",
+      "blue-700": "#1d4ed8",
+      "blue-800": "#1e40af",
+      "cyan-400": "#37d9e8",
+      "cyan-700": "#0891b2"
+    },
+    "success": { "500": "#3ddc84", "700": "#148f4b" },
+    "warning": { "500": "#ffb545", "800": "#a35a00" },
+    "danger":  { "500": "#ff6b63", "700": "#d02a35" },
     "chart": {
-      "violet-400": "#bc8cff", "violet-700": "#8250df",
-      "teal-400": "#39c5cf",   "teal-700": "#1b7c83",
-      "rose-400": "#f778ba",   "rose-700": "#bf3989"
+      "violet-400": "#b98cff", "violet-700": "#7c3aed",
+      "rose-400": "#ff7ac0",   "rose-700": "#be2f7c"
     },
     "alpha": {
-      "hairline-on-dark": "rgba(245,245,244,0.08)",
-      "hairline-on-dark-strong": "rgba(245,245,244,0.16)",
-      "hairline-on-light": "rgba(24,24,27,0.08)",
-      "hairline-on-light-strong": "rgba(24,24,27,0.16)",
-      "overlay-scrim-dark": "rgba(10,10,10,0.72)",
-      "overlay-scrim-light": "rgba(24,24,27,0.48)",
-      "success-tint-dark": "rgba(52,208,88,0.14)",
-      "success-tint-light": "rgba(26,127,55,0.10)",
-      "warning-tint-dark": "rgba(241,167,43,0.14)",
-      "warning-tint-light": "rgba(138,91,0,0.10)",
-      "danger-tint-dark": "rgba(248,81,73,0.14)",
-      "danger-tint-light": "rgba(207,34,46,0.10)",
-      "info-tint-dark": "rgba(88,166,255,0.14)",
-      "info-tint-light": "rgba(9,105,218,0.10)"
+      "hairline-on-dark": "rgba(160,178,214,0.10)",
+      "hairline-on-dark-strong": "rgba(160,178,214,0.20)",
+      "hairline-on-light": "rgba(13,18,32,0.09)",
+      "hairline-on-light-strong": "rgba(13,18,32,0.18)",
+      "hairline-accent-dark": "rgba(90,154,255,0.42)",
+      "hairline-accent-light": "rgba(37,99,235,0.40)",
+      "accent-tint-dark": "rgba(90,154,255,0.14)",
+      "accent-tint-dark-faint": "rgba(90,154,255,0.07)",
+      "accent-tint-light": "rgba(37,99,235,0.10)",
+      "accent-tint-light-faint": "rgba(37,99,235,0.05)",
+      "overlay-scrim-dark": "rgba(4,6,12,0.72)",
+      "overlay-scrim-light": "rgba(13,18,32,0.44)",
+      "success-tint-dark": "rgba(61,220,132,0.14)",
+      "success-tint-light": "rgba(20,143,75,0.10)",
+      "warning-tint-dark": "rgba(255,181,69,0.14)",
+      "warning-tint-light": "rgba(163,90,0,0.10)",
+      "danger-tint-dark": "rgba(255,107,99,0.14)",
+      "danger-tint-light": "rgba(208,42,53,0.10)",
+      "ring-dark": "rgba(90,154,255,0.45)",
+      "ring-light": "rgba(37,99,235,0.35)",
+      "glass-dark": "rgba(15,17,23,0.72)",
+      "glass-light": "rgba(255,255,255,0.78)"
     },
     "shadow": {
-      "overlay-dark": "0 0 0 1px rgba(245,245,244,0.08), 0 12px 32px rgba(0,0,0,0.55)",
-      "overlay-light": "0 0 0 1px rgba(24,24,27,0.08), 0 12px 32px rgba(24,24,27,0.10)"
+      "1-dark": "0 1px 2px rgba(0,0,0,0.32)",
+      "2-dark": "0 2px 6px rgba(0,0,0,0.34), 0 8px 24px -10px rgba(0,0,0,0.50)",
+      "3-dark": "0 4px 12px rgba(0,0,0,0.38), 0 20px 44px -16px rgba(0,0,0,0.62)",
+      "4-dark": "0 8px 24px rgba(0,0,0,0.44), 0 36px 80px -24px rgba(0,0,0,0.70)",
+      "overlay-dark": "0 0 0 1px rgba(160,178,214,0.12), 0 24px 64px -18px rgba(0,0,0,0.78)",
+      "accent-glow-dark": "0 6px 22px -8px rgba(90,154,255,0.60)",
+      "inset-top-dark": "inset 0 1px 0 rgba(255,255,255,0.05)",
+      "1-light": "0 1px 2px rgba(13,18,32,0.06)",
+      "2-light": "0 1px 3px rgba(13,18,32,0.07), 0 8px 20px -10px rgba(13,18,32,0.14)",
+      "3-light": "0 2px 6px rgba(13,18,32,0.07), 0 18px 38px -14px rgba(13,18,32,0.18)",
+      "4-light": "0 6px 16px rgba(13,18,32,0.09), 0 32px 70px -22px rgba(13,18,32,0.22)",
+      "overlay-light": "0 0 0 1px rgba(13,18,32,0.07), 0 24px 60px -18px rgba(13,18,32,0.24)",
+      "accent-glow-light": "0 6px 22px -8px rgba(37,99,235,0.45)",
+      "inset-top-light": "inset 0 1px 0 rgba(255,255,255,0.90)"
+    },
+    "gradient": {
+      "brand-dark": "linear-gradient(135deg, #5a9aff 0%, #37d9e8 100%)",
+      "brand-vivid-dark": "linear-gradient(120deg, #4c7dff 0%, #5a9aff 45%, #37d9e8 100%)",
+      "brand-soft-dark": "linear-gradient(135deg, rgba(90,154,255,0.18), rgba(55,217,232,0.06))",
+      "surface-dark": "linear-gradient(170deg, rgba(160,178,214,0.055), rgba(160,178,214,0))",
+      "hairline-dark": "linear-gradient(90deg, transparent, rgba(160,178,214,0.28), transparent)",
+      "sheen-dark": "linear-gradient(100deg, transparent 20%, rgba(255,255,255,0.16) 50%, transparent 80%)",
+      "brand-light": "linear-gradient(135deg, #2563eb 0%, #0891b2 100%)",
+      "brand-vivid-light": "linear-gradient(120deg, #1d4ed8 0%, #2563eb 45%, #0891b2 100%)",
+      "brand-soft-light": "linear-gradient(135deg, rgba(37,99,235,0.12), rgba(8,145,178,0.05))",
+      "surface-light": "linear-gradient(170deg, rgba(13,18,32,0.022), rgba(13,18,32,0))",
+      "hairline-light": "linear-gradient(90deg, transparent, rgba(13,18,32,0.16), transparent)",
+      "sheen-light": "linear-gradient(100deg, transparent 20%, rgba(255,255,255,0.55) 50%, transparent 80%)"
     }
   },
 
@@ -81,29 +123,43 @@
   },
 
   "radius": {
-    "none": "0px",
-    "chip": "2px",
+    "xs": "6px",
+    "sm": "9px",
+    "md": "12px",
+    "lg": "16px",
+    "xl": "22px",
+    "2xl": "28px",
+    "control": "11px",
+    "pill": "999px",
     "full": "9999px"
   },
 
   "motion": {
     "duration": {
       "instant": "0ms",
-      "fast": "150ms",
-      "medium": "250ms",
-      "entry": "320ms",
+      "fast": "140ms",
+      "medium": "240ms",
+      "entry": "420ms",
+      "slow": "620ms",
       "bump": "360ms",
-      "ambient-pulse": "1200ms",
+      "ambient-pulse": "2400ms",
       "ambient-shimmer": "1500ms",
-      "stagger-step": "40ms"
+      "stagger-step": "45ms"
     },
     "easing": {
       "linear": "linear",
       "enter": "cubic-bezier(0.16, 1, 0.3, 1)",
       "exit": "cubic-bezier(0.4, 0, 1, 1)",
+      "standard": "cubic-bezier(0.2, 0.6, 0.2, 1)",
       "spring-bump": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+      "spring-soft": "cubic-bezier(0.22, 1.2, 0.36, 1)",
       "ambient": "cubic-bezier(0.4, 0, 0.6, 1)"
     }
+  },
+
+  "effect": {
+    "ring-width": "3px",
+    "glass-blur": "18px"
   },
 
   "breakpoint": {

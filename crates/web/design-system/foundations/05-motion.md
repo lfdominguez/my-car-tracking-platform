@@ -2,48 +2,47 @@
 
 ## Principle
 
-`data-viz-dense` motion is not "reduced" — it's *purposeful and brief*. Data updates flash,
-they don't animate. Five presets, hand-picked against `motion-presets.json` for this exact
-product, cover every motion need in the system; nothing outside this list ships. All are
-`transform`/`opacity` only (GPU-composited), respect `prefers-reduced-motion`, and are named
-after their source preset id for traceability.
+Motion is purposeful and brief. It explains a change — where something came from,
+what responded to you, what is still loading — and then gets out of the way. Data
+values still *flash*; they don't animate. Everything below is `transform`/`opacity`
+only (GPU-composited), and everything collapses under `prefers-reduced-motion`.
 
-| Preset token | Duration | Easing | Behavior | Use |
+v2 widened the vocabulary from five presets to nine, because the product gained
+things v1 didn't have: elevation (so controls can lift), routed page transitions,
+and an ambient landing page. The ceiling is unchanged — a *state transition* stays
+under ~450ms; anything longer is an ambient loop, and ambient loops are rationed.
+
+| Preset | Duration | Easing | Behavior | Use |
 |---|---|---|---|---|
-| `instant-exit` | `duration-instant` (0ms) | `ease-linear` | opacity 1→0, no transition | High-frequency state churn: autocomplete rows filtering out, validation flashes. Anything that would otherwise animate dozens of times a second. |
-| `skeleton-shimmer` | `duration-ambient-shimmer` (1500ms) | `ease-linear` | gradient sweep, infinite loop | Loading placeholders only. The one duration that exceeds the 1200ms micro-motion ceiling — permitted because it's an ambient loop, not a state transition. |
-| `badge-count-bump` | `duration-bump` (360ms) | `ease-spring-bump` | scale 1→1.25→1 | A metric counter changes value (odometer tick, live speed update, trip count increment). Keyed to the new value so each change gets its own bump. |
-| `stagger-list-children` | `duration-entry` (320ms), `duration-stagger-step` (40ms) per child | `ease-enter` | translateY(8px)→0, opacity 0→1 | Row/list reveal on mount — trip list, car list, corridor list. Cap stagger at ~8 visible children; beyond that, only stagger what's in the viewport. |
-| `pulse-attention` | `duration-ambient-pulse` (1200ms) | `ease-ambient` | scale 1→1.05→1, opacity 1→0.6→1 | Sparing use — one anomaly flag on one metric at a time (e.g. a fault code, an efficiency outlier). Never more than one pulsing element on screen. |
+| `press` | `duration-fast` (140ms) | `ease-standard` | translateY(-1px) on hover, `scale(.985)` on active | Every button and chip. The press is deliberately faster than the lift so the control feels mechanical rather than springy. |
+| `sheen` | `duration-slow` (620ms) | `ease-standard` | a highlight gradient sweeps once across the face | Button hover only. One pass, never a loop. |
+| `page-in` | `duration-entry` (420ms) | `ease-enter` | translateY(10px)→0, opacity 0→1 | Route change. Applied to `.page-view > *`, staggered 50ms per top-level block. |
+| `stagger-in` | `duration-entry`, `duration-stagger-step` (45ms)/child | `ease-enter` | translateY(12px) + scale(.985) → none | Card grids and table rows on mount. Capped: past the 6th child everything shares one delay, so a 200-row table doesn't animate for six seconds. |
+| `gauge-draw` | `duration-slow` | `ease-enter` | `stroke-dashoffset` from empty to the real reading | The dashboard fuel/charge ring. The keyframe declares only `from`, so the end state is whatever value the markup computed. |
+| `badge-count-bump` | `duration-bump` (360ms) | `ease-spring-bump` | scale 1→1.25→1 | A metric counter changes value (odometer tick, live speed). Keyed to the new value. |
+| `skeleton-shimmer` | `duration-ambient-shimmer` (1500ms) | `ease-linear` | gradient sweep, infinite | Loading placeholders only. |
+| `pulse-attention` | `duration-ambient-pulse` (2400ms) | `ease-ambient` | dot opacity + expanding ring | Live/in-progress status dots. Slowed from 1200ms in v1 — at that rate it read as an alarm. One at a time. |
+| `aurora-drift` | 22–32s | `ease-ambient` | slow translate + scale of a blurred orb | Marketing landing and the auth shell only. Never inside the app. |
 
-There is no generic "hover transition" token beyond `duration-fast` (150ms) — used for the
-smallest interaction feedback (button background, link underline) with `ease-enter`.
-`duration-medium` (250ms) covers component-level transitions that aren't one of the five named
-presets above (e.g. a panel expanding).
+Easings: `ease-standard` for interaction feedback, `ease-enter` for things arriving,
+`ease-exit` for things leaving, `ease-spring-soft` for panels and drawers,
+`ease-spring-bump` for a value that changed, `ease-ambient` for loops.
 
 ## Reduced motion
 
-`tokens.css` collapses every non-zero duration to `0ms` under `prefers-reduced-motion: reduce`
-globally — components don't need their own media query for duration, only for whether a
-transform-based effect should be replaced with a plain state swap (e.g. shimmer becomes a
-static gray block; pulse-attention becomes a static colored border instead of animating).
-
-## Usage
-
-```css
-.metric-value[data-updated] { animation: count-bump var(--motion-duration-bump) var(--motion-ease-spring-bump); }
-@keyframes count-bump { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.25); } }
-
-.list-item { animation: fade-up-8 var(--motion-duration-entry) var(--motion-ease-enter) both; }
-.list-item:nth-child(n) { animation-delay: calc((var(--index, 0)) * var(--motion-duration-stagger-step)); }
-```
+`tokens.css` zeroes every duration under `prefers-reduced-motion: reduce`. The polish
+layer at the bottom of `style.css` then removes the *movement* itself — hover lifts,
+translates, and scales resolve to `none` — leaving opacity changes, which stay legible
+and cause no vestibular discomfort. Ambient loops (`aurora-drift`, `route-draw`,
+`skeleton-shimmer`) are switched off entirely rather than sped up.
 
 ## Common mistakes
 
-- Animating a data update that happens more than once a second (a live speed readout) with
-  anything other than `instant-exit` or a plain value swap — a 250ms ease on a value that
-  changes 4x/second reads as lag, not motion.
-- Running `pulse-attention` on more than one element at a time — it stops meaning "look here"
-  and starts meaning "the page is nervous."
-- Adding a sixth motion preset for a one-off need. If nothing in this table fits, the answer is
-  usually "this doesn't need motion," not "invent a new duration."
+- **Animating a number's value.** Counting up from 0 to 184,320 km is decoration that
+  delays the reading. The number appears; the container may fade in.
+- **Adding a second ambient loop to a screen.** Two pulsing things compete and neither
+  reads as urgent.
+- **Transitioning `box-shadow` and `transform` at different speeds.** The lift and its
+  shadow must arrive together or the card looks like it's peeling.
+- **Staggering an unbounded list.** Cap the delay; a stagger that runs longer than about
+  300ms total stops reading as choreography and starts reading as lag.

@@ -753,6 +753,64 @@ fn mixture_bucket_size(n: usize) -> usize {
     }
 }
 
+/// Reads a design-system custom property off `<html>` so ECharts (which draws to
+/// canvas and therefore cannot use CSS variables) paints with the same palette as
+/// the rest of the app — and follows the light/dark switch instead of staying
+/// permanently dark. Falls back to the dark value if the property is unreadable.
+fn css_var(name: &str, fallback: &str) -> String {
+    web_sys::window()
+        .and_then(|w| {
+            let doc = w.document()?;
+            let el = doc.document_element()?;
+            let style = w.get_computed_style(&el).ok()??;
+            style.get_property_value(name).ok()
+        })
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Resolved chart chrome for the active theme. Built per render (cheap: a handful
+/// of computed-style reads) rather than cached, so a theme flip mid-session
+/// repaints correctly.
+struct ChartTheme {
+    ink: String,
+    muted: String,
+    border: String,
+    axis_pointer: String,
+    tooltip_bg: String,
+    accent: String,
+    accent_soft: String,
+    grid_line: String,
+    series: Vec<String>,
+}
+
+fn chart_theme() -> ChartTheme {
+    let series = [
+        ("--color-chart-series-1", "#5a9aff"),
+        ("--color-chart-series-2", "#ffb545"),
+        ("--color-chart-series-3", "#3ddc84"),
+        ("--color-chart-series-4", "#b98cff"),
+        ("--color-chart-series-5", "#37d9e8"),
+        ("--color-chart-series-6", "#ff7ac0"),
+    ]
+    .iter()
+    .map(|(n, f)| css_var(n, f))
+    .collect();
+
+    ChartTheme {
+        ink: css_var("--color-fg-ink", "#f1f4f9"),
+        muted: css_var("--color-fg-muted", "#838da3"),
+        border: css_var("--color-border-strong", "rgba(160,178,214,0.20)"),
+        axis_pointer: css_var("--color-fg-muted", "#838da3"),
+        tooltip_bg: css_var("--color-bg-surface-overlay", "#1d212c"),
+        accent: css_var("--color-accent", "#5a9aff"),
+        accent_soft: css_var("--color-accent-soft", "rgba(90,154,255,0.14)"),
+        grid_line: css_var("--color-border-default", "rgba(160,178,214,0.10)"),
+        series,
+    }
+}
+
 fn shared_chart_chrome(
     use_right: bool,
     boundary_gap: bool,
@@ -762,18 +820,22 @@ fn shared_chart_chrome(
     serde_json::Value,
     Vec<serde_json::Value>,
 ) {
+    let th = chart_theme();
     // Title lives in HTML panel chrome — keep plot area for data.
     let tooltip = serde_json::json!({
         "trigger": "axis",
         "axisPointer": {
             "type": "line",
             "snap": true,
-            "lineStyle": { "color": "rgba(148,163,184,0.65)", "width": 1 },
+            "lineStyle": { "color": th.axis_pointer, "width": 1 },
             "label": { "show": false }
         },
-        "backgroundColor": "rgba(18,26,43,0.95)",
-        "borderColor": "#24314a",
-        "textStyle": { "color": "#e8eefc", "fontSize": 12 }
+        "backgroundColor": th.tooltip_bg,
+        "borderColor": th.border,
+        "borderWidth": 1,
+        "padding": [8, 10],
+        "extraCssText": "border-radius:12px;box-shadow:0 12px 32px -12px rgba(0,0,0,0.55);backdrop-filter:blur(6px);",
+        "textStyle": { "color": th.ink, "fontSize": 12 }
     });
     let legend = serde_json::json!({
         "top": 6,
@@ -785,10 +847,10 @@ fn shared_chart_chrome(
         "itemWidth": 14,
         "itemHeight": 8,
         "padding": [2, 4, 2, 4],
-        "textStyle": { "color": "#93a0b8", "fontSize": 11 },
+        "textStyle": { "color": th.muted, "fontSize": 11 },
         "type": "scroll",
-        "pageIconColor": "#93a0b8",
-        "pageTextStyle": { "color": "#93a0b8" }
+        "pageIconColor": th.muted,
+        "pageTextStyle": { "color": th.muted }
     });
     let grid = serde_json::json!({
         "left": 62,
@@ -815,13 +877,14 @@ fn shared_chart_chrome(
             "xAxisIndex": 0,
             "height": 18,
             "bottom": 8,
-            "borderColor": "rgba(148,163,184,0.4)",
-            "fillerColor": "rgba(59,130,246,0.25)",
-            "handleStyle": { "color": "#3b82f6" },
-            "textStyle": { "color": "#93a0b8" },
+            "borderColor": th.border,
+            "fillerColor": th.accent_soft,
+            "handleStyle": { "color": th.accent },
+            "moveHandleStyle": { "color": th.accent },
+            "textStyle": { "color": th.muted },
             "dataBackground": {
-                "lineStyle": { "color": "#3b82f6" },
-                "areaStyle": { "color": "rgba(59,130,246,0.15)" }
+                "lineStyle": { "color": th.accent },
+                "areaStyle": { "color": th.accent_soft }
             }
         }),
     ];
@@ -843,7 +906,7 @@ fn y_axis_series_color(series: &[ChartSeriesSpec], colors: &[&str], axis_idx: i3
         by_axis
     };
     pick.map(|(i, _)| colors[i % colors.len()].to_string())
-        .unwrap_or_else(|| "#93a0b8".to_string())
+        .unwrap_or_else(|| css_var("--color-fg-muted", "#838da3"))
 }
 
 fn build_option(
@@ -854,9 +917,8 @@ fn build_option(
     y_right_name: Option<&str>,
     line_smooth: f64,
 ) -> serde_json::Value {
-    let colors = [
-        "#3b82f6", "#22c55e", "#f59e0b", "#a78bfa", "#22d3ee", "#f472b6", "#eab308",
-    ];
+    let th = chart_theme();
+    let colors: Vec<&str> = th.series.iter().map(|s| s.as_str()).collect();
     let use_right = y_right_name.is_some() && series.iter().any(|s| s.y_axis_index == 1);
     let (tooltip, legend, grid, data_zoom) = shared_chart_chrome(use_right, false);
 
@@ -873,7 +935,7 @@ fn build_option(
         "nameGap": 46,
         "nameRotate": 90,
         "nameTextStyle": { "color": left_color, "fontSize": 11, "padding": [0, 0, 0, 0] },
-        "splitLine": { "lineStyle": { "color": "rgba(36,49,74,0.85)" } },
+        "splitLine": { "lineStyle": { "color": th.grid_line } },
         "axisLabel": { "color": left_color, "hideOverlap": true },
         "axisLine": { "show": true, "lineStyle": { "color": left_color } },
         "axisTick": { "lineStyle": { "color": left_color } },
@@ -944,8 +1006,8 @@ fn build_option(
             "data": labels,
             "boundaryGap": false,
             "axisPointer": { "show": true },
-            "axisLabel": { "color": "#93a0b8", "hideOverlap": true, "fontSize": 10 },
-            "axisLine": { "lineStyle": { "color": "#24314a" } },
+            "axisLabel": { "color": th.muted, "hideOverlap": true, "fontSize": 10 },
+            "axisLine": { "lineStyle": { "color": th.border } },
             "axisTick": { "show": false }
         },
         "yAxis": y_axis,
@@ -963,6 +1025,7 @@ fn build_mixture_option(
     series: &[ChartSeriesSpec],
     line_smooth: f64,
 ) -> serde_json::Value {
+    let mth = chart_theme();
     let bucket = mixture_bucket_size(labels.len().max(times.len()));
     let x_labels = bucket_labels(labels, bucket);
     let x_times = bucket_times(times, bucket);
@@ -986,7 +1049,7 @@ fn build_mixture_option(
             "nameGap": 46,
             "nameRotate": 90,
             "nameTextStyle": { "color": TRIM_AXIS_COLOR, "fontSize": 11 },
-            "splitLine": { "lineStyle": { "color": "rgba(36,49,74,0.85)" } },
+            "splitLine": { "lineStyle": { "color": mth.grid_line } },
             "axisLabel": { "color": TRIM_AXIS_COLOR, "hideOverlap": true },
             "axisLine": { "show": true, "lineStyle": { "color": TRIM_AXIS_COLOR } },
             "axisTick": { "lineStyle": { "color": TRIM_AXIS_COLOR } },
@@ -1124,9 +1187,11 @@ fn build_mixture_option(
                 "shadowStyle": { "color": "rgba(148,163,184,0.12)" },
                 "label": { "show": false }
             },
-            "backgroundColor": "rgba(18,26,43,0.95)",
-            "borderColor": "#24314a",
-            "textStyle": { "color": "#e8eefc", "fontSize": 12 }
+            "backgroundColor": mth.tooltip_bg,
+            "borderColor": mth.border,
+            "borderWidth": 1,
+            "extraCssText": "border-radius:12px;box-shadow:0 12px 32px -12px rgba(0,0,0,0.55);",
+            "textStyle": { "color": mth.ink, "fontSize": 12 }
         },
         "legend": legend,
         "grid": grid,
@@ -1137,8 +1202,8 @@ fn build_mixture_option(
             // Candles need a gap between categories.
             "boundaryGap": true,
             "axisPointer": { "show": true },
-            "axisLabel": { "color": "#93a0b8", "hideOverlap": true, "fontSize": 10 },
-            "axisLine": { "lineStyle": { "color": "#24314a" } },
+            "axisLabel": { "color": mth.muted, "hideOverlap": true, "fontSize": 10 },
+            "axisLine": { "lineStyle": { "color": mth.border } },
             "axisTick": { "show": false }
         },
         "yAxis": y_axis,
@@ -1166,7 +1231,12 @@ fn TelemetryChart(
     let y_left_c = y_left_name.clone();
     let y_right_c = y_right_name.clone();
 
+    let theme = crate::components::use_theme();
+
     Effect::new(move |_| {
+        // Subscribe to the theme so a light/dark flip repaints the canvas with
+        // the new palette (ECharts draws to canvas; CSS variables can't reach it).
+        let _ = theme.theme.get();
         if series_c.is_empty() || labels_c.is_empty() {
             return;
         }

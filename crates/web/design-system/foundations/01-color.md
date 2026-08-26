@@ -2,69 +2,68 @@
 
 ## Principle
 
-This is a terminal, not a billboard. `data-viz-dense` bans decoration color outright — there
-is no brand hue anywhere in this system. `color-accent` is the maximum-contrast neutral for
-the current mode (near-white ink on dark, near-black ink on light), used for primary actions,
-focus rings, and active states. The only hues that exist are semantic: success, warning,
-danger, info, and a six-step categorical sequence reserved for charts. If a future brief wants
-a brand accent, that is a new decision requiring sign-off — it is not something this system
-grows into by accident.
+This is an instrument cluster, not a billboard. Color earns its place by encoding
+*state* or by marking the *one* action that matters on a screen — never by decorating.
 
-Neutral base is a single true-neutral (zinc) family, used identically in concept across both
-modes — never mixed with a warm gray. Elevation in both modes is expressed by *surface steps*
-(see `04-surfaces-elevation.md`), not by shadow.
+The system has exactly one brand hue: an electric blue, paired with a cyan for the
+signature gradient. `color-accent` **is** that blue in both modes (v1 used a
+maximum-contrast neutral instead, which made every primary button read as a black or
+white slab and left the product with no identity at a glance). Everything else is
+either neutral or semantic: success, warning, danger, and a six-step categorical
+sequence reserved for charts.
+
+The neutral ramp is deliberately **cool** — a blue-tinted near-black in dark mode,
+a blue-tinted off-white in light mode — so brand blue sits inside the same family as
+the chrome instead of floating on top of a true gray. Both modes are authored
+independently; neither is an inversion of the other.
 
 ## Tokens
 
 | Token | Dark | Light | Use |
 |---|---|---|---|
-| `color-bg-canvas` | `#0a0a0a` | `#f4f4f5` | Page background |
-| `color-bg-surface` | `#171717` | `#ffffff` | Cards, panels, table rows |
-| `color-bg-surface-raised` | `#1f1f1f` | `#ffffff` | Hovered/focused row, nested panel |
-| `color-bg-surface-overlay` | `#262626` | `#ffffff` | Modal, popover, dropdown body |
-| `color-fg-ink` | `#f5f5f4` | `#18181b` | Headings, primary numerals |
-| `color-fg-body` | `#d4d4d3` | `#3f3f46` | Body copy, table cell text |
-| `color-fg-muted` | `#888884` | `#5f5f66` | Helper text, timestamps, disabled |
-| `color-fg-on-accent` | `#0a0a0a` | `#ffffff` | Text sitting on `color-accent` fill |
-| `color-border-default` | `rgba(245,245,244,.08)` | `rgba(24,24,27,.08)` | Row/column hairlines |
-| `color-border-strong` | `rgba(245,245,244,.16)` | `rgba(24,24,27,.16)` | Table header rule, input focus outline base |
-| `color-accent` | `#f5f5f4` | `#18181b` | Primary button/link/focus |
-| `color-accent-hover` / `-active` | `#e5e5e4` / `#d4d4d3` | `#3f3f46` / `#52525b` | Interaction states |
-| `color-success` / `-subtle` | `#34d058` / 14% tint | `#1a7f37` / 10% tint | Up, healthy, complete |
-| `color-warning` / `-subtle` | `#f1a72b` / 14% tint | `#8a5b00` / 10% tint | Degraded, needs attention |
-| `color-danger` / `-subtle` | `#f85149` / 14% tint | `#cf222e` / 10% tint | Down, fault, destructive |
-| `color-info` / `-subtle` | `#58a6ff` / 14% tint | `#0969da` / 10% tint | Neutral status, informational |
-| `color-overlay-scrim` | `rgba(10,10,10,.72)` | `rgba(24,24,27,.48)` | Modal/sheet backdrop |
+| `color-bg-canvas` | `#08090d` | `#f5f6fa` | Page background |
+| `color-bg-surface` | `#0f1117` | `#ffffff` | Cards, panels, table rows |
+| `color-bg-surface-raised` | `#161922` | `#ffffff` | Hovered/focused row, nested panel |
+| `color-bg-surface-overlay` | `#1d212c` | `#ffffff` | Modal, popover, dropdown body |
+| `color-bg-inset` | `#0b0d12` | `#eef0f6` | Inputs, metric wells, control tracks |
+| `color-fg-ink` | `#f1f4f9` | `#0d1220` | Headings, primary numerals |
+| `color-fg-body` | `#c2c9d6` | `#3d4759` | Body copy, table cell text |
+| `color-fg-muted` | `#838da3` | `#646e83` | Helper text, micro-labels, timestamps |
+| `color-fg-faint` | `#5d6579` | `#8b93a5` | Placeholders, group labels, disabled |
+| `color-fg-on-accent` | `#04070f` | `#ffffff` | Text sitting on `color-accent` fill |
+| `color-border-default` | `rgba(160,178,214,.10)` | `rgba(13,18,32,.09)` | Row/column hairlines |
+| `color-border-strong` | `rgba(160,178,214,.20)` | `rgba(13,18,32,.18)` | Header rules, hover borders |
+| `color-border-accent` | `rgba(90,154,255,.42)` | `rgba(37,99,235,.40)` | Focused/selected surface edge |
+| `color-accent` | `#5a9aff` | `#2563eb` | Primary button, link, active nav |
+| `color-accent-hover` / `-active` | `#79b0ff` / `#3f83ee` | `#1d4ed8` / `#1e40af` | Interaction states |
+| `color-accent-soft` / `-softer` | 14% / 7% tint | 10% / 5% tint | Selected fill, hover wash |
+| `color-accent-2` | `#37d9e8` | `#0891b2` | Gradient partner, device/telemetry icons |
+| `color-success` / `-subtle` | `#3ddc84` / 14% | `#148f4b` / 10% | Healthy, complete, tank ≥ 50% |
+| `color-warning` / `-subtle` | `#ffb545` / 14% | `#a35a00` / 10% | Degraded, tank 20–50% |
+| `color-danger` / `-subtle` | `#ff6b63` / 14% | `#d02a35` / 10% | Fault, destructive, tank < 20% |
+| `color-info` / `-subtle` | = accent | = accent | Neutral status (aliases the brand hue) |
+| `color-overlay-scrim` | `rgba(4,6,12,.72)` | `rgba(13,18,32,.44)` | Modal/sheet backdrop |
 
 Every text/background pairing above is verified independently for both modes — see
-`07-accessibility.md` for the full contrast table.
+`07-accessibility.md`.
 
 ## Usage
 
 ```css
-.metric-value { color: var(--color-fg-ink); font-family: var(--font-family-mono); }
-.metric-delta--up { color: var(--color-success); }
-.badge--warning { background: var(--color-warning-subtle); color: var(--color-warning); }
+.btn.primary { background-color: var(--color-accent); color: var(--color-fg-on-accent); }
+.nav a.active { background: var(--color-accent-soft); }
+.nav a.active::before { background: var(--gradient-brand-vivid); }
+.card { background: var(--gradient-surface), var(--color-bg-surface); }
 ```
-
-```css
-/* Elevated row on hover — a lightness step, never a shadow */
-.data-row:hover { background: var(--color-bg-surface-raised); }
-```
-
-Chart/map colors live in `11-data-viz.md` — they are a separate token family
-(`color-chart-series-*`, `color-map-*`) so a "series 2 is amber" never gets confused with
-"warning is amber"; both happen to use the same hue by design, but a categorical series
-assignment is not a state claim.
 
 ## Common mistakes
 
-- Reaching for `color-accent` as a "brand color" on marketing-flavored surfaces (an onboarding
-  screen, an empty state illustration) — it isn't one. It is functionally "ink." If a surface
-  wants warmth, that's an imagery or copy decision, not a color one.
-- Using `color-success` / `color-danger` for a categorical chart series (e.g., "Car A" vs
-  "Car B" in a comparison chart) — that implies one car is good and one is bad. Use
-  `color-chart-series-*` for anything that isn't literally a state.
-- Applying dark-mode hex values at reduced opacity to fake a light-mode tint (`#34d058` at 10%
-  on white reads sickly-pale, not "success"). Light-mode subtle tints derive from the
-  light-mode *text* hue (`#1a7f37`), not the dark-mode one.
+- **Using the brand blue to mean "healthy."** Blue is identity and interaction. State is
+  success/warning/danger. A blue tank gauge tells the driver nothing.
+- **Reaching for a second brand hue.** The violet and rose in the chart ramp are
+  *categorical series colors*, not accents; using them for a button invents a second brand.
+- **Coloring a whole card in `accent-soft` to draw attention.** That tint marks *selection*.
+  If everything is selected, nothing is.
+- **Hardcoding a hex** because "it's just this one chevron." Every hue in the product traces
+  back to a token; ECharts, which can't read CSS variables, reads them through `chart_theme()`
+  in `components/charts.rs` instead of hardcoding a parallel palette.

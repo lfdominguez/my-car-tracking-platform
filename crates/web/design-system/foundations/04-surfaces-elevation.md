@@ -2,63 +2,77 @@
 
 ## Principle
 
-`data-viz-dense` mandates two things that fight most default component libraries: **radius 0**
-and **no shadows for depth**. Both are load-bearing to the aesthetic — a sharp, flat grid is
-what makes rows and panels feel machined rather than "app-like." We keep both, with one
-narrow, documented exception for floating overlays.
+v1 committed to radius 0 and no shadows — a machined, flat grid. v2 replaces both:
+the product is a consumer-facing garage cockpit, not a terminal, and the flat grid
+read as unfinished rather than deliberate. What replaces it is still disciplined —
+one radius scale, one elevation ladder, and no per-component invention.
 
-**Radius.** Three tokens, not a scale of six. `radius-surface` (0px) is the default for
-everything structural — cards, inputs, buttons, table cells, modals. `radius-chip` (2px) softens
-only badges/tags/status pills just enough that dense text doesn't look clipped inside a hard
-rectangle. `radius-avatar` (full/9999px) is the one circular exception, reserved for avatars and
-car thumbnail photos, because a square user photo reads as a bug, not a style choice.
-`radius-signature` is an alias of `radius-surface` — the "signature" of this system *is* zero
-radius, so there's no separate brand-fingerprint corner to invent.
+**Radius.** A real scale, but only three names matter at the call site.
+`radius-surface` (16px) is the signature and the default for anything structural —
+cards, panels, modals, the KPI strip. `radius-control` (11px) is the slightly tighter
+corner for buttons, inputs, and selects, so a control never looks like a card that
+lost its content. `radius-chip` (999px) is fully round and belongs to status atoms:
+badges, pills, filter chips, segmented controls. `radius-avatar` stays circular.
+The raw `xs`–`2xl` steps exist for nested cases (a well inside a card should be
+`sm`/`md`, never the same radius as its parent, or the corners look concentric-wrong).
 
-**Elevation.** No drop shadows on structural surfaces, in either mode. Depth is expressed by a
-four-step surface lightness ladder plus 0.5px hairlines between every row/column
-(`border-default`), matching `data-viz-dense`'s own token spec:
+**Elevation.** Depth is now expressed by shadow *and* the surface ladder together,
+because light mode never had headroom for a lightness-only ladder — `bg-canvas`
+(`#f5f6fa`) sits near the top of the scale, so `bg-surface`/`-raised`/`-overlay` all
+resolve to white and a light-mode card had nothing to separate it from the page.
 
-`bg-canvas` → `bg-surface` → `bg-surface-raised` → `bg-surface-overlay`
+- `shadow-1` — resting controls (buttons, chips).
+- `shadow-2` — the default card/panel.
+- `shadow-3` — hover on an interactive card; the lift is 2–3px, paired with it.
+- `shadow-4` — the auth card, the landing product mock; things that float alone.
+- `shadow-overlay` — modal/dropdown/popover/tooltip only. Ring + long blur.
+- `shadow-accent-glow` — reserved for the primary action and the gauge ring.
+- `shadow-inset-top` — a 1px top highlight, layered onto cards. It's what makes a
+  dark surface read as *lit from above* rather than merely lighter.
 
-Dark mode has real headroom to climb this ladder (`#0a0a0a` → `#171717` → `#1f1f1f` → `#262626`,
-each step a small lightness increase). Light mode does not — `bg-canvas` (`#f4f4f5`) is already
-near the top of the neutral scale, so `bg-surface`, `bg-surface-raised`, and `bg-surface-overlay`
-all resolve to the same white in light mode; light-mode elevation instead relies on
-`border-strong` (a visibly heavier hairline) to separate a raised/overlay surface from its
-neighbors.
+Dark mode leans on shadow depth plus that top highlight; light mode leans on soft,
+wide, very low-alpha shadows. Both are defined per-theme, not tinted at the call site.
 
-**The one shadow exception.** A single `shadow-overlay` token exists, used exclusively by
-floating layers that sit *on top of* arbitrary page content and cannot rely on a lightness step
-alone to read as separated — modal, dropdown, popover, tooltip. It is a near-invisible ring +
-long-blur shadow (4–8% alpha in light, a genuine dark shadow at low alpha in dark — never a
-glow). It never appears on a card, panel, or table row.
+The surface ladder still exists and still carries meaning:
+`bg-canvas` → `bg-surface` → `bg-surface-raised` → `bg-surface-overlay`, with
+`bg-inset` *below* canvas for wells (inputs, metric chips, control tracks).
 
 ## Tokens
 
 | Token | Value | Use |
 |---|---|---|
-| `radius-surface` | 0px | Cards, inputs, buttons, modals, table cells |
-| `radius-chip` | 2px | Badges, tags, status pills |
+| `radius-surface` | 16px | Cards, panels, modals — the signature |
+| `radius-control` | 11px | Buttons, inputs, selects, nav items |
+| `radius-chip` | 999px | Badges, pills, filter chips, segmented controls |
 | `radius-avatar` | 9999px | Avatars, car thumbnails |
-| `bg-canvas` → `bg-surface-overlay` | see `01-color.md` | 4-step elevation ladder |
-| `shadow-overlay` | see `01-color.md` | Modal/dropdown/popover/tooltip only |
+| `radius-xs` … `radius-2xl` | 6 / 9 / 12 / 16 / 22 / 28px | Nested surfaces, hero panels |
+| `shadow-1` … `shadow-4` | see `tokens.css` | Elevation ladder |
+| `shadow-overlay` | see `tokens.css` | Floating layers only |
+| `shadow-accent-glow` | see `tokens.css` | Primary action, gauge ring |
+| `shadow-inset-top` | 1px top highlight | Layered onto every card |
+| `gradient-surface` | see `tokens.css` | Top-light wash on card backgrounds |
 
 ## Usage
 
 ```css
-.card { border-radius: var(--radius-surface); background: var(--color-bg-surface); border: 0.5px solid var(--color-border-default); }
-.badge { border-radius: var(--radius-chip); }
-.avatar { border-radius: var(--radius-avatar); }
-.dropdown-panel { background: var(--color-bg-surface-overlay); box-shadow: var(--shadow-overlay); border-radius: var(--radius-surface); }
+.card {
+  background: var(--gradient-surface), var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-2), var(--shadow-inset-top);
+}
+a > .card:hover { transform: translateY(-2px); box-shadow: var(--shadow-3), var(--shadow-inset-top); }
+.metric-chip { background: var(--color-bg-inset); border-radius: var(--radius-sm); }
+.dropdown-panel { background: var(--color-bg-surface-overlay); box-shadow: var(--shadow-overlay); }
 ```
 
 ## Common mistakes
 
-- Adding `box-shadow` to a card "for polish." The polish here comes from the hairline grid and
-  the lightness ladder — a shadow on a card directly contradicts the style's own philosophy and
-  will look like a different, un-committed design system leaking in.
-- Using `shadow-overlay` on a structural surface (card, panel) because light mode's ladder looks
-  "flat" — that flatness is correct for light mode; `border-strong` is the fix, not a shadow.
-- Introducing a fourth radius value ("just this one card needs 8px") — collapse it to
-  `radius-surface` (0) or, if it's genuinely a status chip, `radius-chip`.
+- **Matching a nested well's radius to its parent card.** A 16px well inside a 16px
+  card produces visually wrong concentric corners; go one or two steps down.
+- **Stacking `shadow-3` on a resting card** to make it "pop." `shadow-3` is the hover
+  state; if everything rests at hover elevation, hover has nothing left to say.
+- **Lifting a non-interactive card on hover.** The lift is a link affordance. Static
+  containers get elevation but no transform.
+- **Using `shadow-accent-glow` on a secondary button.** It marks *the* primary action;
+  two glowing buttons on one screen means neither is primary.

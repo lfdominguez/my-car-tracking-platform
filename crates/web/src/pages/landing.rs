@@ -133,21 +133,22 @@ pub fn LandingPage() -> impl IntoView {
                                     <svg viewBox="0 0 320 160" class="landing-mock-route">
                                         <defs>
                                             <linearGradient id="routeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                                                <stop offset="0%" stop-color="#3b82f6"/>
-                                                <stop offset="40%" stop-color="#22c55e"/>
-                                                <stop offset="70%" stop-color="#eab308"/>
-                                                <stop offset="100%" stop-color="#ef4444"/>
+                                                <stop offset="0%" stop-color="var(--color-accent)"/>
+                                                <stop offset="40%" stop-color="var(--color-accent-2)"/>
+                                                <stop offset="70%" stop-color="var(--color-warning)"/>
+                                                <stop offset="100%" stop-color="var(--color-danger)"/>
                                             </linearGradient>
                                         </defs>
                                         <path
+                                            class="landing-route-path"
                                             d="M20 120 C 60 110, 80 40, 120 50 S 180 130, 220 90 S 280 30, 300 45"
                                             fill="none"
                                             stroke="url(#routeGrad)"
                                             stroke-width="4"
                                             stroke-linecap="round"
                                         />
-                                        <circle cx="20" cy="120" r="5" fill="#22c55e"/>
-                                        <circle cx="300" cy="45" r="5" fill="#ef4444"/>
+                                        <circle class="landing-route-marker" cx="20" cy="120" r="5" fill="var(--color-map-marker-start)" style="transform-origin:20px 120px"/>
+                                        <circle class="landing-route-marker" cx="300" cy="45" r="5" fill="var(--color-map-marker-end)" style="transform-origin:300px 45px"/>
                                     </svg>
                                     <div class="landing-mock-chart">
                                         <div class="landing-bar" style="height:35%"></div>

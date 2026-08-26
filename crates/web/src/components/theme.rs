@@ -98,7 +98,7 @@ pub fn ThemeToggle() -> impl IntoView {
     view! {
         <button
             type="button"
-            class="btn icon-btn"
+            class="btn icon-btn theme-toggle"
             aria-label=move || if theme.theme.get() == Theme::Dark { "Switch to light theme" } else { "Switch to dark theme" }
             on:click=move |_| theme.toggle()
         >

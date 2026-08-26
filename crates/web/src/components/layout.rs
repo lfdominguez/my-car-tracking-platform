@@ -86,6 +86,7 @@ pub fn AppLayout() -> impl IntoView {
                 aria-hidden="true"
                 on:click=close_nav
             ></div>
+            <a class="skip-link" href="#main-content">"Skip to content"</a>
             <header class="mobile-topbar">
                 <button
                     type="button"
@@ -113,11 +114,13 @@ pub fn AppLayout() -> impl IntoView {
                     <img class="brand-logo" src="/icons/icon-192.png" alt="" width="32" height="32"/>
                     "Car Tracking"
                 </div>
-                <nav class="nav">
+                <nav class="nav" aria-label="Primary">
+                    <span class="nav-group-label">"Overview"</span>
                     <A href="/app" on:click=move |_| nav_open.set(false)>
                         <Icon name="chart-line-up" color=IconColor::Accent />
                         "Dashboard"
                     </A>
+                    <span class="nav-group-label">"Fleet"</span>
                     <A href="/app/cars" on:click=move |_| nav_open.set(false)>
                         <Icon name="car" color=IconColor::Accent />
                         "Cars"
@@ -130,12 +133,13 @@ pub fn AppLayout() -> impl IntoView {
                         <Icon name="path" color=IconColor::Accent />
                         "Routes"
                     </A>
+                    <span class="nav-group-label">"Account"</span>
                     <A href="/app/settings" on:click=move |_| nav_open.set(false)>
                         <Icon name="gear" color=IconColor::Accent />
                         "Settings"
                     </A>
                 </nav>
-                <div style="margin-top:auto" class="stack">
+                <div class="sidebar-foot">
                     <Show when=move || me.get().is_some()>
                         {move || me.get().map(|u| {
                             let name = if u.name.trim().is_empty() {
@@ -149,6 +153,7 @@ pub fn AppLayout() -> impl IntoView {
                                 .map(|c| c.to_uppercase().to_string())
                                 .unwrap_or_else(|| "?".into());
                             let avatar = u.avatar_url.clone().filter(|url| !url.is_empty());
+                            let mail = u.email.clone();
                             view! {
                                 <div class="user-card">
                                     {move || {
@@ -175,12 +180,13 @@ pub fn AppLayout() -> impl IntoView {
                                     }}
                                     <div class="user-meta">
                                         <div class="user-name">{name}</div>
+                                        <div class="user-mail">{mail}</div>
                                     </div>
                                 </div>
                             }
                         })}
                         <div class="row">
-                            <button class="btn" on:click=move |_| {
+                            <button class="btn ghost btn-sm" on:click=move |_| {
                                 leptos::task::spawn_local(async move {
                                     let _ = logout().await;
                                     if let Some(win) = web_sys::window() {
@@ -196,7 +202,7 @@ pub fn AppLayout() -> impl IntoView {
                     </Show>
                 </div>
             </aside>
-            <main class="main">
+            <main class="main" id="main-content">
                 <Show when=move || offline.get()>
                     <div class="connectivity-banner offline" role="status">
                         <Icon name="wifi-slash" color=IconColor::Warn />
@@ -237,7 +243,9 @@ pub fn AppLayout() -> impl IntoView {
                 <Show when=move || error.get().is_some()>
                     <div class="error">{move || error.get().unwrap_or_default()}</div>
                 </Show>
-                <Outlet/>
+                <div class="page-view">
+                    <Outlet/>
+                </div>
             </main>
         </div>
     }

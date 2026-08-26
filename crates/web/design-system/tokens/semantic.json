@@ -2,22 +2,28 @@
   "$comment": "Consumable layer. tokens.css is generated from this file (see tokens/tokens.css). Leptos views and style.css reference CSS variables that trace back to these names — never a raw hex. Every color token below carries an independent light/dark value; none is a computed inversion of the other (see foundations/08-dark-mode-strategy.md for the reasoning behind each pair).",
 
   "color": {
-    "bg-canvas":          { "light": "{raw.color.neutral.zinc-100}", "dark": "{raw.color.neutral.black-soft}" },
-    "bg-surface":         { "light": "{raw.color.neutral.white-pure}", "dark": "{raw.color.neutral.zinc-925}" },
-    "bg-surface-raised":  { "light": "{raw.color.neutral.white-pure}", "dark": "{raw.color.neutral.zinc-900}" },
-    "bg-surface-overlay": { "light": "{raw.color.neutral.white-pure}", "dark": "{raw.color.neutral.zinc-850}" },
+    "bg-canvas":          { "light": "{raw.color.neutral.paper-050}", "dark": "{raw.color.neutral.ink-000}" },
+    "bg-surface":         { "light": "{raw.color.neutral.paper-000}", "dark": "{raw.color.neutral.ink-100}" },
+    "bg-surface-raised":  { "light": "{raw.color.neutral.paper-000}", "dark": "{raw.color.neutral.ink-150}" },
+    "bg-surface-overlay": { "light": "{raw.color.neutral.paper-000}", "dark": "{raw.color.neutral.ink-200}" },
+    "bg-inset":           { "light": "{raw.color.neutral.paper-100}", "dark": "{raw.color.neutral.ink-050}" },
 
-    "fg-ink":     { "light": "{raw.color.neutral.ink-950}", "dark": "{raw.color.neutral.white-soft}" },
-    "fg-body":    { "light": "{raw.color.neutral.zinc-700}", "dark": "{raw.color.neutral.zinc-200}" },
-    "fg-muted":   { "light": "{raw.color.neutral.zinc-450}", "dark": "{raw.color.neutral.zinc-500}" },
-    "fg-on-accent": { "light": "{raw.color.neutral.white-pure}", "dark": "{raw.color.neutral.black-soft}" },
+    "fg-ink":       { "light": "{raw.color.neutral.ink-950}", "dark": "{raw.color.neutral.mist-050}" },
+    "fg-body":      { "light": "{raw.color.neutral.slate-700}", "dark": "{raw.color.neutral.mist-200}" },
+    "fg-muted":     { "light": "{raw.color.neutral.slate-500}", "dark": "{raw.color.neutral.slate-550}" },
+    "fg-faint":     { "light": "{raw.color.neutral.slate-600}", "dark": "{raw.color.neutral.slate-400}" },
+    "fg-on-accent": { "light": "{raw.color.neutral.paper-000}", "dark": "#04070f" },
 
     "border-default": { "light": "{raw.color.alpha.hairline-on-light}", "dark": "{raw.color.alpha.hairline-on-dark}" },
     "border-strong":  { "light": "{raw.color.alpha.hairline-on-light-strong}", "dark": "{raw.color.alpha.hairline-on-dark-strong}" },
+    "border-accent":  { "light": "{raw.color.alpha.hairline-accent-light}", "dark": "{raw.color.alpha.hairline-accent-dark}" },
 
-    "accent":         { "light": "{raw.color.neutral.ink-950}", "dark": "{raw.color.neutral.white-soft}" },
-    "accent-hover":   { "light": "{raw.color.neutral.zinc-700}", "dark": "{raw.color.neutral.zinc-150}" },
-    "accent-active":  { "light": "{raw.color.neutral.zinc-600}", "dark": "{raw.color.neutral.zinc-200}" },
+    "accent":         { "light": "{raw.color.brand.blue-600}", "dark": "{raw.color.brand.blue-400}" },
+    "accent-hover":   { "light": "{raw.color.brand.blue-700}", "dark": "{raw.color.brand.blue-300}" },
+    "accent-active":  { "light": "{raw.color.brand.blue-800}", "dark": "{raw.color.brand.blue-500}" },
+    "accent-soft":    { "light": "{raw.color.alpha.accent-tint-light}", "dark": "{raw.color.alpha.accent-tint-dark}" },
+    "accent-softer":  { "light": "{raw.color.alpha.accent-tint-light-faint}", "dark": "{raw.color.alpha.accent-tint-dark-faint}" },
+    "accent-2":       { "light": "{raw.color.brand.cyan-700}", "dark": "{raw.color.brand.cyan-400}" },
 
     "success":        { "light": "{raw.color.success.700}", "dark": "{raw.color.success.500}" },
     "success-subtle": { "light": "{raw.color.alpha.success-tint-light}", "dark": "{raw.color.alpha.success-tint-dark}" },
@@ -25,24 +31,56 @@
     "warning-subtle": { "light": "{raw.color.alpha.warning-tint-light}", "dark": "{raw.color.alpha.warning-tint-dark}" },
     "danger":         { "light": "{raw.color.danger.700}", "dark": "{raw.color.danger.500}" },
     "danger-subtle":  { "light": "{raw.color.alpha.danger-tint-light}", "dark": "{raw.color.alpha.danger-tint-dark}" },
-    "info":           { "light": "{raw.color.info.700}", "dark": "{raw.color.info.400}" },
-    "info-subtle":    { "light": "{raw.color.alpha.info-tint-light}", "dark": "{raw.color.alpha.info-tint-dark}" },
+    "info":           { "light": "{raw.color.brand.blue-600}", "dark": "{raw.color.brand.blue-400}" },
+    "info-subtle":    { "light": "{raw.color.alpha.accent-tint-light}", "dark": "{raw.color.alpha.accent-tint-dark}" },
 
     "overlay-scrim":  { "light": "{raw.color.alpha.overlay-scrim-light}", "dark": "{raw.color.alpha.overlay-scrim-dark}" },
-    "shadow-overlay": { "light": "{raw.color.shadow.overlay-light}", "dark": "{raw.color.shadow.overlay-dark}" },
 
-    "chart-series-1": { "light": "{raw.color.info.700}", "dark": "{raw.color.info.400}" },
+    "chart-series-1": { "light": "{raw.color.brand.blue-600}", "dark": "{raw.color.brand.blue-400}" },
     "chart-series-2": { "light": "{raw.color.warning.800}", "dark": "{raw.color.warning.500}" },
     "chart-series-3": { "light": "{raw.color.success.700}", "dark": "{raw.color.success.500}" },
     "chart-series-4": { "light": "{raw.color.chart.violet-700}", "dark": "{raw.color.chart.violet-400}" },
-    "chart-series-5": { "light": "{raw.color.chart.teal-700}", "dark": "{raw.color.chart.teal-400}" },
+    "chart-series-5": { "light": "{raw.color.brand.cyan-700}", "dark": "{raw.color.brand.cyan-400}" },
     "chart-series-6": { "light": "{raw.color.chart.rose-700}", "dark": "{raw.color.chart.rose-400}" },
 
-    "map-route":        { "light": "{raw.color.info.700}", "dark": "{raw.color.info.400}" },
-    "map-route-active": { "light": "{raw.color.neutral.ink-950}", "dark": "{raw.color.neutral.white-soft}" },
+    "map-route":        { "light": "{raw.color.brand.blue-600}", "dark": "{raw.color.brand.blue-400}" },
+    "map-route-active": { "light": "{raw.color.brand.cyan-700}", "dark": "{raw.color.brand.cyan-400}" },
     "map-marker-start": { "light": "{raw.color.success.700}", "dark": "{raw.color.success.500}" },
     "map-marker-end":   { "light": "{raw.color.danger.700}", "dark": "{raw.color.danger.500}" },
-    "map-marker-poi":   { "light": "{raw.color.neutral.zinc-450}", "dark": "{raw.color.neutral.zinc-500}" }
+    "map-marker-poi":   { "light": "{raw.color.neutral.slate-500}", "dark": "{raw.color.neutral.slate-550}" }
+  },
+
+  "$comment-elevation": "Elevation is a four-step ladder plus two specials. Dark mode leans on shadow depth and a 1px top highlight (shadow-inset-top); light mode leans on soft, wide, low-opacity shadows. shadow-overlay is for floating layers (modals, popovers); shadow-accent-glow is reserved for the primary action.",
+  "shadow": {
+    "1":            { "light": "{raw.color.shadow.1-light}", "dark": "{raw.color.shadow.1-dark}" },
+    "2":            { "light": "{raw.color.shadow.2-light}", "dark": "{raw.color.shadow.2-dark}" },
+    "3":            { "light": "{raw.color.shadow.3-light}", "dark": "{raw.color.shadow.3-dark}" },
+    "4":            { "light": "{raw.color.shadow.4-light}", "dark": "{raw.color.shadow.4-dark}" },
+    "overlay":      { "light": "{raw.color.shadow.overlay-light}", "dark": "{raw.color.shadow.overlay-dark}" },
+    "accent-glow":  { "light": "{raw.color.shadow.accent-glow-light}", "dark": "{raw.color.shadow.accent-glow-dark}" },
+    "inset-top":    { "light": "{raw.color.shadow.inset-top-light}", "dark": "{raw.color.shadow.inset-top-dark}" }
+  },
+
+  "$comment-gradient": "gradient-brand-vivid is the brand fingerprint: the nav active rail, the numbered step chips, the gradient headline word. gradient-surface is the near-invisible top-light wash on every card. gradient-sheen is the one-pass highlight that sweeps a button on hover.",
+  "gradient": {
+    "brand":       { "light": "{raw.color.gradient.brand-light}", "dark": "{raw.color.gradient.brand-dark}" },
+    "brand-vivid": { "light": "{raw.color.gradient.brand-vivid-light}", "dark": "{raw.color.gradient.brand-vivid-dark}" },
+    "brand-soft":  { "light": "{raw.color.gradient.brand-soft-light}", "dark": "{raw.color.gradient.brand-soft-dark}" },
+    "surface":     { "light": "{raw.color.gradient.surface-light}", "dark": "{raw.color.gradient.surface-dark}" },
+    "hairline":    { "light": "{raw.color.gradient.hairline-light}", "dark": "{raw.color.gradient.hairline-dark}" },
+    "sheen":       { "light": "{raw.color.gradient.sheen-light}", "dark": "{raw.color.gradient.sheen-dark}" }
+  },
+
+  "$comment-focus": "One ring for the whole app, applied via :focus-visible. Never an outline jump, never a per-component variant.",
+  "ring": {
+    "width": "{raw.effect.ring-width}",
+    "color": { "light": "{raw.color.alpha.ring-light}", "dark": "{raw.color.alpha.ring-dark}" }
+  },
+
+  "glass": {
+    "blur": "{raw.effect.glass-blur}",
+    "bg":     { "light": "{raw.color.alpha.glass-light}", "dark": "{raw.color.alpha.glass-dark}" },
+    "border": { "light": "{raw.color.alpha.hairline-on-light}", "dark": "{raw.color.alpha.hairline-on-dark}" }
   },
 
   "font": {
@@ -88,21 +126,29 @@
 
     "row-y": "{raw.space.1}",
     "row-x": "{raw.space.3}",
-    "card-pad": "{raw.space.4}",
-    "panel-gap": "{raw.space.2}",
+    "card-pad": "{raw.space.5}",
+    "panel-gap": "{raw.space.3}",
     "section-y-mobile": "{raw.space.8}",
     "section-y-desktop": "{raw.space.12}",
     "gutter-mobile": "{raw.space.4}",
-    "gutter-desktop": "{raw.space.6}",
+    "gutter-desktop": "{raw.space.8}",
     "stack-tight": "{raw.space.1}",
     "stack-loose": "{raw.space.4}"
   },
 
+  "$comment-radius": "v2 replaced the 0px sharp-grid signature. `surface` is the dominant shape (cards, panels, modals) and therefore carries the signature; `control` is the slightly tighter radius for buttons and inputs; `chip` is fully round for status atoms and filter pills.",
   "radius": {
-    "surface": "{raw.radius.none}",
-    "chip": "{raw.radius.chip}",
+    "xs": "{raw.radius.xs}",
+    "sm": "{raw.radius.sm}",
+    "md": "{raw.radius.md}",
+    "lg": "{raw.radius.lg}",
+    "xl": "{raw.radius.xl}",
+    "2xl": "{raw.radius.2xl}",
+    "surface": "{raw.radius.lg}",
+    "control": "{raw.radius.control}",
+    "chip": "{raw.radius.pill}",
     "avatar": "{raw.radius.full}",
-    "signature": "{raw.radius.none}"
+    "signature": "{raw.radius.lg}"
   },
 
   "motion": {
@@ -110,6 +156,7 @@
     "duration-fast": "{raw.motion.duration.fast}",
     "duration-medium": "{raw.motion.duration.medium}",
     "duration-entry": "{raw.motion.duration.entry}",
+    "duration-slow": "{raw.motion.duration.slow}",
     "duration-bump": "{raw.motion.duration.bump}",
     "duration-ambient-pulse": "{raw.motion.duration.ambient-pulse}",
     "duration-ambient-shimmer": "{raw.motion.duration.ambient-shimmer}",
@@ -118,7 +165,9 @@
     "ease-linear": "{raw.motion.easing.linear}",
     "ease-enter": "{raw.motion.easing.enter}",
     "ease-exit": "{raw.motion.easing.exit}",
+    "ease-standard": "{raw.motion.easing.standard}",
     "ease-spring-bump": "{raw.motion.easing.spring-bump}",
+    "ease-spring-soft": "{raw.motion.easing.spring-soft}",
     "ease-ambient": "{raw.motion.easing.ambient}"
   },
 
