@@ -2,7 +2,10 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::api::TripPoint;
-use crate::units::{headline_economy, instant_economy, use_unit_prefs, UnitSystem};
+use crate::units::{
+    headline_economy, integrated_economy, use_unit_prefs, windowed_economy_series, EconomySample,
+    ECONOMY_WINDOW_S,
+};
 use crate::components::{Icon, IconColor, IconSize};
 
 #[wasm_bindgen(inline_js = r#"
@@ -696,8 +699,27 @@ fn coalesce_rpm(p: &TripPoint) -> Option<f64> {
     p.vehicle_engine_rpm.or(p.engine_rpm)
 }
 
-fn instant_economy_point(speed: Option<f64>, fuel_rate: Option<f64>, system: UnitSystem) -> Option<f64> {
-    instant_economy(speed, fuel_rate, system)
+/// Economy inputs for the trailing-window integral: already-converted speed and
+/// fuel rate stamped with the sample's epoch seconds.
+fn economy_samples(points: &[TripPoint]) -> Vec<EconomySample> {
+    points
+        .iter()
+        .map(|p| EconomySample {
+            t_s: epoch_seconds(&p.recorded_at).unwrap_or(f64::NAN),
+            speed: coalesce_speed(p),
+            rate: p.fuel_consumption_rate,
+        })
+        .collect()
+}
+
+/// Epoch seconds from an API timestamp. RFC 3339 first, then the space-separated
+/// SQL shape `time_labels` also tolerates.
+fn epoch_seconds(raw: &str) -> Option<f64> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.timestamp_millis() as f64 / 1000.0);
+    }
+    let naive = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f").ok()?;
+    Some(naive.and_utc().timestamp_millis() as f64 / 1000.0)
 }
 
 /// Bucket a line series into ECharts candlestick OHLC: `[open, close, low, high]`.
@@ -1330,13 +1352,8 @@ fn build_signal_chips(
             value: format!("{avg_rate:.2} {}", prefs.labels.fuel_rate),
         });
     }
-    let eco_vals: Vec<f64> = raw
-        .iter()
-        .filter_map(|p| {
-            instant_economy_point(coalesce_speed(p), p.fuel_consumption_rate, prefs.system)
-        })
-        .collect();
-    if let Some(avg_eco) = headline_economy(trip_economy, mean_finite(eco_vals.into_iter())) {
+    let trip_integral = integrated_economy(&economy_samples(raw), prefs.system);
+    if let Some(avg_eco) = headline_economy(trip_economy, trip_integral) {
         chips.push(SignalChip {
             label: "Economy".into(),
             value: format!("{avg_eco:.1} {}", prefs.labels.fuel_economy),
@@ -1423,10 +1440,10 @@ pub fn TripTelemetryDashboard(
         let stft: Vec<_> = pts.iter().map(|p| p.short_term_fuel_trim_pct).collect();
         let ltft: Vec<_> = pts.iter().map(|p| p.long_term_fuel_trim_pct).collect();
         let lambda: Vec<_> = pts.iter().map(|p| p.lambda_cmd).collect();
-        let economy: Vec<_> = pts
-            .iter()
-            .map(|p| instant_economy_point(coalesce_speed(p), p.fuel_consumption_rate, system))
-            .collect();
+        // Economy is integrated over a trailing window, not divided point-wise:
+        // `rate / speed` is unbounded at crawl speeds and undefined at a stop, which
+        // is what broke this series into spiky, disconnected segments.
+        let economy = windowed_economy_series(&economy_samples(&pts), system, ECONOMY_WINDOW_S);
         let coolant: Vec<_> = pts.iter().map(|p| p.engine_coolant_temp_c).collect();
         let iat: Vec<_> = pts.iter().map(|p| p.intake_air_temperature).collect();
         let ambient: Vec<_> = pts.iter().map(|p| p.ambient_air_temp_c).collect();
@@ -1561,7 +1578,7 @@ pub fn TripTelemetryDashboard(
             PanelDef {
                 id: "fuel-rate",
                 title: "Fuel rate & economy",
-                blurb: "Instant burn rate and efficiency. Economy is noisy at idle or crawl speeds — Smooth mode helps the trend.",
+                blurb: "Instant burn rate, and economy integrated over a 60 s trailing window (what a dash trip computer shows). Economy drops out only when the car has covered under 20 m in that window.",
                 primary: true,
                 y_left: ul.fuel_rate.to_string(),
                 y_right: Some(ul.fuel_economy.to_string()),
@@ -1574,7 +1591,7 @@ pub fn TripTelemetryDashboard(
                         area: true,
                     },
                     ChartSeriesSpec {
-                        name: format!("Instant {}", ul.fuel_economy),
+                        name: format!("Economy ({})", ul.fuel_economy),
                         data: economy,
                         y_axis_index: 1,
                         area: false,
