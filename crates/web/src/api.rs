@@ -218,8 +218,9 @@ pub struct AnalyzeAccepted {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TripPoint {
     pub recorded_at: String,
-    pub lat: f64,
-    pub lon: f64,
+    /// `None` when the sample was recorded without a usable GPS fix.
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
     pub gps_acc_m: f64,
     pub vehicle_speed_kph: Option<f64>,
     pub vehicle_engine_rpm: Option<f64>,

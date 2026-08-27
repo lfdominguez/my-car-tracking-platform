@@ -79,7 +79,7 @@ pub async fn process_finished_track(
                vehicle_speed_kph,
                accelerator_pedal_pct
         FROM track_points
-        WHERE track_id = $1
+        WHERE track_id = $1 AND gps IS NOT NULL
         ORDER BY recorded_at ASC
         "#,
     )

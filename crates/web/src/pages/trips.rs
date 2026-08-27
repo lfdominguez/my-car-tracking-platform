@@ -724,8 +724,10 @@ pub fn TripDetailPage() -> impl IntoView {
                     match decrypt_track_points(&sess, &car_id, &id_fetch).await {
                         Ok(p) => {
                             if alive_fetch.load(Ordering::SeqCst) {
-                                let coords: Vec<[f64; 2]> =
-                                    p.iter().map(|pt| [pt.lon, pt.lat]).collect();
+                                let coords: Vec<[f64; 2]> = p
+                                    .iter()
+                                    .filter_map(|pt| Some([pt.lon?, pt.lat?]))
+                                    .collect();
                                 geojson.set(Some(serde_json::json!({
                                     "type": "LineString",
                                     "coordinates": coords,

@@ -834,6 +834,7 @@ mod tests {
             atmospheric_pressure: None,
             odometer_value_km: None,
             engine_on_time: None,
+            battery_soc_pct: None,
         }
     }
 

@@ -6,6 +6,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::devices::authenticate_device_token;
@@ -14,6 +15,10 @@ use crate::state::AppState;
 
 /// Max samples accepted in one `/api/track/samples` batch.
 pub const MAX_BATCH_SAMPLES: usize = 1000;
+
+/// `gps_acc_m` sentinel for "accuracy unknown" — used when a sample carries no fix.
+/// Matches the column default from `migrations/001_init.sql`.
+const UNKNOWN_GPS_ACC_M: f64 = -1.0;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -51,9 +56,14 @@ pub struct TrackSampleRequest {
     pub tracking_id: String,
     /// Android sends epoch millis as int.
     pub recorded_at: i64,
-    pub lat: f64,
-    pub lon: f64,
-    pub acc: f64,
+    /// GPS is optional. The client samples on a fixed clock and omits these three
+    /// fields when it has no fresh, accurate fix (tunnel, garage, cold start).
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lon: Option<f64>,
+    #[serde(default)]
+    pub acc: Option<f64>,
     pub vehicle_speed_kph: Option<f64>,
     pub vehicle_engine_rpm: Option<f64>,
     pub fuel_consumption_rate: Option<f64>,
@@ -269,9 +279,30 @@ async fn track_samples(
     }
     let mut accepted: i64 = 0;
     let mut rejected = Vec::new();
+    // A 1 Hz batch is ~200 rows that all target the same trip, so resolve the
+    // `tracks` row once per distinct tracking_id instead of once per sample.
+    // `None` caches a tracking_id already known to be unresolvable; transient DB
+    // errors are deliberately not cached so a later sample can still succeed.
+    let mut tracks: HashMap<String, Option<TrackRef>> = HashMap::new();
 
     for sample in &body.samples {
-        match insert_sample(&state, device.car_id, sample).await {
+        let outcome = match tracks.get(&sample.tracking_id) {
+            Some(Some(track)) => insert_sample_for_track(&state, track, sample).await,
+            Some(None) => Err(SampleError::UnknownTrack),
+            None => match resolve_track(&state, device.car_id, &sample.tracking_id).await {
+                Ok(track) => {
+                    let inserted = insert_sample_for_track(&state, &track, sample).await;
+                    tracks.insert(sample.tracking_id.clone(), Some(track));
+                    inserted
+                }
+                Err(SampleError::UnknownTrack) => {
+                    tracks.insert(sample.tracking_id.clone(), None);
+                    Err(SampleError::UnknownTrack)
+                }
+                Err(e) => Err(e),
+            },
+        };
+        match outcome {
             Ok(()) => accepted += 1,
             Err(SampleError::Duplicate) => rejected.push(RejectedSample {
                 recorded_at: sample.recorded_at,
@@ -311,29 +342,82 @@ enum SampleError {
     Db(sqlx::Error),
 }
 
+/// Snapshot of the `tracks` row a sample targets, resolved once per batch.
+#[derive(Debug, Clone)]
+struct TrackRef {
+    track_id: Uuid,
+    finished: bool,
+    started_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+}
+
+/// Validates a sample's coordinates.
+///
+/// GPS is optional: a sample with neither `lat` nor `lon` is accepted and stored
+/// with NULL `gps`. A coordinate that *is* present must still be sane, and a
+/// half-fix (one of the pair) is a client bug rather than a GPS-less sample.
+fn sample_coords(sample: &TrackSampleRequest) -> Result<Option<(f64, f64)>, SampleError> {
+    match (sample.lat, sample.lon) {
+        (None, None) => Ok(None),
+        (Some(lat), Some(lon)) => {
+            let sane = lat.is_finite()
+                && lon.is_finite()
+                && (-90.0..=90.0).contains(&lat)
+                && (-180.0..=180.0).contains(&lon);
+            if sane {
+                Ok(Some((lat, lon)))
+            } else {
+                Err(SampleError::InvalidCoords)
+            }
+        }
+        _ => Err(SampleError::InvalidCoords),
+    }
+}
+
+async fn resolve_track(
+    state: &AppState,
+    car_id: Uuid,
+    tracking_id: &str,
+) -> Result<TrackRef, SampleError> {
+    let legacy_key = parse_legacy_key(tracking_id).ok_or(SampleError::UnknownTrack)?;
+    let (track_id, finished, started_at, finished_at) =
+        sqlx::query_as::<_, (Uuid, bool, DateTime<Utc>, Option<DateTime<Utc>>)>(
+            "SELECT id, finished, started_at, finished_at FROM tracks WHERE car_id = $1 AND legacy_key = $2",
+        )
+        .bind(car_id)
+        .bind(legacy_key)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(SampleError::Db)?
+        .ok_or(SampleError::UnknownTrack)?;
+    Ok(TrackRef {
+        track_id,
+        finished,
+        started_at,
+        finished_at,
+    })
+}
+
 async fn insert_sample(
     state: &AppState,
     car_id: Uuid,
     sample: &TrackSampleRequest,
 ) -> Result<(), SampleError> {
-    if !(-90.0..=90.0).contains(&sample.lat) || !(-180.0..=180.0).contains(&sample.lon) {
-        return Err(SampleError::InvalidCoords);
-    }
+    let track = resolve_track(state, car_id, &sample.tracking_id).await?;
+    insert_sample_for_track(state, &track, sample).await
+}
 
-    let legacy_key = parse_legacy_key(&sample.tracking_id).ok_or(SampleError::UnknownTrack)?;
-    let row = sqlx::query_as::<_, (Uuid, bool, DateTime<Utc>, Option<DateTime<Utc>>)>(
-        "SELECT id, finished, started_at, finished_at FROM tracks WHERE car_id = $1 AND legacy_key = $2",
-    )
-    .bind(car_id)
-    .bind(legacy_key)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(SampleError::Db)?
-    .ok_or(SampleError::UnknownTrack)?;
-    let (track_id, finished, started_at, finished_at) = row;
+async fn insert_sample_for_track(
+    state: &AppState,
+    track: &TrackRef,
+    sample: &TrackSampleRequest,
+) -> Result<(), SampleError> {
+    let coords = sample_coords(sample)?;
 
     let recorded_at = millis_to_datetime(sample.recorded_at);
-    if finished && !finished_track_accepts_sample(recorded_at, started_at, finished_at) {
+    if track.finished
+        && !finished_track_accepts_sample(recorded_at, track.started_at, track.finished_at)
+    {
         return Err(SampleError::TrackFinished);
     }
     let engine_rpm = sample.vehicle_engine_rpm;
@@ -354,7 +438,10 @@ async fn insert_sample(
             battery_soc_pct, battery_power_kw
         ) VALUES (
             $1, $2,
-            ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography,
+            CASE
+                WHEN $3::float8 IS NULL OR $4::float8 IS NULL THEN NULL
+                ELSE ST_SetSRID(ST_MakePoint($3::float8, $4::float8), 4326)::geography
+            END,
             $5,
             $6, $7, $8,
             $9, $10,
@@ -368,11 +455,11 @@ async fn insert_sample(
         )
         "#,
     )
-    .bind(track_id)
+    .bind(track.track_id)
     .bind(recorded_at)
-    .bind(sample.lon)
-    .bind(sample.lat)
-    .bind(sample.acc)
+    .bind(coords.map(|(_, lon)| lon))
+    .bind(coords.map(|(lat, _)| lat))
+    .bind(sample.acc.unwrap_or(UNKNOWN_GPS_ACC_M))
     .bind(engine_rpm)
     .bind(engine_vel)
     .bind(sample.fuel_consumption_rate)
@@ -637,5 +724,66 @@ mod tests {
         let fin = start + chrono::Duration::minutes(20);
         let skew = start - chrono::Duration::minutes(3);
         assert!(finished_track_accepts_sample(skew, start, Some(fin)));
+    }
+
+    fn sample_json(value: serde_json::Value) -> TrackSampleRequest {
+        serde_json::from_value(value).expect("sample should deserialize")
+    }
+
+    /// The whole point of the feature: a body with no lat/lon must still
+    /// deserialize. When these were `f64`, serde failed the *entire batch* with
+    /// "missing field", which the Android client treats as a permanent 4xx.
+    #[test]
+    fn sample_without_gps_deserializes() {
+        let sample = sample_json(serde_json::json!({
+            "tracking_id": "1999-01-01T00:00:00Z",
+            "recorded_at": 1_000_i64,
+            "vehicle_engine_rpm": 900.0,
+        }));
+        assert_eq!(sample.lat, None);
+        assert_eq!(sample.lon, None);
+        assert_eq!(sample.acc, None);
+        assert_eq!(sample.vehicle_engine_rpm, Some(900.0));
+        assert_eq!(sample_coords(&sample).unwrap(), None);
+    }
+
+    #[test]
+    fn sample_coords_accepts_a_valid_fix() {
+        let sample = sample_json(serde_json::json!({
+            "tracking_id": "1999-01-01T00:00:00Z",
+            "recorded_at": 0_i64,
+            "lat": -23.5,
+            "lon": -46.6,
+            "acc": 5.0,
+        }));
+        assert_eq!(sample_coords(&sample).unwrap(), Some((-23.5, -46.6)));
+    }
+
+    /// One half of a coordinate pair is a client bug, not a GPS-less sample.
+    #[test]
+    fn sample_coords_rejects_half_a_fix() {
+        let sample = sample_json(serde_json::json!({
+            "tracking_id": "1999-01-01T00:00:00Z",
+            "recorded_at": 0_i64,
+            "lat": -23.5,
+        }));
+        assert!(matches!(
+            sample_coords(&sample),
+            Err(SampleError::InvalidCoords)
+        ));
+    }
+
+    #[test]
+    fn sample_coords_rejects_out_of_range_fix() {
+        let sample = sample_json(serde_json::json!({
+            "tracking_id": "1999-01-01T00:00:00Z",
+            "recorded_at": 0_i64,
+            "lat": 91.0,
+            "lon": 0.0,
+        }));
+        assert!(matches!(
+            sample_coords(&sample),
+            Err(SampleError::InvalidCoords)
+        ));
     }
 }

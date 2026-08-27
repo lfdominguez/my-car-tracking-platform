@@ -1,0 +1,11 @@
+-- GPS becomes optional for a telemetry sample.
+--
+-- The Android client no longer lets the location provider drive sampling: it emits
+-- on its own fixed 1 Hz clock and attaches a fix only when one is fresh and accurate
+-- enough. Engine telemetry therefore survives tunnels, garages, cold starts and
+-- revoked/disabled location providers, arriving as a point with no coordinates.
+--
+-- Such rows carry NULL `gps` and keep the existing -1.0 `gps_acc_m` sentinel that
+-- already means "accuracy unknown" (see crates/web/.../charts.rs, which filters on
+-- gps_acc_m >= 0.0). The GIST index on `gps` simply does not index NULLs.
+ALTER TABLE track_points ALTER COLUMN gps DROP NOT NULL;

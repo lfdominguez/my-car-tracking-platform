@@ -484,8 +484,9 @@ impl TripSummaryRow {
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct TripPoint {
     pub recorded_at: DateTime<Utc>,
-    pub lat: f64,
-    pub lon: f64,
+    /// `None` when the sample was recorded without a usable GPS fix.
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
     pub gps_acc_m: f64,
     pub vehicle_speed_kph: Option<f64>,
     pub vehicle_engine_rpm: Option<f64>,
@@ -801,7 +802,7 @@ async fn list_trips(
                 (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at DESC)
                   FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_end_pct,
                 CASE
-                  WHEN COUNT(*) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
+                  WHEN COUNT(tp.gps) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
                   ELSE 0::float8
                 END AS distance_m
             FROM track_points tp
@@ -980,7 +981,7 @@ async fn get_trip(
                 (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at DESC)
                   FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_end_pct,
                 CASE
-                  WHEN COUNT(*) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
+                  WHEN COUNT(tp.gps) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
                   ELSE 0::float8
                 END AS distance_m
             FROM track_points tp WHERE tp.track_id = t.id
@@ -1281,7 +1282,7 @@ async fn trip_map(
         r#"
         SELECT ST_X(gps::geometry) AS lon, ST_Y(gps::geometry) AS lat
         FROM track_points
-        WHERE track_id = $1
+        WHERE track_id = $1 AND gps IS NOT NULL
         ORDER BY recorded_at
         "#,
     )

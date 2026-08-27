@@ -31,6 +31,24 @@ nix run nixpkgs#trunk -- <args>
 - Hybrid/Electric: RPM 0 is valid while the vehicle is on.
 - Sanitize isolated OBD speed/RPM spikes on trip graphs and analysis.
 
+## Ingest rules
+
+- **GPS is optional on a sample.** The Android client samples on its own fixed 1 Hz
+  clock and omits `lat` / `lon` / `acc` entirely when it has no fresh, accurate fix,
+  so engine telemetry keeps flowing through tunnels, garages and cold starts. Keep
+  these three fields `Option<f64>` with `#[serde(default)]`: making any of them
+  required fails deserialization for the **whole batch**, and the client treats a 4xx
+  as permanent, so one fixless row would discard every good sample alongside it.
+- Fixless rows store NULL `track_points.gps` and the `-1.0` `gps_acc_m` sentinel
+  ("accuracy unknown"). A *half* coordinate pair is a client bug → `invalid_coords`.
+- Any query reading `ST_Y(gps)` / `ST_X(gps)` must either filter `gps IS NOT NULL`
+  (geometry-only consumers: map polyline, traffic, route optimization) or decode into
+  `Option<f64>` (consumers that also want the engine timeline: trip detail, AI
+  analysis). A non-nullable `f64` target turns a fixless row into a 500.
+- Distance guards must count coordinates, not rows: `COUNT(tp.gps) >= 2`, never
+  `COUNT(*)`. `ST_MakeLine` skips NULL inputs, so `COUNT(*)` can wave through a trip
+  that has fewer than two actual points.
+
 ## Frontend design (ux-skill)
 
 If a `DESIGN.md` exists in the project root, read it FIRST and treat it as the

@@ -650,3 +650,103 @@ async fn stop_with_vault_chunk_keeps_track_even_without_plaintext_points() {
 // silence unused warnings in skip path
 #[allow(dead_code)]
 fn _types(_: SocketAddr, _: Arc<()>) {}
+
+#[tokio::test]
+async fn batch_accepts_samples_without_gps() {
+    let Some((base, client, token, car_id, pool)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+
+    let start = Utc::now();
+    let tracking_id = start.to_rfc3339();
+
+    let resp = client
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": start }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "start: {}", resp.status());
+
+    // The client omits lat/lon/acc entirely (kotlinx `explicitNulls = false`)
+    // whenever it has no fresh, accurate fix. A mixed batch must be fully
+    // accepted — before GPS became optional this failed deserialization and
+    // took the GPS-bearing samples down with it.
+    let with_fix = json!({
+        "tracking_id": tracking_id,
+        "recorded_at": start.timestamp_millis(),
+        "lat": -23.5,
+        "lon": -46.6,
+        "acc": 5.0,
+        "vehicle_speed_kph": 40.0,
+        "vehicle_engine_rpm": 2000.0
+    });
+    let no_fix = json!({
+        "tracking_id": tracking_id,
+        "recorded_at": start.timestamp_millis() + 1000,
+        "vehicle_speed_kph": 0.0,
+        "vehicle_engine_rpm": 820.0,
+        "engine_coolant_temp_c": 71.0
+    });
+
+    let resp = client
+        .post(format!("{base}/api/track/samples"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "samples": [with_fix, no_fix] }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "samples: {}", resp.status());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["accepted"], 2, "rejected: {}", body["rejected"]);
+
+    let track_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2",
+    )
+    .bind(car_id)
+    .bind(start)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // The fixless row is stored with NULL geography and the "unknown accuracy"
+    // sentinel, while its engine telemetry survives intact.
+    let (acc, rpm): (f64, Option<f64>) = sqlx::query_as(
+        "SELECT gps_acc_m, vehicle_engine_rpm FROM track_points \
+         WHERE track_id = $1 AND gps IS NULL",
+    )
+    .bind(track_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(acc, -1.0);
+    assert_eq!(rpm, Some(820.0));
+
+    let with_gps: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_points WHERE track_id = $1 AND gps IS NOT NULL")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(with_gps, 1);
+
+    // Half a coordinate pair is still a client bug.
+    let half_fix = json!({
+        "tracking_id": tracking_id,
+        "recorded_at": start.timestamp_millis() + 2000,
+        "lat": -23.5
+    });
+    let resp = client
+        .post(format!("{base}/api/track/samples"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "samples": [half_fix] }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["accepted"], 0);
+    assert_eq!(body["rejected"][0]["reason"], "invalid_coords");
+}

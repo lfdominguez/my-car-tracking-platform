@@ -211,7 +211,7 @@ const TRIP_SELECT: &str = r#"
                     AND x.lead_t <= x.t + interval '5 minutes'
                 ) AS fuel_used_moving_l,
                 CASE
-                  WHEN COUNT(*) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
+                  WHEN COUNT(tp.gps) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
                   ELSE 0::float8
                 END AS distance_m
             FROM track_points tp

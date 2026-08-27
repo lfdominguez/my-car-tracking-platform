@@ -94,7 +94,7 @@ async fn summary(
             SELECT
                 t.id,
                 COALESCE(
-                  CASE WHEN COUNT(tp.*) >= 2
+                  CASE WHEN COUNT(tp.gps) >= 2
                     THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)
                     ELSE 0 END, 0
                 ) AS distance_m,
@@ -155,7 +155,7 @@ async fn summary(
                 t.car_id,
                 t.id AS track_id,
                 COALESCE(
-                  CASE WHEN COUNT(tp.*) >= 2
+                  CASE WHEN COUNT(tp.gps) >= 2
                     THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)
                     ELSE 0 END, 0
                 )::float8 AS distance_m

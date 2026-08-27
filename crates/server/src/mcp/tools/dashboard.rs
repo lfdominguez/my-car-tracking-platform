@@ -87,7 +87,7 @@ pub async fn get_dashboard_summary(
             SELECT
                 t.id,
                 COALESCE(
-                  CASE WHEN COUNT(tp.*) >= 2
+                  CASE WHEN COUNT(tp.gps) >= 2
                     THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)
                     ELSE 0 END, 0
                 ) AS distance_m,
@@ -175,7 +175,7 @@ pub async fn get_dashboard_summary(
               )
               FROM (
                 SELECT
-                  COUNT(tp.*)::int AS cnt,
+                  COUNT(tp.gps)::int AS cnt,
                   ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography) AS dist
                 FROM tracks t
                 LEFT JOIN track_points tp ON tp.track_id = t.id
