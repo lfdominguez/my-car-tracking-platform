@@ -3223,11 +3223,12 @@ a:hover .routes-corridor-card {
 /* ---- How it works ---- */
 .landing-how { padding-top: clamp(2rem, 5vw, 3rem); }
 .landing-steps {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 1.25rem;
-  align-items: start;
+  align-items: flex-start;
 }
+.landing-steps > .landing-step { flex: 1 1 220px; }
 .landing-step {
   position: relative;
   padding: 1.35rem 1.25rem;
@@ -3254,11 +3255,11 @@ a:hover .routes-corridor-card {
 .landing-step h3 { margin: 0 0 0.45rem; font-size: var(--text-lg); }
 .landing-step p { margin: 0; font-size: var(--text-base); line-height: var(--leading-relaxed); color: var(--muted); }
 .landing-step-arrow {
-  position: absolute;
-  top: 2.1rem;
-  right: -1rem;
+  flex: 0 0 auto;
+  /* Sits on the step-number row rather than the card's centre, which is where
+     the old absolute `top: 2.1rem` was aiming. */
+  margin-top: 2.1rem;
   color: var(--faint);
-  z-index: 2;
 }
 
 /* ---- Intelligence ---- */

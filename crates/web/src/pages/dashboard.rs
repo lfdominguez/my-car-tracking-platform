@@ -88,7 +88,7 @@ pub fn DashboardPage() -> impl IntoView {
                         <div class="card empty-state">
                             <Icon name="car" size=IconSize::Xl color=IconColor::Device />
                             <div>"No cars yet — add one under Cars, then track from the phone."</div>
-                            <A href="/app/cars"><button type="button" class="primary">"Manage cars"</button></A>
+                            <A href="/app/cars"><button type="button" class="btn primary">"Manage cars"</button></A>
                         </div>
                     }
                 >
