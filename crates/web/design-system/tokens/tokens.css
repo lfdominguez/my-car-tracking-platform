@@ -13,12 +13,21 @@
   NAMES are unchanged so all ~140 downstream call sites keep working; only values
   moved, plus a set of additive tokens (shadow ladder, radius scale, gradients,
   focus ring, glass) that the new components consume.
+
+  Typography was later reduced from three families to two: the Domine serif and
+  DM Sans were both replaced by Inter, so display and body now share one face and
+  the size ramp gained the 14px/15px rungs the old scale was missing. Token names
+  are unchanged; --text-md, --tracking-wider and --font-weight-body-semibold are
+  additive.
 */
 
 :root {
   /* ---- Typography ---- */
-  --font-family-display: 'Domine', Georgia, 'Times New Roman', serif;
-  --font-family-body: 'DM Sans', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  /* One sans for every piece of text, one mono for every number. Display and
+     body deliberately share a face; the two token names are kept so a future
+     display face can be swapped in without touching a single call site. */
+  --font-family-display: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-family-body: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-family-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 
   --font-weight-display-medium: 500;
@@ -26,30 +35,39 @@
   --font-weight-display-bold: 700;
   --font-weight-body-regular: 400;
   --font-weight-body-medium: 500;
+  --font-weight-body-semibold: 600;
   --font-weight-body-bold: 700;
   --font-weight-mono-regular: 400;
   --font-weight-mono-medium: 500;
   --font-weight-mono-bold: 700;
 
+  /* Ramp is dense at the bottom because this is a data-dense UI: most text in
+     the app lives between 11px and 15px, and the old 13px->16px gap is what
+     pushed ~40 declarations off the scale into hand-picked rem values. */
   --text-2xs: 11px;
   --text-xs: 12px;
   --text-sm: 13px;
-  --text-base: 16px;
-  --text-lg: 19px;
-  --text-xl: 23px;
-  --text-2xl: 28px;
-  --text-3xl: 33px;
-  --text-4xl: 40px;
+  --text-md: 14px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --text-4xl: 38px;
 
   --leading-tight: 1.1;
   --leading-snug: 1.25;
   --leading-normal: 1.5;
   --leading-relaxed: 1.65;
 
-  --tracking-tighter: -0.02em;
-  --tracking-tight: -0.01em;
+  /* Inter sets tighter than the serif it replaced, so display sizes take more
+     negative tracking and uppercase micro-labels take less positive tracking.
+     --tracking-wider preserves the old 0.08em for the few labels that want air. */
+  --tracking-tighter: -0.022em;
+  --tracking-tight: -0.014em;
   --tracking-normal: 0em;
-  --tracking-wide: 0.08em;
+  --tracking-wide: 0.045em;
+  --tracking-wider: 0.08em;
 
   /* ---- Space (4px unit) ---- */
   --space-0: 0px;

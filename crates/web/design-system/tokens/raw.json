@@ -95,24 +95,25 @@
 
   "font": {
     "family": {
-      "display": "'Domine', Georgia, 'Times New Roman', serif",
-      "body": "'DM Sans', -apple-system, 'Segoe UI', system-ui, sans-serif",
+      "display": "'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif",
+      "body": "'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif",
       "mono": "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace"
     },
     "weight": {
-      "domine-medium": 500, "domine-semibold": 600, "domine-bold": 700,
-      "dmsans-regular": 400, "dmsans-medium": 500, "dmsans-bold": 700,
+      "display-medium": 500, "display-semibold": 600, "display-bold": 700,
+      "body-regular": 400, "body-medium": 500, "body-semibold": 600, "body-bold": 700,
       "mono-regular": 400, "mono-medium": 500, "mono-bold": 700
     },
     "size": {
-      "2xs": "11px", "xs": "12px", "sm": "13px", "base": "16px",
-      "lg": "19px", "xl": "23px", "2xl": "28px", "3xl": "33px", "4xl": "40px"
+      "2xs": "11px", "xs": "12px", "sm": "13px", "md": "14px", "base": "15px",
+      "lg": "17px", "xl": "20px", "2xl": "24px", "3xl": "30px", "4xl": "38px"
     },
     "line-height": {
       "tight": 1.1, "snug": 1.25, "normal": 1.5, "relaxed": 1.65
     },
     "letter-spacing": {
-      "tighter": "-0.02em", "tight": "-0.01em", "normal": "0em", "wide": "0.08em"
+      "tighter": "-0.022em", "tight": "-0.014em", "normal": "0em",
+      "wide": "0.045em", "wider": "0.08em"
     }
   },
 

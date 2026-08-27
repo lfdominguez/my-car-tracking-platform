@@ -11,7 +11,7 @@
 All variants use `radius-control` (11px).
 - `sm` — 32px height, `text-sm`, `space-1`/`space-2` padding — dense toolbar contexts.
 - `md` (default) — 40px height, ~`text-sm`, `space-2`/`space-4` padding.
-- `lg` — 48px height, `text-base`, `space-3`/`space-6` padding — primary page-level actions only.
+- `lg` — 48px height, `text-lg`, `space-3`/`space-6` padding — primary page-level actions only.
 - `icon-only` — square, matches `sm`/`md`/`lg` height, icon centered, requires `aria-label`.
 
 ## States

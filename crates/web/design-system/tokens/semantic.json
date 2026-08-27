@@ -88,12 +88,13 @@
     "family-body": "{raw.font.family.body}",
     "family-mono": "{raw.font.family.mono}",
 
-    "weight-display-medium": "{raw.font.weight.domine-medium}",
-    "weight-display-semibold": "{raw.font.weight.domine-semibold}",
-    "weight-display-bold": "{raw.font.weight.domine-bold}",
-    "weight-body-regular": "{raw.font.weight.dmsans-regular}",
-    "weight-body-medium": "{raw.font.weight.dmsans-medium}",
-    "weight-body-bold": "{raw.font.weight.dmsans-bold}",
+    "weight-display-medium": "{raw.font.weight.display-medium}",
+    "weight-display-semibold": "{raw.font.weight.display-semibold}",
+    "weight-display-bold": "{raw.font.weight.display-bold}",
+    "weight-body-regular": "{raw.font.weight.body-regular}",
+    "weight-body-medium": "{raw.font.weight.body-medium}",
+    "weight-body-semibold": "{raw.font.weight.body-semibold}",
+    "weight-body-bold": "{raw.font.weight.body-bold}",
     "weight-mono-regular": "{raw.font.weight.mono-regular}",
     "weight-mono-medium": "{raw.font.weight.mono-medium}",
     "weight-mono-bold": "{raw.font.weight.mono-bold}",
@@ -101,6 +102,7 @@
     "text-2xs": "{raw.font.size.2xs}",
     "text-xs": "{raw.font.size.xs}",
     "text-sm": "{raw.font.size.sm}",
+    "text-md": "{raw.font.size.md}",
     "text-base": "{raw.font.size.base}",
     "text-lg": "{raw.font.size.lg}",
     "text-xl": "{raw.font.size.xl}",
@@ -116,7 +118,8 @@
     "tracking-tighter": "{raw.font.letter-spacing.tighter}",
     "tracking-tight": "{raw.font.letter-spacing.tight}",
     "tracking-normal": "{raw.font.letter-spacing.normal}",
-    "tracking-wide": "{raw.font.letter-spacing.wide}"
+    "tracking-wide": "{raw.font.letter-spacing.wide}",
+    "tracking-wider": "{raw.font.letter-spacing.wider}"
   },
 
   "space": {

@@ -405,7 +405,7 @@ pub fn CarDetailPage() -> impl IntoView {
                         }}
                     </div>
                     <div class="car-photo-actions stack" style="gap:0.45rem;flex:1;min-width:0">
-                        <div class="muted" style="font-size:0.85rem;margin:0">
+                        <div class="muted" style="font-size:var(--text-sm);margin:0">
                             "Car image shown on the dashboard. JPEG, PNG, WebP, or GIF · max 8 MB."
                         </div>
                         <div class="car-photo-buttons">
@@ -629,7 +629,7 @@ pub fn CarDetailPage() -> impl IntoView {
                             "Token (copy now — shown once): "
                             <code>{move || last_token.get().map(|t| t.token).unwrap_or_default()}</code>
                         </div>
-                        <p class="muted" style="margin:0;font-size:0.85rem">
+                        <p class="muted" style="margin:0;font-size:var(--text-sm)">
                             "Scan the QR below in the Android app Settings to load URLs, token, and fuel profile."
                         </p>
                     </div>

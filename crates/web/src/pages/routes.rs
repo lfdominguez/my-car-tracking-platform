@@ -249,7 +249,7 @@ pub fn RoutesPage() -> impl IntoView {
                                                 }}
                                             </div>
                                         </div>
-                                        <div class="muted" style="font-size:0.85rem">
+                                        <div class="muted" style="font-size:var(--text-sm)">
                                             {od_label}
                                         </div>
                                         <div class="routes-corridor-metrics">
@@ -343,7 +343,7 @@ pub fn RouteCorridorPage() -> impl IntoView {
                             {rec.variant_label.clone().unwrap_or_else(|| "No recommendation yet".into())}
                         </strong>
                         <p class="muted" style="margin:0.25rem 0 0">{rec.reason.clone()}</p>
-                        <p class="muted" style="margin:0.35rem 0 0;font-size:0.85rem">{via_note}</p>
+                        <p class="muted" style="margin:0.35rem 0 0;font-size:var(--text-sm)">{via_note}</p>
                     </div>
                     <div class="routes-pill-row">
                         {if round_trip {

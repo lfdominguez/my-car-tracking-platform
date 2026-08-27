@@ -507,14 +507,14 @@ pub fn SettingsPage() -> impl IntoView {
                             <div class="session-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.75rem;background:var(--panel-2);border-radius:var(--radius-sm)">
                                 <div style="display:flex;flex-direction:column;gap:0.25rem;min-width:0">
                                     <div style="display:flex;align-items:center;gap:0.5rem">
-                                        <span style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                                        <span style="font-weight:var(--font-weight-body-semibold);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
                                             {s.user_agent.clone().unwrap_or_else(|| "Unknown device".into())}
                                         </span>
                                         <Show when=move || s.current>
                                             <span class="badge editor">"This device"</span>
                                         </Show>
                                     </div>
-                                    <div class="muted" style="font-size:0.875rem">
+                                    <div class="muted" style="font-size:var(--text-md)">
                                         {s.ip.clone().unwrap_or_else(|| "Unknown IP".into())}
                                         " · "
                                         {time_ago(&s.last_seen_at)}
@@ -550,7 +550,7 @@ pub fn SettingsPage() -> impl IntoView {
             </h2>
             <p class="muted">"Last 50 security-related events for your account."</p>
             <div style="margin-top:1rem;overflow-x:auto">
-                <table class="table" style="width:100%;font-size:0.9rem">
+                <table class="table" style="width:100%;font-size:var(--text-md)">
                     <thead>
                         <tr>
                             <th>"Action"</th>

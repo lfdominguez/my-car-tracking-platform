@@ -35,11 +35,11 @@ pub fn LoginPage() -> impl IntoView {
                     <Icon name="google-logo" color=IconColor::Default />
                     "Continue with Google"
                 </a>
-                <a class="muted" href="/" style="font-size:0.9rem;text-align:center">
+                <a class="muted" href="/" style="font-size:var(--text-md);text-align:center">
                     "← Back to home"
                 </a>
                 <Show when=move || allow_dev_login.get()>
-                    <p class="muted" style="font-size:0.85rem">
+                    <p class="muted" style="font-size:var(--text-sm)">
                         "Dev mode: POST /auth/dev-login with ALLOW_DEV_LOGIN=1"
                     </p>
                 </Show>

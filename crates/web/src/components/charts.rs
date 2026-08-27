@@ -117,7 +117,8 @@ function selectionMarkLine(dataIndex, label, showLabel) {
           backgroundColor: 'rgba(190, 24, 93, 0.92)',
           padding: [3, 6],
           borderRadius: 4,
-          fontSize: 11
+          fontSize: 11,
+          fontFamily: "Inter, system-ui, sans-serif"
         }
       : { show: false },
     lineStyle: {
@@ -486,6 +487,15 @@ struct PanelDef {
     series: Vec<ChartSeriesSpec>,
     kind: PanelKind,
 }
+
+/// Chart text faces. ECharts renders to canvas and cannot resolve CSS custom
+/// properties, so these mirror --font-family-body / --font-family-mono from
+/// design-system/tokens/tokens.css and must be kept in sync with them. Without
+/// them every chart label falls back to the browser's default sans and visibly
+/// disagrees with the rest of the UI.
+const CHART_FONT_UI: &str = "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
+const CHART_FONT_NUM: &str =
+    "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace";
 
 /// Healthy closed-loop fuel trim band (percent). Outside this is worth investigating.
 const FUEL_TRIM_HEALTHY_PCT: f64 = 10.0;
@@ -857,7 +867,7 @@ fn shared_chart_chrome(
         "borderWidth": 1,
         "padding": [8, 10],
         "extraCssText": "border-radius:12px;box-shadow:0 12px 32px -12px rgba(0,0,0,0.55);backdrop-filter:blur(6px);",
-        "textStyle": { "color": th.ink, "fontSize": 12 }
+        "textStyle": { "color": th.ink, "fontSize": 12, "fontFamily": CHART_FONT_NUM }
     });
     let legend = serde_json::json!({
         "top": 6,
@@ -956,9 +966,9 @@ fn build_option(
         "nameLocation": "middle",
         "nameGap": 46,
         "nameRotate": 90,
-        "nameTextStyle": { "color": left_color, "fontSize": 11, "padding": [0, 0, 0, 0] },
+        "nameTextStyle": { "color": left_color, "fontSize": 11, "fontFamily": CHART_FONT_UI, "padding": [0, 0, 0, 0] },
         "splitLine": { "lineStyle": { "color": th.grid_line } },
-        "axisLabel": { "color": left_color, "hideOverlap": true },
+        "axisLabel": { "color": left_color, "hideOverlap": true, "fontFamily": CHART_FONT_NUM },
         "axisLine": { "show": true, "lineStyle": { "color": left_color } },
         "axisTick": { "lineStyle": { "color": left_color } },
         "scale": true
@@ -970,9 +980,9 @@ fn build_option(
             "nameLocation": "middle",
             "nameGap": 46,
             "nameRotate": 90,
-            "nameTextStyle": { "color": right_color, "fontSize": 11 },
+            "nameTextStyle": { "color": right_color, "fontSize": 11, "fontFamily": CHART_FONT_UI },
             "splitLine": { "show": false },
-            "axisLabel": { "color": right_color, "hideOverlap": true },
+            "axisLabel": { "color": right_color, "hideOverlap": true, "fontFamily": CHART_FONT_NUM },
             "axisLine": { "show": true, "lineStyle": { "color": right_color } },
             "axisTick": { "lineStyle": { "color": right_color } },
             "scale": true
@@ -1019,6 +1029,7 @@ fn build_option(
         "backgroundColor": "transparent",
         "animation": false,
         "color": colors,
+        "textStyle": { "fontFamily": CHART_FONT_UI },
         "tooltip": tooltip,
         "legend": legend,
         "grid": grid,
@@ -1028,7 +1039,7 @@ fn build_option(
             "data": labels,
             "boundaryGap": false,
             "axisPointer": { "show": true },
-            "axisLabel": { "color": th.muted, "hideOverlap": true, "fontSize": 10 },
+            "axisLabel": { "color": th.muted, "hideOverlap": true, "fontSize": 10, "fontFamily": CHART_FONT_NUM },
             "axisLine": { "lineStyle": { "color": th.border } },
             "axisTick": { "show": false }
         },
@@ -1070,9 +1081,9 @@ fn build_mixture_option(
             "nameLocation": "middle",
             "nameGap": 46,
             "nameRotate": 90,
-            "nameTextStyle": { "color": TRIM_AXIS_COLOR, "fontSize": 11 },
+            "nameTextStyle": { "color": TRIM_AXIS_COLOR, "fontSize": 11, "fontFamily": CHART_FONT_UI },
             "splitLine": { "lineStyle": { "color": mth.grid_line } },
-            "axisLabel": { "color": TRIM_AXIS_COLOR, "hideOverlap": true },
+            "axisLabel": { "color": TRIM_AXIS_COLOR, "hideOverlap": true, "fontFamily": CHART_FONT_NUM },
             "axisLine": { "show": true, "lineStyle": { "color": TRIM_AXIS_COLOR } },
             "axisTick": { "lineStyle": { "color": TRIM_AXIS_COLOR } },
             // Do NOT set min/max to JSON null — ECharts expects a number or omit.
@@ -1085,9 +1096,9 @@ fn build_mixture_option(
                 "nameLocation": "middle",
                 "nameGap": 46,
                 "nameRotate": 90,
-                "nameTextStyle": { "color": LAMBDA_AXIS_COLOR, "fontSize": 11 },
+                "nameTextStyle": { "color": LAMBDA_AXIS_COLOR, "fontSize": 11, "fontFamily": CHART_FONT_UI },
                 "splitLine": { "show": false },
-                "axisLabel": { "color": LAMBDA_AXIS_COLOR, "hideOverlap": true },
+                "axisLabel": { "color": LAMBDA_AXIS_COLOR, "hideOverlap": true, "fontFamily": CHART_FONT_NUM },
                 "axisLine": { "show": true, "lineStyle": { "color": LAMBDA_AXIS_COLOR } },
                 "axisTick": { "lineStyle": { "color": LAMBDA_AXIS_COLOR } },
                 "scale": true
@@ -1201,6 +1212,7 @@ fn build_mixture_option(
         "backgroundColor": "transparent",
         "animation": false,
         "color": ["#22c55e", "#38bdf8", "#a78bfa"],
+        "textStyle": { "fontFamily": CHART_FONT_UI },
         "tooltip": {
             "trigger": "axis",
             "axisPointer": {
@@ -1213,7 +1225,7 @@ fn build_mixture_option(
             "borderColor": mth.border,
             "borderWidth": 1,
             "extraCssText": "border-radius:12px;box-shadow:0 12px 32px -12px rgba(0,0,0,0.55);",
-            "textStyle": { "color": mth.ink, "fontSize": 12 }
+            "textStyle": { "color": mth.ink, "fontSize": 12, "fontFamily": CHART_FONT_NUM }
         },
         "legend": legend,
         "grid": grid,
@@ -1224,7 +1236,7 @@ fn build_mixture_option(
             // Candles need a gap between categories.
             "boundaryGap": true,
             "axisPointer": { "show": true },
-            "axisLabel": { "color": mth.muted, "hideOverlap": true, "fontSize": 10 },
+            "axisLabel": { "color": mth.muted, "hideOverlap": true, "fontSize": 10, "fontFamily": CHART_FONT_NUM },
             "axisLine": { "lineStyle": { "color": mth.border } },
             "axisTick": { "show": false }
         },

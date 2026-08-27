@@ -58,6 +58,9 @@
   <link data-trunk rel="copy-file" href="public/manifest.webmanifest"/>
   <link data-trunk rel="copy-dir" href="public/icons" data-target-path="icons"/>
   <link data-trunk rel="copy-dir" href="public/vendor" data-target-path="vendor"/>
+  <!-- Inter is the primary face for every piece of text in the app, so get it in
+       flight before the CSS that requests it has even been parsed. -->
+  <link rel="preload" href="/vendor/fonts/inter.woff2" as="font" type="font/woff2" crossorigin/>
   <!-- fonts.css is a plain (non-Trunk-processed) stylesheet like the vendor CSS
        below — its url() references need to survive untouched. -->
   <link rel="stylesheet" href="/fonts.css"/>
