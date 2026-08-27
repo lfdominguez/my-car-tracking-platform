@@ -642,13 +642,37 @@ pub fn TripsPage() -> impl IntoView {
     }
 }
 
+/// One label/value row inside a stat panel.
+///
+/// `hint` renders as a tooltip on an info marker rather than a third line, so
+/// every row keeps the same height — the card grid this replaced stretched all
+/// eight tiles to match whichever one carried the longest explanation.
 #[component]
-fn KpiCard(label: &'static str, value: String, hint: Option<String>) -> impl IntoView {
+fn StatRow(
+    label: &'static str,
+    value: String,
+    #[prop(optional_no_strip)] hint: Option<String>,
+) -> impl IntoView {
     view! {
-        <div class="kpi-card">
-            <div class="stat-label">{label}</div>
-            <div class="stat-value kpi-value">{value}</div>
-            {hint.map(|h| view! { <div class="kpi-hint muted">{h}</div> })}
+        <div class="stat-row">
+            <dt class="stat-row-label">
+                {label}
+                {hint
+                    .map(|h| {
+                        view! {
+                            <span
+                                class="stat-row-info"
+                                title=h.clone()
+                                aria-label=h
+                                tabindex="0"
+                                role="note"
+                            >
+                                <Icon name="info" size=IconSize::Sm />
+                            </span>
+                        }
+                    })}
+            </dt>
+            <dd class="stat-row-value">{value}</dd>
         </div>
     }
 }
@@ -906,15 +930,20 @@ pub fn TripDetailPage() -> impl IntoView {
                     {move || {
                         trip.get()
                             .map(|t| {
-                                if t.finished {
-                                    format!("Finished · fuel {}", t.fuel_type_snapshot)
+                                // Sample count is diagnostics, not a headline metric — it
+                                // rides the meta line instead of taking a stat row.
+                                let status = if t.finished {
+                                    "Finished".to_string()
                                 } else {
-                                    let status = open_trip_status_label(
+                                    open_trip_status_label(
                                         t.last_point_at.as_deref(),
                                         &t.started_at,
-                                    );
-                                    format!("{status} · fuel {}", t.fuel_type_snapshot)
-                                }
+                                    )
+                                };
+                                format!(
+                                    "{status} · fuel {} · {} samples",
+                                    t.fuel_type_snapshot, t.point_count,
+                                )
                             })
                             .unwrap_or_else(|| "Loading trip analytics…".into())
                     }}
@@ -1035,33 +1064,45 @@ pub fn TripDetailPage() -> impl IntoView {
                         && t.distance_m.is_some()
                         && t.economy_distance_m != t.distance_m
                     {
-                        "full fuel (incl. idle) ÷ odometer distance".into()
+                        Some("full fuel (incl. idle) ÷ odometer distance".to_string())
                     } else {
-                        "full fuel (incl. idle) ÷ GPS distance".into()
+                        Some("full fuel (incl. idle) ÷ GPS distance".to_string())
                     };
-                    let econ_moving_hint = "fuel while speed ≥ 1 km/h ÷ same distance".into();
+                    let econ_moving_hint =
+                        Some("fuel while speed ≥ 1 km/h ÷ same distance".to_string());
                     let econ_label: &'static str = match p.system {
                         crate::units::UnitSystem::Metric => "Avg L/100km",
                         crate::units::UnitSystem::Us => "Avg mpg",
                     };
-                    let fuel_hint = match t.fuel_from_level_l {
-                        Some(lvl) => format!(
-                            "Type {} · tank gauge ~{}",
-                            t.fuel_type_snapshot,
-                            fmt_fuel(Some(lvl), &p)
-                        ),
-                        None => format!("Type {}", t.fuel_type_snapshot),
-                    };
+                    let fuel_hint = t
+                        .fuel_from_level_l
+                        .map(|lvl| format!("Tank gauge reads ~{}", fmt_fuel(Some(lvl), &p)));
                     view! {
-                        <div class="kpi-grid">
-                            <KpiCard label="Distance" value=fmt_distance(t.distance_m, &prefs.get()) hint=None />
-                            <KpiCard label="Duration" value=fmt_duration(t.duration_s) hint=None />
-                            <KpiCard label="Avg speed" value=fmt_speed(t.avg_speed_kph, &prefs.get()) hint=None />
-                            <KpiCard label="Max speed" value=fmt_speed(t.max_speed_kph, &prefs.get()) hint=None />
-                            <KpiCard label="Fuel used" value=fmt_fuel(t.fuel_used_l, &prefs.get()) hint=Some(fuel_hint) />
-                            <KpiCard label=econ_label value=l100 hint=Some(econ_hint) />
-                            <KpiCard label="While moving" value=l100_moving hint=Some(econ_moving_hint) />
-                            <KpiCard label="Samples" value=format!("{}", t.point_count) hint=None />
+                        <div class="stat-panel-grid">
+                            <section class="stat-panel">
+                                <h2 class="stat-panel-title">
+                                    <Icon name="speedometer" size=IconSize::Sm color=IconColor::Accent />
+                                    "Motion"
+                                </h2>
+                                <dl class="stat-rows">
+                                    <StatRow label="Distance" value=fmt_distance(t.distance_m, &p) />
+                                    <StatRow label="Duration" value=fmt_duration(t.duration_s) />
+                                    <StatRow label="Avg speed" value=fmt_speed(t.avg_speed_kph, &p) />
+                                    <StatRow label="Max speed" value=fmt_speed(t.max_speed_kph, &p) />
+                                </dl>
+                            </section>
+                            <section class="stat-panel">
+                                <h2 class="stat-panel-title">
+                                    <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Accent />
+                                    "Fuel"
+                                </h2>
+                                <dl class="stat-rows">
+                                    <StatRow label="Used" value=fmt_fuel(t.fuel_used_l, &p) hint=fuel_hint />
+                                    <StatRow label="Type" value=t.fuel_type_snapshot.clone() />
+                                    <StatRow label=econ_label value=l100 hint=econ_hint />
+                                    <StatRow label="While moving" value=l100_moving hint=econ_moving_hint />
+                                </dl>
+                            </section>
                         </div>
                     }
                 }
