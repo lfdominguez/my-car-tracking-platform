@@ -360,6 +360,12 @@ async fn upsert_summary(
     frame_count: i32,
     error: Option<&str>,
 ) -> Result<(), JobError> {
+    // Both writes go in one transaction. They are read together -- a client that
+    // sees status = 'ready' immediately reads tracks.traffic_analyzed -- so
+    // committing them separately lets a reader land between the two and observe
+    // a ready summary on a track still flagged unanalyzed.
+    let mut tx = pool.begin().await?;
+
     sqlx::query(
         r#"
         INSERT INTO trip_traffic_summaries (
@@ -384,7 +390,7 @@ async fn upsert_summary(
     .bind(distance_share)
     .bind(frame_count)
     .bind(error)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     // Denormalized trip flag: true only after a successful ready estimate.
@@ -397,8 +403,9 @@ async fn upsert_summary(
     )
     .bind(track_id)
     .bind(status)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
+    tx.commit().await?;
     Ok(())
 }
