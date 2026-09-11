@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use rig::completion::ToolDefinition;
 use rig::tool::{Tool, ToolContext, tool_definition};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::context::TripAnalysisContext;
@@ -61,7 +61,10 @@ pub async fn analyze_trip(
             .await?;
 
         if !turn.tool_calls.is_empty() {
-            messages.push(assistant_tool_call_message(&turn.tool_calls, turn.content.as_deref()));
+            messages.push(assistant_tool_call_message(
+                &turn.tool_calls,
+                turn.content.as_deref(),
+            ));
 
             for tc in &turn.tool_calls {
                 info!(turn = turn_idx, tool = %tc.name, "agent tool call");
@@ -268,15 +271,24 @@ impl ToolBundle {
                 .map_err(|e| e.0),
             GetPointWindow::NAME => {
                 let args: PointWindowArgs = parse_json_args(args_raw)?;
-                self.points.call(&mut ToolContext::new(), args).await.map_err(|e| e.0)
+                self.points
+                    .call(&mut ToolContext::new(), args)
+                    .await
+                    .map_err(|e| e.0)
             }
             EvaluateMath::NAME => {
                 let args: EvaluateMathArgs = parse_json_args(args_raw)?;
-                self.math.call(&mut ToolContext::new(), args).await.map_err(|e| e.0)
+                self.math
+                    .call(&mut ToolContext::new(), args)
+                    .await
+                    .map_err(|e| e.0)
             }
             SubmitAnalysisReport::NAME => {
                 let args: AnalysisReport = parse_json_args(args_raw)?;
-                self.submit.call(&mut ToolContext::new(), args).await.map_err(|e| e.0)
+                self.submit
+                    .call(&mut ToolContext::new(), args)
+                    .await
+                    .map_err(|e| e.0)
             }
             other => Err(format!("unknown tool: {other}")),
         }

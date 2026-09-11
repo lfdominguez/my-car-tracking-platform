@@ -7,10 +7,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::geo::{
-    median_endpoint, path_length_m, path_signature, stop_time_secs, variant_label, LatLon,
-    TimedPoint,
+    LatLon, TimedPoint, median_endpoint, path_length_m, path_signature, stop_time_secs,
+    variant_label,
 };
-use super::insights::{build_insights, InsightDraft};
+use super::insights::{InsightDraft, build_insights};
 use super::ors::OrsClient;
 use super::stats::VariantSample;
 use crate::crypto::{self, KeyRing};
@@ -248,14 +248,7 @@ pub async fn process_finished_track(
         return Err(JobError::Skipped("trip too short"));
     }
 
-    let legs = super::geo::plan_legs(
-        &points,
-        &coords,
-        start,
-        end,
-        distance_m,
-        MIN_DISTANCE_M,
-    );
+    let legs = super::geo::plan_legs(&points, &coords, start, end, distance_m, MIN_DISTANCE_M);
     if legs.is_empty() {
         clear_track_route_assignments(pool, track_id).await?;
         return Err(JobError::Skipped("no usable legs"));
@@ -309,15 +302,9 @@ pub async fn process_finished_track(
         let stop_secs = stop_time_secs(leg_points, 2.0, 60);
         let poly = downsample_polyline(leg_coords, 200);
 
-        let corridor_id = find_or_create_corridor(
-            pool,
-            car_id,
-            leg.start,
-            leg.end,
-            leg.via,
-            leg.is_round_trip,
-        )
-        .await?;
+        let corridor_id =
+            find_or_create_corridor(pool, car_id, leg.start, leg.end, leg.via, leg.is_round_trip)
+                .await?;
 
         let variant_id =
             find_or_create_variant(pool, corridor_id, &signature, track_id, &poly).await?;
@@ -849,13 +836,7 @@ pub async fn rebuild_insights(
         });
     }
 
-    let drafts: Vec<InsightDraft> = build_insights(
-        &labels,
-        &samples,
-        &ors_alts,
-        Utc::now(),
-        3,
-    );
+    let drafts: Vec<InsightDraft> = build_insights(&labels, &samples, &ors_alts, Utc::now(), 3);
 
     sqlx::query(
         r#"

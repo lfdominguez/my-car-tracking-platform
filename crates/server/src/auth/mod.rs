@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use uuid::Uuid;
 
-use crate::audit::{self, actions, AuditEvent};
+use crate::audit::{self, AuditEvent, actions};
 use crate::error::{AppError, AppResult};
 use crate::middleware::client_ip;
 use crate::state::AppState;
@@ -184,9 +184,8 @@ async fn update_me(
     }
 
     if let Some(raw) = body.unit_system.as_deref() {
-        let system = UnitSystem::parse(raw).ok_or_else(|| {
-            AppError::BadRequest("unit_system must be 'metric' or 'us'".into())
-        })?;
+        let system = UnitSystem::parse(raw)
+            .ok_or_else(|| AppError::BadRequest("unit_system must be 'metric' or 'us'".into()))?;
         sqlx::query(
             r#"
             UPDATE users
@@ -203,7 +202,9 @@ async fn update_me(
     if let Some(model) = body.openrouter_model.as_ref() {
         let model = model.trim();
         if model.is_empty() {
-            return Err(AppError::BadRequest("openrouter_model must not be empty".into()));
+            return Err(AppError::BadRequest(
+                "openrouter_model must not be empty".into(),
+            ));
         }
         if model.len() > 200 {
             return Err(AppError::BadRequest("openrouter_model is too long".into()));

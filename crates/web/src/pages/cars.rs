@@ -3,15 +3,15 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    create_car, create_device, create_share, get_car, list_cars, list_devices, list_shares,
-    provisioning, provisioning_payload_json, revoke_device, update_car, upload_car_photo, Car,
-    CreateDeviceResponse, Device, Share,
+    Car, CreateDeviceResponse, Device, Share, create_car, create_device, create_share, get_car,
+    list_cars, list_devices, list_shares, provisioning, provisioning_payload_json, revoke_device,
+    update_car, upload_car_photo,
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
 use crate::vault::{
-    decrypt_car_profile, load_car_dek, put_car_profile, use_vault_session, wrap_and_upload_dek,
-    CarProfileV1, VaultUnlockGate,
+    CarProfileV1, VaultUnlockGate, decrypt_car_profile, load_car_dek, put_car_profile,
+    use_vault_session, wrap_and_upload_dek,
 };
 
 fn placeholder_vault_names(sess: &crate::vault::VaultSession, mut c: Vec<Car>) -> Vec<Car> {
@@ -284,71 +284,71 @@ pub fn CarDetailPage() -> impl IntoView {
     Effect::new({
         let vault = vault.clone();
         move |_| {
-        let id = params.with(|p| p.get("id").unwrap_or_default());
-        if id.is_empty() {
-            return;
-        }
-        let id2 = id.clone();
-        let sess = vault.clone();
-        leptos::task::spawn_local(async move {
-            match get_car(&id2).await {
-                Ok(mut c) => {
-                    if c.vault_sealed && sess.is_unlocked() {
-                        match decrypt_car_profile(&sess, &id2).await {
-                            Ok(Some(p)) => {
-                                c.name = p.name.clone();
-                                c.make_model = p.make_model.clone();
-                                c.fuel_type = p.fuel_type.clone();
-                                c.fuel_class = p.fuel_class.clone();
-                                c.battery_capacity_kwh = p.battery_capacity_kwh;
-                                c.stoich_afr = p.stoich_afr;
-                                c.density_gl = p.density_gl;
-                                c.displacement_l = p.displacement_l;
-                                c.ve = p.ve;
-                                c.notes = p.notes.clone();
+            let id = params.with(|p| p.get("id").unwrap_or_default());
+            if id.is_empty() {
+                return;
+            }
+            let id2 = id.clone();
+            let sess = vault.clone();
+            leptos::task::spawn_local(async move {
+                match get_car(&id2).await {
+                    Ok(mut c) => {
+                        if c.vault_sealed && sess.is_unlocked() {
+                            match decrypt_car_profile(&sess, &id2).await {
+                                Ok(Some(p)) => {
+                                    c.name = p.name.clone();
+                                    c.make_model = p.make_model.clone();
+                                    c.fuel_type = p.fuel_type.clone();
+                                    c.fuel_class = p.fuel_class.clone();
+                                    c.battery_capacity_kwh = p.battery_capacity_kwh;
+                                    c.stoich_afr = p.stoich_afr;
+                                    c.density_gl = p.density_gl;
+                                    c.displacement_l = p.displacement_l;
+                                    c.ve = p.ve;
+                                    c.notes = p.notes.clone();
+                                }
+                                Ok(None) => {
+                                    error.set(Some("Vault car has no sealed profile yet.".into()));
+                                }
+                                Err(e) => error.set(Some(e)),
                             }
-                            Ok(None) => {
-                                error.set(Some(
-                                    "Vault car has no sealed profile yet.".into(),
-                                ));
-                            }
-                            Err(e) => error.set(Some(e)),
                         }
+                        name.set(c.name.clone());
+                        make_model.set(c.make_model.clone());
+                        fuel_type.set(c.fuel_type.clone());
+                        fuel_class.set(if c.fuel_class.is_empty() {
+                            "GASOLINE".into()
+                        } else {
+                            c.fuel_class.clone()
+                        });
+                        battery_kwh.set(
+                            c.battery_capacity_kwh
+                                .map(|v| v.to_string())
+                                .unwrap_or_default(),
+                        );
+                        stoich.set(c.stoich_afr.to_string());
+                        density.set(c.density_gl.to_string());
+                        displacement.set(c.displacement_l.to_string());
+                        ve.set(c.ve.to_string());
+                        is_default.set(
+                            crate::default_car::load_default_car_id().as_deref()
+                                == Some(id2.as_str()),
+                        );
+                        car.set(Some(c));
                     }
-                    name.set(c.name.clone());
-                    make_model.set(c.make_model.clone());
-                    fuel_type.set(c.fuel_type.clone());
-                    fuel_class.set(if c.fuel_class.is_empty() {
-                        "GASOLINE".into()
-                    } else {
-                        c.fuel_class.clone()
-                    });
-                    battery_kwh.set(
-                        c.battery_capacity_kwh
-                            .map(|v| v.to_string())
-                            .unwrap_or_default(),
-                    );
-                    stoich.set(c.stoich_afr.to_string());
-                    density.set(c.density_gl.to_string());
-                    displacement.set(c.displacement_l.to_string());
-                    ve.set(c.ve.to_string());
-                    is_default.set(
-                        crate::default_car::load_default_car_id().as_deref() == Some(id2.as_str()),
-                    );
-                    car.set(Some(c));
+                    Err(e) => error.set(Some(e.to_string())),
                 }
-                Err(e) => error.set(Some(e.to_string())),
-            }
-            match list_devices(&id2).await {
-                Ok(d) => devices.set(d),
-                Err(e) => error.set(Some(e.to_string())),
-            }
-            match list_shares(&id2).await {
-                Ok(s) => shares.set(s),
-                Err(e) => error.set(Some(e.to_string())),
-            }
-        });
-    }});
+                match list_devices(&id2).await {
+                    Ok(d) => devices.set(d),
+                    Err(e) => error.set(Some(e.to_string())),
+                }
+                match list_shares(&id2).await {
+                    Ok(s) => shares.set(s),
+                    Err(e) => error.set(Some(e.to_string())),
+                }
+            });
+        }
+    });
 
     view! {
         <div class="topbar">

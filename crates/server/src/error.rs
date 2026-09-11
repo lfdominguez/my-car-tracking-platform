@@ -1,6 +1,6 @@
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 use thiserror::Error;
 
@@ -40,10 +40,7 @@ impl IntoResponse for AppError {
             AppError::Conflict(m) => (StatusCode::CONFLICT, m.clone()),
             AppError::Db(e) => {
                 tracing::error!(error = %e, "database error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Database error".into(),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, "Database error".into())
             }
             AppError::Other(e) => {
                 tracing::error!(error = %e, "internal error");
@@ -51,10 +48,7 @@ impl IntoResponse for AppError {
             }
             AppError::Internal(m) => {
                 tracing::error!(error = %m, "internal error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "System Error".into(),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, "System Error".into())
             }
         };
 

@@ -4,11 +4,11 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::mcp::token::clamp_list_limit;
-use crate::trips::stats;
 use crate::shares::access::can_read_car;
+use crate::trips::stats;
 use crate::units::{convert_distance_m, convert_fuel_l, convert_speed_kph};
 
-use super::{reject_vault, ToolCtx};
+use super::{ToolCtx, reject_vault};
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct TripRow {

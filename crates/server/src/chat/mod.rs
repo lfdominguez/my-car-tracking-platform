@@ -19,7 +19,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 

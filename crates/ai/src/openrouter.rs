@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use reqwest::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::error::AiError;
@@ -300,8 +300,8 @@ impl OpenRouterClient {
         let mut stream = response.bytes_stream();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|e| TransportErr::from_reqwest("openrouter stream chunk", e))?;
+            let chunk =
+                chunk.map_err(|e| TransportErr::from_reqwest("openrouter stream chunk", e))?;
             buf.push_str(&String::from_utf8_lossy(&chunk));
 
             // SSE frames are newline-delimited; keep any trailing partial line.
@@ -394,7 +394,10 @@ impl StreamAccumulator {
         }
 
         if self.model.is_none() {
-            self.model = value.get("model").and_then(|m| m.as_str()).map(String::from);
+            self.model = value
+                .get("model")
+                .and_then(|m| m.as_str())
+                .map(String::from);
         }
 
         let Some(choice) = value
@@ -540,7 +543,8 @@ fn is_transient_reqwest(e: &reqwest::Error) -> bool {
         || e.is_request()
         || e.is_body()
         || e.is_decode()
-        || e.status().is_some_and(|s| s.as_u16() == 429 || s.is_server_error())
+        || e.status()
+            .is_some_and(|s| s.as_u16() == 429 || s.is_server_error())
 }
 
 /// reqwest Display often stops at "error decoding response body"; chain sources.
@@ -567,7 +571,10 @@ pub(crate) fn format_reqwest_error(e: &reqwest::Error) -> String {
     parts.join(" | ")
 }
 
-pub(crate) fn parse_chat_response(status: StatusCode, text: &str) -> Result<AssistantTurn, AiError> {
+pub(crate) fn parse_chat_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<AssistantTurn, AiError> {
     let value: Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => {
@@ -580,7 +587,13 @@ pub(crate) fn parse_chat_response(status: StatusCode, text: &str) -> Result<Assi
 
     if let Some(msg) = extract_error_message(&value) {
         // Prefer explicit error payloads even on 200
-        if !status.is_success() || value.get("choices").and_then(|c| c.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
+        if !status.is_success()
+            || value
+                .get("choices")
+                .and_then(|c| c.as_array())
+                .map(|a| a.is_empty())
+                .unwrap_or(true)
+        {
             return Err(AiError::Agent(format!(
                 "openrouter error (HTTP {status}): {msg}"
             )));
@@ -592,9 +605,7 @@ pub(crate) fn parse_chat_response(status: StatusCode, text: &str) -> Result<Assi
     if !status.is_success() {
         let msg = extract_error_message(&value)
             .unwrap_or_else(|| truncate(text, MAX_BODY_LOG).to_string());
-        return Err(AiError::Agent(format!(
-            "openrouter HTTP {status}: {msg}"
-        )));
+        return Err(AiError::Agent(format!("openrouter HTTP {status}: {msg}")));
     }
 
     let choices = value
@@ -608,8 +619,7 @@ pub(crate) fn parse_chat_response(status: StatusCode, text: &str) -> Result<Assi
         })?;
 
     if choices.is_empty() {
-        let msg = extract_error_message(&value)
-            .unwrap_or_else(|| "empty choices".into());
+        let msg = extract_error_message(&value).unwrap_or_else(|| "empty choices".into());
         return Err(AiError::Agent(format!(
             "openrouter returned no choices: {msg}"
         )));
@@ -705,11 +715,7 @@ fn extract_text_content(content: Option<&Value>) -> Option<String> {
         Value::Null => None,
         Value::String(s) => {
             let t = s.trim();
-            if t.is_empty() {
-                None
-            } else {
-                Some(s.clone())
-            }
+            if t.is_empty() { None } else { Some(s.clone()) }
         }
         Value::Array(parts) => {
             let mut out = String::new();
@@ -721,11 +727,7 @@ fn extract_text_content(content: Option<&Value>) -> Option<String> {
                 }
             }
             let t = out.trim();
-            if t.is_empty() {
-                None
-            } else {
-                Some(out)
-            }
+            if t.is_empty() { None } else { Some(out) }
         }
         Value::Object(map) => {
             // Rare: single content object
@@ -1037,7 +1039,9 @@ mod tests {
         let mut acc = StreamAccumulator::default();
         feed(
             &mut acc,
-            &[r#"data: {"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#],
+            &[
+                r#"data: {"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#,
+            ],
         );
         assert_eq!(acc.finish().unwrap().content.as_deref(), Some("done"));
     }

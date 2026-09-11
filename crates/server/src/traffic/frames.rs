@@ -2,9 +2,9 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::route_opt::{haversine_m, LatLon};
+use crate::route_opt::{LatLon, haversine_m};
 
-use super::score::{level_from_ratio, TrafficLevel};
+use super::score::{TrafficLevel, level_from_ratio};
 
 pub const FRAME_DIST_M: f64 = 80.0;
 pub const FRAME_TIME_SECS: f64 = 10.0;
@@ -179,8 +179,8 @@ pub fn label_frames(frames: &mut [ScoredFrame]) {
             i += 1;
         }
         let end = i; // exclusive
-        let dur = (frames[end - 1].frame.t_end - frames[start].frame.t_start)
-            .num_milliseconds() as f64
+        let dur = (frames[end - 1].frame.t_end - frames[start].frame.t_start).num_milliseconds()
+            as f64
             / 1000.0;
         if !(15.0..=180.0).contains(&dur) {
             continue;
@@ -310,11 +310,17 @@ mod tests {
     fn frames_split_by_distance_or_time() {
         let pts = path_north(20, 50.0);
         let frames = build_frames(&pts);
-        assert!(frames.len() >= 3, "expected several frames, got {}", frames.len());
+        assert!(
+            frames.len() >= 3,
+            "expected several frames, got {}",
+            frames.len()
+        );
         for f in &frames {
             let dur = (f.t_end - f.t_start).num_milliseconds() as f64 / 1000.0;
             assert!(
-                f.distance_m + 1.0 >= FRAME_DIST_M || dur + 0.5 >= FRAME_TIME_SECS || f.seq == frames.last().unwrap().seq,
+                f.distance_m + 1.0 >= FRAME_DIST_M
+                    || dur + 0.5 >= FRAME_TIME_SECS
+                    || f.seq == frames.last().unwrap().seq,
                 "frame seq={} dist={} dur={}",
                 f.seq,
                 f.distance_m,
@@ -403,9 +409,10 @@ mod tests {
             scored.iter().map(|f| f.level.as_str()).collect::<Vec<_>>()
         );
         assert!(
-            scored
-                .iter()
-                .any(|f| matches!(f.level, TrafficLevel::Heavy | TrafficLevel::Jam | TrafficLevel::Moderate)),
+            scored.iter().any(|f| matches!(
+                f.level,
+                TrafficLevel::Heavy | TrafficLevel::Jam | TrafficLevel::Moderate
+            )),
             "expected congested levels"
         );
     }

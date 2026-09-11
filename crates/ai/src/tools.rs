@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use rig::tool::{Tool, ToolContext};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::{SamplePoint, TripAnalysisContext};
 use crate::error::AiError;
@@ -69,7 +69,11 @@ impl Tool for GetTripOverview {
         })
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let o = &self.ctx.0.overview;
         let payload = json!({
             "overview": o,
@@ -106,7 +110,11 @@ impl Tool for GetSpeedProfile {
         json!({ "type": "object", "properties": {} })
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.speed)
     }
 }
@@ -132,7 +140,11 @@ impl Tool for GetEngineStats {
         json!({ "type": "object", "properties": {} })
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.engine)
     }
 }
@@ -158,7 +170,11 @@ impl Tool for GetFuelMixtureStats {
         json!({ "type": "object", "properties": {} })
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.fuel)
     }
 }
@@ -184,7 +200,11 @@ impl Tool for GetThermalElectricalStats {
         json!({ "type": "object", "properties": {} })
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.thermal)
     }
 }
@@ -210,7 +230,11 @@ impl Tool for GetStopSummary {
         json!({ "type": "object", "properties": {} })
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.stops)
     }
 }
@@ -236,7 +260,11 @@ impl Tool for GetTrafficSummary {
         json!({ "type": "object", "properties": {} })
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.traffic)
     }
 }
@@ -262,7 +290,11 @@ impl Tool for GetRoutePositionProfile {
         json!({ "type": "object", "properties": {} })
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         dump(&self.ctx.0.route_positions)
     }
 }
@@ -319,13 +351,13 @@ impl Tool for GetPointWindow {
         })
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let payload = build_point_window_payload(
-            &self.ctx.0.samples,
-            args.start,
-            args.end,
-            args.limit,
-        );
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
+        let payload =
+            build_point_window_payload(&self.ctx.0.samples, args.start, args.end, args.limit);
         dump(&payload)
     }
 }
@@ -361,9 +393,7 @@ pub fn build_point_window_payload(
 
     let first = matched[0];
     let last = matched[matched.len() - 1];
-    let duration_secs = (last.recorded_at - first.recorded_at)
-        .num_milliseconds() as f64
-        / 1000.0;
+    let duration_secs = (last.recorded_at - first.recorded_at).num_milliseconds() as f64 / 1000.0;
 
     let mut summary = serde_json::Map::new();
     if let Some(s) = metric_avg_stats(matched.iter().filter_map(|p| p.speed_kph)) {
@@ -399,16 +429,17 @@ pub fn build_point_window_payload(
         summary.insert("start_lat".into(), json!(p.lat));
         summary.insert("start_lon".into(), json!(p.lon));
     }
-    if let Some(p) = matched.iter().rev().find(|p| p.lat.is_some() && p.lon.is_some()) {
+    if let Some(p) = matched
+        .iter()
+        .rev()
+        .find(|p| p.lat.is_some() && p.lon.is_some())
+    {
         summary.insert("end_lat".into(), json!(p.lat));
         summary.insert("end_lon".into(), json!(p.lon));
     }
 
     let idxs = even_anchor_indices(matched.len(), limit);
-    let anchors: Vec<Value> = idxs
-        .iter()
-        .map(|&i| slim_anchor(matched[i]))
-        .collect();
+    let anchors: Vec<Value> = idxs.iter().map(|&i| slim_anchor(matched[i])).collect();
 
     json!({
         "matched_count": matched.len(),
@@ -544,7 +575,11 @@ impl Tool for EvaluateMath {
         })
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let out = evaluate_expression(&args.expression, &args.variables);
         dump(&out)
     }
@@ -582,9 +617,7 @@ pub fn coerce_math_variables(value: Value) -> Result<BTreeMap<String, f64>, Stri
                 Err(parse_err) => {
                     // Common failure: double-encoded object with bare expressions
                     // e.g. "{\"x\": 1, \"y\": 0.4 * 0.6}" — invalid JSON because of `*`.
-                    if trimmed.starts_with('{')
-                        && trimmed.contains(|c| matches!(c, '*' | '/'))
-                    {
+                    if trimmed.starts_with('{') && trimmed.contains(|c| matches!(c, '*' | '/')) {
                         return Err(format!(
                             "`variables` was a string that is not valid JSON ({parse_err}). \
                              Likely a formula was embedded in a value (e.g. 0.4 * 0.6). \
@@ -608,9 +641,7 @@ pub fn coerce_math_variables(value: Value) -> Result<BTreeMap<String, f64>, Stri
     }
 }
 
-fn object_to_f64_map(
-    map: serde_json::Map<String, Value>,
-) -> Result<BTreeMap<String, f64>, String> {
+fn object_to_f64_map(map: serde_json::Map<String, Value>) -> Result<BTreeMap<String, f64>, String> {
     let mut out = BTreeMap::new();
     for (key, val) in map {
         out.insert(key.clone(), coerce_variable_number(&key, &val)?);
@@ -620,9 +651,10 @@ fn object_to_f64_map(
 
 fn coerce_variable_number(key: &str, val: &Value) -> Result<f64, String> {
     match val {
-        Value::Number(n) => n.as_f64().filter(|v| v.is_finite()).ok_or_else(|| {
-            format!("variable `{key}` is not a finite number")
-        }),
+        Value::Number(n) => n
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| format!("variable `{key}` is not a finite number")),
         Value::String(s) => {
             let s = s.trim();
             if s.is_empty() {
@@ -648,9 +680,7 @@ fn coerce_variable_number(key: &str, val: &Value) -> Result<f64, String> {
         Value::Null => Err(format!(
             "variable `{key}` is null; omit it or pass a number"
         )),
-        other => Err(format!(
-            "variable `{key}` must be a number, got {other}"
-        )),
+        other => Err(format!("variable `{key}` must be a number, got {other}")),
     }
 }
 
@@ -761,7 +791,11 @@ impl Tool for SubmitAnalysisReport {
         })
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         args.validate().map_err(ToolErr)?;
         let mut guard = self
             .slot
@@ -878,7 +912,10 @@ mod tests {
         let tool = GetRoutePositionProfile {
             ctx: CtxHandle(Arc::new(ctx)),
         };
-        let out = tool.call(&mut ToolContext::new(), EmptyArgs {}).await.unwrap();
+        let out = tool
+            .call(&mut ToolContext::new(), EmptyArgs {})
+            .await
+            .unwrap();
         assert!(out.contains("service_access"));
         assert!(out.contains("\"available\": true") || out.contains("\"available\":true"));
     }
@@ -897,7 +934,10 @@ mod tests {
         let tool = GetTrafficSummary {
             ctx: CtxHandle(Arc::new(ctx)),
         };
-        let out = tool.call(&mut ToolContext::new(), EmptyArgs {}).await.unwrap();
+        let out = tool
+            .call(&mut ToolContext::new(), EmptyArgs {})
+            .await
+            .unwrap();
         assert!(out.contains("\"available\": true") || out.contains("\"available\":true"));
         assert!(out.contains("0.42"));
         assert!(out.contains("ready"));
@@ -907,7 +947,10 @@ mod tests {
     async fn overview_tool_returns_json() {
         let ctx = CtxHandle(Arc::new(sample_ctx()));
         let tool = GetTripOverview { ctx };
-        let out = tool.call(&mut ToolContext::new(), EmptyArgs {}).await.unwrap();
+        let out = tool
+            .call(&mut ToolContext::new(), EmptyArgs {})
+            .await
+            .unwrap();
         assert!(out.contains("Test"));
         assert!(out.contains("distance_m"));
     }
@@ -916,13 +959,13 @@ mod tests {
     async fn evaluate_math_tool_works() {
         let tool = EvaluateMath;
         let out = tool
-            .call(&mut ToolContext::new(), EvaluateMathArgs {
-                expression: "l_per_100km(fuel_l, dist_km)".into(),
-                variables: BTreeMap::from([
-                    ("fuel_l".into(), 2.0),
-                    ("dist_km".into(), 25.0),
-                ]),
-            })
+            .call(
+                &mut ToolContext::new(),
+                EvaluateMathArgs {
+                    expression: "l_per_100km(fuel_l, dist_km)".into(),
+                    variables: BTreeMap::from([("fuel_l".into(), 2.0), ("dist_km".into(), 25.0)]),
+                },
+            )
             .await
             .unwrap();
         assert!(out.contains("8.0") || out.contains("\"result\": 8"));
@@ -968,7 +1011,10 @@ mod tests {
         // Exact shape from production warn: stringified map + bare `*` (invalid JSON).
         let bad = r#"{"hard_accel_events": 113, "hard_brake_events": 98, "moving_hours": 0.4268847830555556 * 0.6371335504885993}"#;
         let err = coerce_math_variables(Value::String(bad.into())).unwrap_err();
-        assert!(err.contains("expression") || err.contains("formula") || err.contains("not valid JSON"), "err={err}");
+        assert!(
+            err.contains("expression") || err.contains("formula") || err.contains("not valid JSON"),
+            "err={err}"
+        );
     }
 
     #[test]
@@ -1047,18 +1093,24 @@ mod tests {
     fn point_window_summary_and_slim_anchors() {
         let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let samples: Vec<_> = (0..20)
-            .map(|i| sp(t0, i, 10.0 + i as f64, 1500.0 + i as f64 * 50.0, Some(20.0 + i as f64)))
+            .map(|i| {
+                sp(
+                    t0,
+                    i,
+                    10.0 + i as f64,
+                    1500.0 + i as f64 * 50.0,
+                    Some(20.0 + i as f64),
+                )
+            })
             .collect();
         // Request a huge limit — must clamp to max 8 anchors, not dump 20 fat points.
-        let out = build_point_window_payload(
-            &samples,
-            t0,
-            t0 + chrono::Duration::seconds(19),
-            50,
-        );
+        let out = build_point_window_payload(&samples, t0, t0 + chrono::Duration::seconds(19), 50);
         assert_eq!(out["matched_count"], 20);
         assert_eq!(out["anchor_count"], MAX_POINT_WINDOW_ANCHORS);
-        assert!(out.get("points").is_none(), "legacy raw points key must be gone");
+        assert!(
+            out.get("points").is_none(),
+            "legacy raw points key must be gone"
+        );
 
         let speed = &out["summary"]["speed_kph"];
         assert_eq!(speed["min"], 10.0);
@@ -1073,10 +1125,7 @@ mod tests {
         let anchors = out["anchors"].as_array().unwrap();
         assert_eq!(anchors.len(), MAX_POINT_WINDOW_ANCHORS);
         // first/last preserved
-        assert_eq!(
-            anchors[0]["recorded_at"],
-            json!(t0)
-        );
+        assert_eq!(anchors[0]["recorded_at"], json!(t0));
         assert_eq!(
             anchors.last().unwrap()["recorded_at"],
             json!(t0 + chrono::Duration::seconds(19))
@@ -1108,11 +1157,14 @@ mod tests {
             ctx: CtxHandle(Arc::new(ctx)),
         };
         let out = tool
-            .call(&mut ToolContext::new(), PointWindowArgs {
-                start: t0,
-                end: t0 + chrono::Duration::seconds(9),
-                limit: 5,
-            })
+            .call(
+                &mut ToolContext::new(),
+                PointWindowArgs {
+                    start: t0,
+                    end: t0 + chrono::Duration::seconds(9),
+                    limit: 5,
+                },
+            )
             .await
             .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();

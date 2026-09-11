@@ -3,8 +3,8 @@
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -24,10 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/vault/enable", post(vault_enable))
         .route("/api/vault/activate", post(vault_activate))
         .route("/api/vault/objects", put(put_object).get(get_objects))
-        .route(
-            "/api/vault/cars/{id}/deks",
-            get(list_deks).put(upsert_dek),
-        )
+        .route("/api/vault/cars/{id}/deks", get(list_deks).put(upsert_dek))
         .route(
             "/api/vault/cars/{id}/deks/{recipient_user_id}",
             axum::routing::delete(delete_dek),
@@ -43,24 +40,21 @@ pub fn router() -> Router<AppState> {
 // --- helpers ----------------------------------------------------------------
 
 pub async fn user_vault_status(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<String> {
-    let status = sqlx::query_scalar::<_, String>(
-        "SELECT vault_status FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await?
-    .unwrap_or_else(|| "disabled".into());
+    let status = sqlx::query_scalar::<_, String>("SELECT vault_status FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or_else(|| "disabled".into());
     Ok(status)
 }
 
 pub async fn owner_vault_active(pool: &sqlx::PgPool, owner_user_id: Uuid) -> AppResult<bool> {
-    let active = sqlx::query_scalar::<_, bool>(
-        "SELECT vault_status = 'active' FROM users WHERE id = $1",
-    )
-    .bind(owner_user_id)
-    .fetch_optional(pool)
-    .await?
-    .unwrap_or(false);
+    let active =
+        sqlx::query_scalar::<_, bool>("SELECT vault_status = 'active' FROM users WHERE id = $1")
+            .bind(owner_user_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(false);
     Ok(active)
 }
 
@@ -122,10 +116,11 @@ async fn vault_status(
     .fetch_one(&state.pool)
     .await?;
 
-    let owned_cars = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM cars WHERE owner_user_id = $1")
-        .bind(user.id)
-        .fetch_one(&state.pool)
-        .await?;
+    let owned_cars =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM cars WHERE owner_user_id = $1")
+            .bind(user.id)
+            .fetch_one(&state.pool)
+            .await?;
 
     let cars_with_owner_dek = sqlx::query_scalar::<_, i64>(
         r#"
@@ -465,7 +460,9 @@ async fn get_objects(
     .fetch_all(&state.pool)
     .await?;
 
-    Ok(Json(rows.into_iter().map(VaultObjectResponse::from).collect()))
+    Ok(Json(
+        rows.into_iter().map(VaultObjectResponse::from).collect(),
+    ))
 }
 
 // --- DEK wraps --------------------------------------------------------------
@@ -602,13 +599,12 @@ async fn delete_dek(
     Path((car_id, recipient_user_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_owner(&state.pool, user.id, car_id).await?;
-    let res = sqlx::query(
-        "DELETE FROM vault_car_deks WHERE car_id = $1 AND recipient_user_id = $2",
-    )
-    .bind(car_id)
-    .bind(recipient_user_id)
-    .execute(&state.pool)
-    .await?;
+    let res =
+        sqlx::query("DELETE FROM vault_car_deks WHERE car_id = $1 AND recipient_user_id = $2")
+            .bind(car_id)
+            .bind(recipient_user_id)
+            .execute(&state.pool)
+            .await?;
 
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
@@ -790,7 +786,11 @@ async fn create_job(
         Err(e) => {
             let msg = e.to_string();
             tracing::warn!(job_id = %id, error = %msg, "vault job failed");
-            ("failed".to_string(), Some(msg.chars().take(500).collect()), None)
+            (
+                "failed".to_string(),
+                Some(msg.chars().take(500).collect()),
+                None,
+            )
         }
     };
 
@@ -853,9 +853,8 @@ async fn run_vault_ai_job(
         .get("context")
         .cloned()
         .ok_or_else(|| AppError::BadRequest("ai_analysis bundle requires context".into()))?;
-    let ctx: ai::TripAnalysisContext = serde_json::from_value(ctx_val).map_err(|e| {
-        AppError::BadRequest(format!("invalid analysis context: {e}"))
-    })?;
+    let ctx: ai::TripAnalysisContext = serde_json::from_value(ctx_val)
+        .map_err(|e| AppError::BadRequest(format!("invalid analysis context: {e}")))?;
 
     let creds = sqlx::query(
         r#"

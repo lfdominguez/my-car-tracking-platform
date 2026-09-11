@@ -1,20 +1,20 @@
 //! Encrypt/decrypt helpers and migration for vault objects (WASM).
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::speed_events::{self, MotionSample, SpeedEventThresholds, SpeedSample};
 use uuid::Uuid;
 use vault_crypto::{
-    aad_v1, decrypt_object, encrypt_object, generate_dek, unwrap_dek, wrap_dek, Dek, IdentityPublic,
-    WrappedDek, WRAP_ALG_V1,
+    Dek, IdentityPublic, WRAP_ALG_V1, WrappedDek, aad_v1, decrypt_object, encrypt_object,
+    generate_dek, unwrap_dek, wrap_dek,
 };
 
 use crate::api::{
-    get_car, get_me, list_cars, list_trips, trip_points, vault_get_objects, vault_list_deks,
-    vault_migration_clear_car, vault_put_dek, vault_put_object, vault_status, Car, Trip, TripPoint,
-    VaultObject,
+    Car, Trip, TripPoint, VaultObject, get_car, get_me, list_cars, list_trips, trip_points,
+    vault_get_objects, vault_list_deks, vault_migration_clear_car, vault_put_dek, vault_put_object,
+    vault_status,
 };
 
 use super::VaultSession;
@@ -120,7 +120,9 @@ pub async fn load_car_dek(session: &VaultSession, car_id: &str) -> Result<Dek, S
         .get("wrapped_dek_b64")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "wrap missing blob".to_string())?;
-    let blob = B64.decode(b64.trim()).map_err(|e| format!("wrap b64: {e}"))?;
+    let blob = B64
+        .decode(b64.trim())
+        .map_err(|e| format!("wrap b64: {e}"))?;
     let wrapped = WrappedDek::from_blob(blob).map_err(|e| e.to_string())?;
     session
         .with_secret(|secret, _| unwrap_dek(&wrapped, secret).map_err(|e| e.to_string()))
@@ -246,15 +248,7 @@ pub async fn seal_ai_report(
     let car_uuid = parse_uuid(car_id)?;
     let track_uuid = parse_uuid(track_id)?;
     let plain = serde_json::to_vec(report).map_err(|e| e.to_string())?;
-    let body = encrypt_put(
-        &dek,
-        car_uuid,
-        "ai_report",
-        track_uuid,
-        None,
-        1,
-        &plain,
-    )?;
+    let body = encrypt_put(&dek, car_uuid, "ai_report", track_uuid, None, 1, &plain)?;
     vault_put_object(body).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -305,13 +299,14 @@ pub fn build_analysis_context_json(
             Some(SpeedSample {
                 t,
                 speed_kph: p.vehicle_speed_kph.or(p.engine_vel),
-                motion: p.accel_peak_mps2.zip(p.accel_rms_mps2).map(
-                    |(peak_mps2, rms_mps2)| MotionSample {
+                motion: p
+                    .accel_peak_mps2
+                    .zip(p.accel_rms_mps2)
+                    .map(|(peak_mps2, rms_mps2)| MotionSample {
                         peak_mps2,
                         rms_mps2,
                         tilt_delta_deg: p.device_tilt_delta_deg,
-                    },
-                ),
+                    }),
             })
         })
         .collect();
@@ -529,5 +524,3 @@ pub async fn migrate_all_owned(session: &VaultSession) -> Result<String, String>
     }
     Ok(format!("Migrated {total} car(s)"))
 }
-
-

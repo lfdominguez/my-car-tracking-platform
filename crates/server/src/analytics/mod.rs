@@ -114,11 +114,11 @@ async fn summary(
     );
     let global = sqlx::query_as::<_, GlobalSummaryRow>(sqlx::AssertSqlSafe(global_sql.as_str()))
         .bind(user.id)
-    .bind(q.car_id)
-    .bind(q.from)
-    .bind(q.to)
-    .fetch_one(&state.pool)
-    .await?;
+        .bind(q.car_id)
+        .bind(q.from)
+        .bind(q.to)
+        .fetch_one(&state.pool)
+        .await?;
 
     let car_sql = format!(
         r#"
@@ -266,11 +266,11 @@ async fn summary(
     );
     let car_rows = sqlx::query_as::<_, CarDashboardSummary>(sqlx::AssertSqlSafe(car_sql.as_str()))
         .bind(user.id)
-    .bind(q.car_id)
-    .bind(q.from)
-    .bind(q.to)
-    .fetch_all(&state.pool)
-    .await?;
+        .bind(q.car_id)
+        .bind(q.from)
+        .bind(q.to)
+        .fetch_all(&state.pool)
+        .await?;
 
     let system = user.unit_system;
     let cars = car_rows

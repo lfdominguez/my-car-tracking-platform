@@ -14,7 +14,7 @@ use shared::ProvisioningPayload;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
-use crate::audit::{self, actions, AuditEvent};
+use crate::audit::{self, AuditEvent, actions};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::middleware::client_ip;
@@ -27,7 +27,10 @@ pub fn router() -> Router<AppState> {
             "/api/cars/{car_id}/devices",
             get(list_devices).post(create_device),
         )
-        .route("/api/cars/{car_id}/devices/{device_id}", axum::routing::delete(revoke_device))
+        .route(
+            "/api/cars/{car_id}/devices/{device_id}",
+            axum::routing::delete(revoke_device),
+        )
         .route(
             "/api/cars/{car_id}/devices/{device_id}/provisioning",
             post(provisioning),
@@ -187,7 +190,9 @@ async fn revoke_device(
             },
         )
         .await;
-        return Ok(Json(serde_json::json!({ "ok": true, "already_revoked": false })));
+        return Ok(Json(
+            serde_json::json!({ "ok": true, "already_revoked": false }),
+        ));
     }
 
     let exists: Option<(Uuid,)> = sqlx::query_as(
@@ -203,7 +208,9 @@ async fn revoke_device(
     .await?;
 
     if exists.is_some() {
-        Ok(Json(serde_json::json!({ "ok": true, "already_revoked": true })))
+        Ok(Json(
+            serde_json::json!({ "ok": true, "already_revoked": true }),
+        ))
     } else {
         Err(AppError::NotFound)
     }
@@ -262,12 +269,11 @@ async fn provisioning(
     }
 
     // Verify token matches stored hash (constant-time).
-    let expected_hash = sqlx::query_scalar::<_, String>(
-        "SELECT token_hash FROM devices WHERE id = $1",
-    )
-    .bind(device_id)
-    .fetch_one(&state.pool)
-    .await?;
+    let expected_hash =
+        sqlx::query_scalar::<_, String>("SELECT token_hash FROM devices WHERE id = $1")
+            .bind(device_id)
+            .fetch_one(&state.pool)
+            .await?;
     if !verify_token_hash(token, &state.config.device_token_pepper, &expected_hash) {
         return Err(AppError::Forbidden);
     }
@@ -355,10 +361,8 @@ fn parse_basic_token(header: &str) -> Option<String> {
     // Prefer raw token as Android does today.
     if !rest.is_empty() {
         // Try base64 decode; if it yields token or user:pass, use it; else raw.
-        if let Ok(bytes) = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            rest,
-        ) {
+        if let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest)
+        {
             if let Ok(s) = String::from_utf8(bytes) {
                 if let Some((_u, p)) = s.split_once(':') {
                     return Some(p.to_string());
@@ -385,10 +389,8 @@ mod tests {
 
     #[test]
     fn parse_base64_user_pass() {
-        let encoded = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            "user:tok123",
-        );
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "user:tok123");
         let header = format!("Basic {encoded}");
         assert_eq!(parse_basic_token(&header).unwrap(), "tok123");
     }

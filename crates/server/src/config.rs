@@ -61,12 +61,13 @@ impl Config {
 
         let database_url = required("DATABASE_URL")?;
         let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
-        let listen_addr: SocketAddr = listen_addr.parse().map_err(|e: std::net::AddrParseError| {
-            ConfigError::Invalid("LISTEN_ADDR", e.to_string())
-        })?;
+        let listen_addr: SocketAddr =
+            listen_addr.parse().map_err(|e: std::net::AddrParseError| {
+                ConfigError::Invalid("LISTEN_ADDR", e.to_string())
+            })?;
 
-        let public_base_url = env::var("PUBLIC_BASE_URL")
-            .unwrap_or_else(|_| format!("http://{}", listen_addr));
+        let public_base_url =
+            env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| format!("http://{}", listen_addr));
         let is_local_dev = detect_local_dev(&public_base_url);
 
         let session_secret = env::var("SESSION_SECRET").unwrap_or_else(|_| {
@@ -160,7 +161,8 @@ impl Config {
             if !override_ok {
                 return Err(ConfigError::Invalid(
                     "ALLOW_DEV_LOGIN",
-                    "dev login is refused outside local dev unless I_REALLY_WANT_DEV_LOGIN=1".into(),
+                    "dev login is refused outside local dev unless I_REALLY_WANT_DEV_LOGIN=1"
+                        .into(),
                 ));
             }
         }
@@ -175,9 +177,8 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(512 * 1024);
-        let overpass_url = env::var("OVERPASS_URL").unwrap_or_else(|_| {
-            "https://overpass-api.de/api/interpreter".into()
-        });
+        let overpass_url = env::var("OVERPASS_URL")
+            .unwrap_or_else(|_| "https://overpass-api.de/api/interpreter".into());
         let csp_cloudflare_analytics = env_flag("CSP_CLOUDFLARE_ANALYTICS", false);
         let trip_stale_finish_after_secs = env::var("TRIP_STALE_FINISH_AFTER_SECS")
             .ok()
@@ -250,7 +251,10 @@ pub fn detect_local_dev(public_base_url: &str) -> bool {
         return matches!(v.as_str(), "development" | "dev" | "local");
     }
     match Url::parse(public_base_url) {
-        Ok(url) => matches!(url.host_str(), Some("localhost") | Some("127.0.0.1") | Some("::1")),
+        Ok(url) => matches!(
+            url.host_str(),
+            Some("localhost") | Some("127.0.0.1") | Some("::1")
+        ),
         Err(_) => {
             let lower = public_base_url.to_ascii_lowercase();
             lower.contains("localhost") || lower.contains("127.0.0.1")

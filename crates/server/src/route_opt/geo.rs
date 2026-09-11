@@ -84,10 +84,7 @@ pub fn median_endpoint(points: &[TimedPoint], start: bool, window_secs: i64) -> 
 }
 
 pub fn path_length_m(coords: &[LatLon]) -> f64 {
-    coords
-        .windows(2)
-        .map(|w| haversine_m(w[0], w[1]))
-        .sum()
+    coords.windows(2).map(|w| haversine_m(w[0], w[1])).sum()
 }
 
 /// Approximate cell size in degrees from meters at mid latitude.
@@ -143,14 +140,16 @@ pub fn signature_similarity(a: &str, b: &str) -> f64 {
     let sb: HashSet<&str> = b.split('|').collect();
     let inter = sa.intersection(&sb).count() as f64;
     let uni = sa.union(&sb).count() as f64;
-    if uni == 0.0 {
-        0.0
-    } else {
-        inter / uni
-    }
+    if uni == 0.0 { 0.0 } else { inter / uni }
 }
 
-pub fn od_matches(a_start: LatLon, a_end: LatLon, b_start: LatLon, b_end: LatLon, radius_m: f64) -> bool {
+pub fn od_matches(
+    a_start: LatLon,
+    a_end: LatLon,
+    b_start: LatLon,
+    b_end: LatLon,
+    radius_m: f64,
+) -> bool {
     haversine_m(a_start, b_start) <= radius_m && haversine_m(a_end, b_end) <= radius_m
 }
 
@@ -201,7 +200,6 @@ pub fn variant_label(index: usize) -> String {
     }
     format!("Variant {s}")
 }
-
 
 /// True when start≈end relative to driven path (round trip / loop).
 pub fn is_circular(start: LatLon, end: LatLon, path_m: f64) -> bool {
@@ -278,7 +276,11 @@ pub fn interior_dwells(
 }
 
 /// Pick split dwell: longest, preferring farther from home when close.
-pub fn best_split_dwell(start: LatLon, dwells: &[DwellSegment], min_away_m: f64) -> Option<&DwellSegment> {
+pub fn best_split_dwell(
+    start: LatLon,
+    dwells: &[DwellSegment],
+    min_away_m: f64,
+) -> Option<&DwellSegment> {
     let mut best: Option<&DwellSegment> = None;
     for d in dwells {
         let away = haversine_m(start, d.centroid);
@@ -413,7 +415,6 @@ pub fn plan_legs(
     }]
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,10 +457,7 @@ mod tests {
         let mut path2 = Vec::new();
         for i in 0..20 {
             let lat = 23.0 + i as f64 * 0.001;
-            path1.push(LatLon {
-                lat,
-                lon: -82.0,
-            });
+            path1.push(LatLon { lat, lon: -82.0 });
             path2.push(LatLon {
                 lat: lat + 0.00005,
                 lon: -82.0,
@@ -523,11 +521,20 @@ mod tests {
 
     #[test]
     fn circular_when_od_small_vs_path() {
-        let home = LatLon { lat: 23.0, lon: -82.0 };
+        let home = LatLon {
+            lat: 23.0,
+            lon: -82.0,
+        };
         assert!(is_circular(home, home, 12_000.0));
-        let near = LatLon { lat: 23.0005, lon: -82.0 }; // ~55m
+        let near = LatLon {
+            lat: 23.0005,
+            lon: -82.0,
+        }; // ~55m
         assert!(is_circular(home, near, 12_000.0));
-        let far = LatLon { lat: 23.1, lon: -82.0 }; // ~11km
+        let far = LatLon {
+            lat: 23.1,
+            lon: -82.0,
+        }; // ~11km
         assert!(!is_circular(home, far, 12_000.0));
     }
 
@@ -616,5 +623,4 @@ mod tests {
         assert!(legs[0].is_round_trip);
         assert!(legs[0].via.is_some());
     }
-
 }

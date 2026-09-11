@@ -123,7 +123,11 @@ pub fn encrypt_secret(plaintext: &[u8], secret: &str) -> Result<(Vec<u8>, Vec<u8
     Ok((n, c))
 }
 
-pub fn decrypt_secret(nonce: &[u8], ciphertext: &[u8], secret: &str) -> Result<String, CryptoError> {
+pub fn decrypt_secret(
+    nonce: &[u8],
+    ciphertext: &[u8],
+    secret: &str,
+) -> Result<String, CryptoError> {
     let ring = KeyRing::from_config(secret.to_string(), None, LEGACY_KEY_VERSION);
     decrypt_secret_versioned(nonce, ciphertext, LEGACY_KEY_VERSION, &ring)
 }
@@ -133,7 +137,14 @@ pub fn key_hint(plaintext_key: &str) -> String {
     if t.is_empty() {
         return String::new();
     }
-    let tail: String = t.chars().rev().take(4).collect::<String>().chars().rev().collect();
+    let tail: String = t
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     format!("…{tail}")
 }
 

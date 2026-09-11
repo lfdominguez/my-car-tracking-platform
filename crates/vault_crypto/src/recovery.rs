@@ -4,9 +4,9 @@ use std::str::FromStr;
 use rand::Rng;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::DEK_LEN;
 use crate::base32;
 use crate::error::Error;
-use crate::DEK_LEN;
 
 /// 32-byte high-entropy recovery secret (shown once as Crockford Base32).
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]

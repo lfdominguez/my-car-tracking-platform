@@ -197,7 +197,11 @@ pub fn headline_economy(trip: Option<f64>, instant_mean: Option<f64>) -> Option<
 /// point-wise definition (and the baseline the windowed integral is tested
 /// against); charts use [`windowed_economy_series`].
 #[allow(dead_code)]
-pub fn instant_economy(speed: Option<f64>, fuel_rate: Option<f64>, system: UnitSystem) -> Option<f64> {
+pub fn instant_economy(
+    speed: Option<f64>,
+    fuel_rate: Option<f64>,
+    system: UnitSystem,
+) -> Option<f64> {
     let s = speed?;
     let f = fuel_rate?;
     if !s.is_finite() || !f.is_finite() || s < 1.0 || f <= 0.0 {
@@ -420,7 +424,10 @@ mod tests {
             assert!(v < 20.0, "index {i} = {v} — stop should nudge, not spike");
         }
         let during_stop = eco[145].unwrap();
-        assert!(during_stop > 10.5, "idle fuel should show up: {during_stop}");
+        assert!(
+            during_stop > 10.5,
+            "idle fuel should show up: {during_stop}"
+        );
     }
 
     #[test]
@@ -436,7 +443,10 @@ mod tests {
                 assert!(*v < 150.0, "index {i} = {v}");
             }
         }
-        assert!(eco[81].unwrap() > eco[90].unwrap(), "must decay, not spike back up");
+        assert!(
+            eco[81].unwrap() > eco[90].unwrap(),
+            "must decay, not spike back up"
+        );
         // Idle and crawl cover under 20 m, so they stay honest gaps.
         assert!(eco[70].is_none());
         // A full window of cruise converges on the real number.

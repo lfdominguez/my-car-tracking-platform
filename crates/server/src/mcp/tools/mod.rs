@@ -15,8 +15,8 @@ pub use trip_stats::{
 };
 pub use trips::{get_trip, list_trips};
 
-use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::ErrorData as McpError;
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
 
 use crate::error::AppError;

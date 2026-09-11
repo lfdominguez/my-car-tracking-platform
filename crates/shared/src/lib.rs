@@ -12,7 +12,12 @@ pub enum FuelClass {
     Gasoline,
     Diesel,
     Hybrid,
-    #[serde(rename = "FULL_ELECTRIC", alias = "ELECTRIC", alias = "EV", alias = "BEV")]
+    #[serde(
+        rename = "FULL_ELECTRIC",
+        alias = "ELECTRIC",
+        alias = "EV",
+        alias = "BEV"
+    )]
     FullElectric,
 }
 

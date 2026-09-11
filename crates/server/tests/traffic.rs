@@ -59,10 +59,7 @@ async fn setup() -> Option<Ctx> {
 
     let pool_for_tests = pool.clone();
     let state = AppState::new(pool, config);
-    let app = build_router(
-        state,
-        std::env::temp_dir().join("ctp-test-uploads-traffic"),
-    );
+    let app = build_router(state, std::env::temp_dir().join("ctp-test-uploads-traffic"));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
     let addr = listener.local_addr().ok()?;
     tokio::spawn(async move {
@@ -206,26 +203,34 @@ async fn traffic_job_scores_frames_from_cache() {
             .unwrap();
     assert!(frames > 0, "expected frames");
 
-    let levels: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT level FROM trip_traffic_frames WHERE track_id = $1",
-    )
-    .bind(track_id)
-    .fetch_all(&ctx.pool)
-    .await
-    .unwrap();
+    let levels: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT level FROM trip_traffic_frames WHERE track_id = $1")
+            .bind(track_id)
+            .fetch_all(&ctx.pool)
+            .await
+            .unwrap();
     assert!(
-        levels.iter().any(|l| l == "heavy" || l == "jam" || l == "moderate"),
+        levels
+            .iter()
+            .any(|l| l == "heavy" || l == "jam" || l == "moderate"),
         "slow vs 50 limit should congest: {levels:?}"
     );
 
     // API frames
     let resp = ctx
         .client
-        .get(format!("{}/api/trips/{}/traffic/frames", ctx.base, track_id))
+        .get(format!(
+            "{}/api/trips/{}/traffic/frames",
+            ctx.base, track_id
+        ))
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "frames status {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "frames status {}",
+        resp.status()
+    );
     let body: Vec<serde_json::Value> = resp.json().await.unwrap();
     assert!(!body.is_empty());
 
@@ -240,12 +245,11 @@ async fn traffic_job_scores_frames_from_cache() {
     assert_eq!(d["traffic"]["status"], "ready");
     assert_eq!(d["traffic_analyzed"], true);
 
-    let flag: bool =
-        sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
-            .bind(track_id)
-            .fetch_one(&ctx.pool)
-            .await
-            .expect("traffic_analyzed column");
+    let flag: bool = sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
+        .bind(track_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .expect("traffic_analyzed column");
     assert!(flag, "job should set tracks.traffic_analyzed on ready");
 }
 
@@ -258,12 +262,11 @@ async fn analyze_traffic_endpoint_runs_job_and_sets_flag() {
 
     let track_id = insert_slow_trip(&ctx.pool, ctx.car_id).await;
 
-    let before: bool =
-        sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
-            .bind(track_id)
-            .fetch_one(&ctx.pool)
-            .await
-            .expect("flag");
+    let before: bool = sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
+        .bind(track_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .expect("flag");
     assert!(!before);
 
     let resp = ctx
@@ -286,13 +289,12 @@ async fn analyze_traffic_endpoint_runs_job_and_sets_flag() {
     let mut ready = false;
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let status: Option<String> = sqlx::query_scalar(
-            "SELECT status FROM trip_traffic_summaries WHERE track_id = $1",
-        )
-        .bind(track_id)
-        .fetch_optional(&ctx.pool)
-        .await
-        .unwrap();
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM trip_traffic_summaries WHERE track_id = $1")
+                .bind(track_id)
+                .fetch_optional(&ctx.pool)
+                .await
+                .unwrap();
         if status.as_deref() == Some("ready") {
             ready = true;
             break;
@@ -300,12 +302,11 @@ async fn analyze_traffic_endpoint_runs_job_and_sets_flag() {
     }
     assert!(ready, "expected traffic job to finish ready");
 
-    let flag: bool =
-        sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
-            .bind(track_id)
-            .fetch_one(&ctx.pool)
-            .await
-            .unwrap();
+    let flag: bool = sqlx::query_scalar("SELECT traffic_analyzed FROM tracks WHERE id = $1")
+        .bind(track_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .unwrap();
     assert!(flag);
 
     // Already ready → no-op success.

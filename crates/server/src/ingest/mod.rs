@@ -114,7 +114,10 @@ pub struct TrackSamplesBatchResponse {
     pub rejected: Vec<RejectedSample>,
 }
 
-async fn auth_device(state: &AppState, headers: &HeaderMap) -> AppResult<crate::devices::DeviceAuth> {
+async fn auth_device(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> AppResult<crate::devices::DeviceAuth> {
     let auth = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
@@ -599,8 +602,8 @@ async fn track_vault_chunk(
     headers: HeaderMap,
     Json(body): Json<VaultChunkRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
-    use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as B64;
 
     let device = auth_device(&state, &headers).await?;
     if !owner_vault_active_for_car(&state.pool, device.car_id).await? {
@@ -664,7 +667,9 @@ async fn track_vault_chunk(
         .bind(byte_size)
         .execute(&state.pool)
         .await?;
-        return Ok(Json(serde_json::json!({ "ok": true, "id": existing_id, "updated": true })));
+        return Ok(Json(
+            serde_json::json!({ "ok": true, "id": existing_id, "updated": true }),
+        ));
     }
 
     sqlx::query(
@@ -686,7 +691,9 @@ async fn track_vault_chunk(
     .execute(&state.pool)
     .await?;
 
-    Ok(Json(serde_json::json!({ "ok": true, "id": id, "updated": false })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "id": id, "updated": false }),
+    ))
 }
 
 /// How long after `finished_at` we still accept late samples (offline queue drain).

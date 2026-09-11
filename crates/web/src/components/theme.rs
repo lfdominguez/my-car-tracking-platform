@@ -57,7 +57,9 @@ fn read_current_attr() -> Theme {
 fn write_attr(theme: Theme) {
     let Some(win) = web_sys::window() else { return };
     let Some(doc) = win.document() else { return };
-    let Some(el) = doc.document_element() else { return };
+    let Some(el) = doc.document_element() else {
+        return;
+    };
     let _ = el.set_attribute("data-theme", theme.as_str());
 
     if let Ok(Some(storage)) = win.local_storage() {

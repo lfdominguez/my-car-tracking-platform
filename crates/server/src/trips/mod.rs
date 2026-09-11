@@ -3,7 +3,7 @@
 mod fuel_stats;
 pub mod stats;
 
-pub use shared::telemetry_sanitize::{energy_from_soc_kwh, sanitize_speed_rpm, SpeedRpmPoint};
+pub use shared::telemetry_sanitize::{SpeedRpmPoint, energy_from_soc_kwh, sanitize_speed_rpm};
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
@@ -13,15 +13,15 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::audit::{self, actions, AuditEvent};
+use crate::audit::{self, AuditEvent, actions};
 use crate::auth::AuthUser;
-use crate::error::{AppError, AppResult};
 use crate::crypto::KeyRing;
+use crate::error::{AppError, AppResult};
 use crate::shares::access::{can_edit_car, can_read_car, require_owner};
 use crate::state::AppState;
 use crate::units::{
-    convert_distance_m, convert_fuel_l, convert_fuel_rate_lph, convert_odometer_km,
-    convert_speed_kph, UnitSystem,
+    UnitSystem, convert_distance_m, convert_fuel_l, convert_fuel_rate_lph, convert_odometer_km,
+    convert_speed_kph,
 };
 
 pub fn router() -> Router<AppState> {
@@ -175,9 +175,7 @@ fn spawn_post_finish_jobs(pool: &PgPool, keyring: &KeyRing, overpass_url: &str, 
     });
     let pool_t = pool.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            crate::traffic::process_finished_track(&pool_t, &overpass, track_id).await
-        {
+        if let Err(e) = crate::traffic::process_finished_track(&pool_t, &overpass, track_id).await {
             tracing::warn!(%track_id, error = %e, "traffic job failed");
         }
     });
@@ -284,16 +282,13 @@ async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<
         return Ok(());
     }
 
-    tracing::info!(count = ids.len(), stale_secs, "auto-finishing stale open trips");
+    tracing::info!(
+        count = ids.len(),
+        stale_secs,
+        "auto-finishing stale open trips"
+    );
     for id in ids {
-        match finish_track(
-            &state.pool,
-            &state.keyring,
-            &state.config.overpass_url,
-            id,
-        )
-        .await
-        {
+        match finish_track(&state.pool, &state.keyring, &state.config.overpass_url, id).await {
             Ok(r) if r.newly_finished => {
                 tracing::info!(%id, purged = r.purged, "stale trip auto-finished");
             }
@@ -333,12 +328,11 @@ pub async fn purge_track(pool: &PgPool, track_id: Uuid) -> AppResult<()> {
 
 /// True when trip should be discarded after stop: no vault point chunks and ≤1 plaintext point.
 pub async fn is_empty_trip_for_auto_remove(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
-    let plaintext: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM track_points WHERE track_id = $1",
-    )
-    .bind(track_id)
-    .fetch_one(pool)
-    .await?;
+    let plaintext: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM track_points WHERE track_id = $1")
+            .bind(track_id)
+            .fetch_one(pool)
+            .await?;
 
     let vault_chunks: i64 = sqlx::query_scalar(
         r#"
@@ -366,13 +360,7 @@ async fn finish_trip(
 
     can_edit_car(&state.pool, user.id, car_id).await?;
 
-    let outcome = finish_track(
-        &state.pool,
-        &state.keyring,
-        &state.config.overpass_url,
-        id,
-    )
-    .await?;
+    let outcome = finish_track(&state.pool, &state.keyring, &state.config.overpass_url, id).await?;
 
     if outcome.purged {
         return Err(AppError::NotFound);
@@ -511,11 +499,8 @@ struct TripSummaryRow {
 
 impl TripSummaryRow {
     fn into_summary(self) -> TripSummary {
-        let economy_distance_m = fuel_stats::economy_distance_m(
-            self.distance_m,
-            self.odo_start_km,
-            self.odo_end_km,
-        );
+        let economy_distance_m =
+            fuel_stats::economy_distance_m(self.distance_m, self.odo_start_km, self.odo_end_km);
         let fuel_from_level_l = fuel_stats::fuel_from_level_l(
             self.fuel_level_start_pct,
             self.fuel_level_end_pct,
@@ -672,7 +657,6 @@ async fn accessible_car_filter(user_id: Uuid) -> &'static str {
     "#
 }
 
-
 fn apply_trip_summary_units(mut t: TripSummary, system: UnitSystem) -> TripSummary {
     if let Some(d) = t.distance_m {
         t.distance_m = Some(convert_distance_m(d, system));
@@ -798,12 +782,12 @@ async fn list_trips(
     );
     let rows = sqlx::query_as::<_, TripSummaryRow>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(user.id)
-    .bind(q.car_id)
-    .bind(q.from)
-    .bind(q.to)
-    .bind(limit)
-    .fetch_all(&state.pool)
-    .await?;
+        .bind(q.car_id)
+        .bind(q.from)
+        .bind(q.to)
+        .bind(limit)
+        .fetch_all(&state.pool)
+        .await?;
 
     let system = user.unit_system;
     let rows = rows
@@ -868,8 +852,8 @@ async fn get_trip(
     );
     let row = sqlx::query_as::<_, TripSummaryRow>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(id)
-    .fetch_one(&state.pool)
-    .await?;
+        .fetch_one(&state.pool)
+        .await?;
     let row = row.into_summary();
 
     let traffic_row = sqlx::query_as::<
@@ -892,15 +876,15 @@ async fn get_trip(
     .fetch_optional(&state.pool)
     .await?;
 
-    let traffic = traffic_row.map(|(status, overall_index, time_share, distance_share, frame_count)| {
-        TrafficSummaryDto {
+    let traffic = traffic_row.map(
+        |(status, overall_index, time_share, distance_share, frame_count)| TrafficSummaryDto {
             status,
             overall_index,
             time_share: share_from_json(time_share),
             distance_share: share_from_json(distance_share),
             frame_count,
-        }
-    });
+        },
+    );
 
     Ok(Json(TripDetailResponse {
         trip: apply_trip_summary_units(seal_trip_if_vault(row), user.unit_system),
@@ -1171,7 +1155,10 @@ async fn trip_map(
     .fetch_all(&state.pool)
     .await?;
 
-    let coordinates: Vec<Vec<f64>> = coords.into_iter().map(|(lon, lat)| vec![lon, lat]).collect();
+    let coordinates: Vec<Vec<f64>> = coords
+        .into_iter()
+        .map(|(lon, lat)| vec![lon, lat])
+        .collect();
     Ok(Json(serde_json::json!({
         "type": "LineString",
         "coordinates": coordinates
@@ -1187,8 +1174,8 @@ async fn _unused() {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_stale_open_trip, resolve_finished_at, trip_list_limit, DEFAULT_TRIP_LIST_LIMIT,
-        MAX_TRIP_LIST_LIMIT,
+        DEFAULT_TRIP_LIST_LIMIT, MAX_TRIP_LIST_LIMIT, is_stale_open_trip, resolve_finished_at,
+        trip_list_limit,
     };
     use chrono::{Duration, TimeZone, Utc};
 
@@ -1198,7 +1185,10 @@ mod tests {
         assert_eq!(trip_list_limit(Some(0)), 1);
         assert_eq!(trip_list_limit(Some(-5)), 1);
         assert_eq!(trip_list_limit(Some(200)), 200);
-        assert_eq!(trip_list_limit(Some(MAX_TRIP_LIST_LIMIT)), MAX_TRIP_LIST_LIMIT);
+        assert_eq!(
+            trip_list_limit(Some(MAX_TRIP_LIST_LIMIT)),
+            MAX_TRIP_LIST_LIMIT
+        );
         assert_eq!(
             trip_list_limit(Some(MAX_TRIP_LIST_LIMIT + 50)),
             MAX_TRIP_LIST_LIMIT
@@ -1210,10 +1200,7 @@ mod tests {
         let start = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap();
         let last = start + Duration::minutes(7);
         let now = start + Duration::hours(1);
-        assert_eq!(
-            resolve_finished_at(None, Some(last), start, now),
-            last
-        );
+        assert_eq!(resolve_finished_at(None, Some(last), start, now), last);
         let existing = start + Duration::minutes(5);
         assert_eq!(
             resolve_finished_at(Some(existing), Some(last), start, now),
@@ -1232,7 +1219,17 @@ mod tests {
         let now_stale = last + Duration::hours(2);
         assert!(is_stale_open_trip(now_stale, start, Some(last), stale));
         // No points: silence measured from start.
-        assert!(!is_stale_open_trip(start + Duration::hours(1), start, None, stale));
-        assert!(is_stale_open_trip(start + Duration::hours(2), start, None, stale));
+        assert!(!is_stale_open_trip(
+            start + Duration::hours(1),
+            start,
+            None,
+            stale
+        ));
+        assert!(is_stale_open_trip(
+            start + Duration::hours(2),
+            start,
+            None,
+            stale
+        ));
     }
 }

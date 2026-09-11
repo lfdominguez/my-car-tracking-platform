@@ -124,7 +124,10 @@ mod tests {
         let rk = RecoveryKey::from_bytes([0x42; 32]);
         let s1 = identity_from_recovery(&rk);
         let s2 = identity_from_recovery(&rk);
-        assert_eq!(public_identity(&s1).as_bytes(), public_identity(&s2).as_bytes());
+        assert_eq!(
+            public_identity(&s1).as_bytes(),
+            public_identity(&s2).as_bytes()
+        );
         assert_eq!(s1.to_bytes(), s2.to_bytes());
     }
 
@@ -132,6 +135,9 @@ mod tests {
     fn different_recovery_different_key() {
         let a = identity_from_recovery(&RecoveryKey::from_bytes([1u8; 32]));
         let b = identity_from_recovery(&RecoveryKey::from_bytes([2u8; 32]));
-        assert_ne!(public_identity(&a).as_bytes(), public_identity(&b).as_bytes());
+        assert_ne!(
+            public_identity(&a).as_bytes(),
+            public_identity(&b).as_bytes()
+        );
     }
 }

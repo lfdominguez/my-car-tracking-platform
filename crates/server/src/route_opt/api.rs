@@ -5,27 +5,24 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::Row;
 use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use crate::shares::access::{can_read_car, resolve_access, CarAccess};
+use crate::shares::access::{CarAccess, can_read_car, resolve_access};
 use crate::state::AppState;
-use crate::units::{convert_distance_m, UnitSystem};
+use crate::units::{UnitSystem, convert_distance_m};
 
-use super::insights::{build_insights, InsightDraft, OrsAltRef};
-use super::job::{recompute_car, rebuild_insights};
-use super::stats::{aggregate_by_variant, aggregate_samples, best_variant_id, VariantSample};
+use super::insights::{InsightDraft, OrsAltRef, build_insights};
+use super::job::{rebuild_insights, recompute_car};
+use super::stats::{VariantSample, aggregate_by_variant, aggregate_samples, best_variant_id};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/route-optimization/summary",
-            get(summary),
-        )
+        .route("/api/route-optimization/summary", get(summary))
         .route(
             "/api/route-optimization/corridors/{id}",
             get(corridor_detail),
@@ -34,10 +31,7 @@ pub fn router() -> Router<AppState> {
             "/api/route-optimization/corridors/{id}/map",
             get(corridor_map),
         )
-        .route(
-            "/api/route-optimization/recompute",
-            post(recompute),
-        )
+        .route("/api/route-optimization/recompute", post(recompute))
 }
 
 #[derive(Debug, Deserialize)]
@@ -478,12 +472,11 @@ async fn corridor_map(
 
     let mut features = Vec::new();
 
-    let variants = sqlx::query(
-        "SELECT id, label, rep_polyline FROM route_variants WHERE corridor_id = $1",
-    )
-    .bind(id)
-    .fetch_all(&state.pool)
-    .await?;
+    let variants =
+        sqlx::query("SELECT id, label, rep_polyline FROM route_variants WHERE corridor_id = $1")
+            .bind(id)
+            .fetch_all(&state.pool)
+            .await?;
 
     for (i, v) in variants.iter().enumerate() {
         let label: String = v.try_get("label")?;
@@ -562,12 +555,11 @@ async fn recompute(
         .map_err(|e| AppError::internal(format!("recompute failed: {e}")))?;
 
     // Rebuild insights for all corridors of car
-    let corridors: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM route_corridors WHERE car_id = $1",
-    )
-    .bind(car_id)
-    .fetch_all(&pool)
-    .await?;
+    let corridors: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM route_corridors WHERE car_id = $1")
+            .bind(car_id)
+            .fetch_all(&pool)
+            .await?;
     for cid in corridors {
         let _ = rebuild_insights(&pool, car_id, cid).await;
     }

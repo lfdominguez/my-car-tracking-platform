@@ -16,10 +16,10 @@ mod tools;
 
 pub use agent::analyze_trip;
 pub use chat::{
-    run_chat, ChatEvent, ChatOptions, ChatSink, ChatToolbox, ChatTurnResult, NullSink,
-    ToolInvocation, MAX_CHAT_TURNS,
+    ChatEvent, ChatOptions, ChatSink, ChatToolbox, ChatTurnResult, MAX_CHAT_TURNS, NullSink,
+    ToolInvocation, run_chat,
 };
 pub use context::*;
 pub use error::AiError;
-pub use prompt::{chat_system_prompt, ChatCarBrief};
+pub use prompt::{ChatCarBrief, chat_system_prompt};
 pub use report::*;

@@ -22,10 +22,7 @@ pub struct MathEvalResult {
 }
 
 /// Evaluate a free-form expression with optional variable bindings and trip helpers.
-pub fn evaluate_expression(
-    expression: &str,
-    variables: &BTreeMap<String, f64>,
-) -> MathEvalResult {
+pub fn evaluate_expression(expression: &str, variables: &BTreeMap<String, f64>) -> MathEvalResult {
     let expression = expression.trim();
     if expression.is_empty() {
         return MathEvalResult {
@@ -209,11 +206,7 @@ mod tests {
         let expr = "1+".repeat(300) + "1";
         let r = evaluate_expression(&expr, &BTreeMap::new());
         assert!(r.result.is_none());
-        assert!(r
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("too long"));
+        assert!(r.error.as_deref().unwrap_or("").contains("too long"));
     }
 
     #[test]

@@ -93,13 +93,12 @@ async fn get_analysis(
     let analyzed = status == "completed" || report.is_some();
     // Never expose internal job diagnostics (SQL/LLM stack traces) to the SPA.
     let raw_err: Option<String> = row.try_get("analysis_error").ok().flatten();
-    let analysis_error = if raw_err.as_ref().is_some_and(|e| !e.trim().is_empty())
-        || status == "failed"
-    {
-        Some("System Error".into())
-    } else {
-        None
-    };
+    let analysis_error =
+        if raw_err.as_ref().is_some_and(|e| !e.trim().is_empty()) || status == "failed" {
+            Some("System Error".into())
+        } else {
+            None
+        };
 
     Ok(Json(AnalysisResponse {
         analyzed,
@@ -301,4 +300,3 @@ async fn run_analysis_job(
     tracing::info!(%track_id, %model, "trip analysis completed");
     Ok(())
 }
-

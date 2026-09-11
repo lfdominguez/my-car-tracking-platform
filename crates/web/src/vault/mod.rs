@@ -3,19 +3,19 @@
 mod ops;
 
 pub use ops::{
-    build_analysis_context_json, decrypt_ai_report, decrypt_car_profile, decrypt_track_meta,
-    decrypt_track_points, load_car_dek, migrate_all_owned, put_car_profile, seal_ai_report,
-    wrap_and_upload_dek, CarProfileV1,
+    CarProfileV1, build_analysis_context_json, decrypt_ai_report, decrypt_car_profile,
+    decrypt_track_meta, decrypt_track_points, load_car_dek, migrate_all_owned, put_car_profile,
+    seal_ai_report, wrap_and_upload_dek,
 };
 
 use std::sync::{Arc, Mutex};
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use leptos::prelude::*;
 use vault_crypto::{
-    generate_recovery_key, identity_from_recovery, public_identity, IdentityPublic, IdentitySecret,
-    RecoveryKey,
+    IdentityPublic, IdentitySecret, RecoveryKey, generate_recovery_key, identity_from_recovery,
+    public_identity,
 };
 use zeroize::Zeroize;
 
@@ -47,7 +47,10 @@ impl VaultSession {
         self.inner.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
-    pub fn with_secret<R>(&self, f: impl FnOnce(&IdentitySecret, &IdentityPublic) -> R) -> Option<R> {
+    pub fn with_secret<R>(
+        &self,
+        f: impl FnOnce(&IdentitySecret, &IdentityPublic) -> R,
+    ) -> Option<R> {
         let g = self.inner.lock().ok()?;
         g.as_ref().map(|u| f(&u.secret, &u.public))
     }
@@ -157,7 +160,7 @@ fn event_target_value(ev: &web_sys::Event) -> String {
 /// Settings card: status, enable wizard, unlock/lock.
 #[component]
 pub fn VaultSettingsCard() -> impl IntoView {
-    use crate::api::{vault_activate, vault_enable, vault_status, VaultStatus};
+    use crate::api::{VaultStatus, vault_activate, vault_enable, vault_status};
 
     let status = RwSignal::new(Option::<VaultStatus>::None);
     let recovery_shown = RwSignal::new(Option::<String>::None);

@@ -2,13 +2,12 @@
 
 use std::path::Path;
 
-use axum::http::{header, HeaderName, HeaderValue};
+use axum::http::{HeaderName, HeaderValue, header};
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use tower_http::set_header::SetResponseHeaderLayer;
 
-const PERMISSIONS_POLICY: &str =
-    "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()";
+const PERMISSIONS_POLICY: &str = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()";
 
 /// CSP hash token for an inline script body (`'sha256-...'`).
 pub fn script_body_csp_hash(body: &str) -> String {
@@ -232,7 +231,10 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         let csp = build_csp(&[TRUNK_BOOTSTRAP_HASH.to_string()], false);
         assert!(csp.contains("script-src 'self' 'wasm-unsafe-eval'"));
         // Prefer quoted hash token form in CSP.
-        assert!(csp.contains(&format!("'{TRUNK_BOOTSTRAP_HASH}'")), "csp={csp}");
+        assert!(
+            csp.contains(&format!("'{TRUNK_BOOTSTRAP_HASH}'")),
+            "csp={csp}"
+        );
         // style-src may keep 'unsafe-inline' for app CSS; script-src must not.
         let script_src = csp
             .split(';')
@@ -285,9 +287,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     #[test]
     fn reads_hashes_from_dist_index_when_present() {
         // Prefer real dist if built; otherwise synthetic file is enough for unit shape.
-        let html = format!(
-            r#"<!DOCTYPE html><script type="module">{TRUNK_BOOTSTRAP}</script>"#
-        );
+        let html = format!(r#"<!DOCTYPE html><script type="module">{TRUNK_BOOTSTRAP}</script>"#);
         let hashes = inline_script_csp_hashes(&html);
         assert_eq!(hashes.len(), 1);
         assert_eq!(hashes[0], TRUNK_BOOTSTRAP_HASH);

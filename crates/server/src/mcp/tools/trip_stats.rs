@@ -6,8 +6,8 @@ use uuid::Uuid;
 use crate::analysis::context::build_trip_analysis_context;
 use crate::error::{AppError, AppResult};
 
-use super::trips::require_readable_trip;
 use super::ToolCtx;
+use super::trips::require_readable_trip;
 
 pub async fn get_trip_speed_stats(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<Value> {
     require_readable_trip(ctx, trip_id).await?;
@@ -139,13 +139,12 @@ pub async fn get_trip_ai_report(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<A
     .ok_or(AppError::NotFound)?;
 
     let (status, analyzed_at, model, raw_err, report) = row;
-    let analysis_error = if raw_err.as_ref().is_some_and(|e| !e.trim().is_empty())
-        || status == "failed"
-    {
-        Some("System Error".into())
-    } else {
-        None
-    };
+    let analysis_error =
+        if raw_err.as_ref().is_some_and(|e| !e.trim().is_empty()) || status == "failed" {
+            Some("System Error".into())
+        } else {
+            None
+        };
     let available = status == "completed" || report.is_some();
     Ok(AiReportOut {
         available,

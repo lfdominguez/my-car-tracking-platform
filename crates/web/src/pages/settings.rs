@@ -1,12 +1,12 @@
 use leptos::prelude::*;
 
 use crate::api::{
-    get_audit, get_me, get_sessions, revoke_all_sessions, revoke_mcp_token, revoke_other_sessions,
-    revoke_session, rotate_mcp_token, update_me_preferences, update_me_unit_system, AuditEvent,
-    SessionInfo,
+    AuditEvent, SessionInfo, get_audit, get_me, get_sessions, revoke_all_sessions,
+    revoke_mcp_token, revoke_other_sessions, revoke_session, rotate_mcp_token,
+    update_me_preferences, update_me_unit_system,
 };
 use crate::components::{Icon, IconColor, IconSize};
-use crate::units::{use_unit_prefs, UnitPrefs, UnitSystem};
+use crate::units::{UnitPrefs, UnitSystem, use_unit_prefs};
 use crate::vault::VaultSettingsCard;
 
 #[component]
@@ -45,7 +45,8 @@ pub fn SettingsPage() -> impl IntoView {
                     ors_key_hint.set(me.ors_api_key_hint.clone());
                     mcp_token_set.set(me.mcp_token_set);
                     mcp_token_hint.set(me.mcp_token_hint.clone());
-                    if let Some(origin) = web_sys::window().and_then(|w| w.location().origin().ok()) {
+                    if let Some(origin) = web_sys::window().and_then(|w| w.location().origin().ok())
+                    {
                         mcp_url.set(format!("{origin}/mcp"));
                     }
                     prefs.set(UnitPrefs::from_me(&me));

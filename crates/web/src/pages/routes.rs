@@ -5,8 +5,8 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    list_cars, route_opt_corridor, route_opt_corridor_map, route_opt_recompute, route_opt_summary,
-    Car, RouteCorridorDetail, RouteOptSummary,
+    Car, RouteCorridorDetail, RouteOptSummary, list_cars, route_opt_corridor,
+    route_opt_corridor_map, route_opt_recompute, route_opt_summary,
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{fmt_distance, use_unit_prefs};

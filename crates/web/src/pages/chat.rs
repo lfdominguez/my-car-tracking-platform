@@ -7,13 +7,13 @@
 
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use crate::api::{
-    chat_stream_url, create_chat_conversation, delete_chat_conversation, get_chat_conversation,
-    list_chat_conversations, list_cars, post_chat_message, ApiError, Car, ChatConversation,
-    ChatMessage,
+    ApiError, Car, ChatConversation, ChatMessage, chat_stream_url, create_chat_conversation,
+    delete_chat_conversation, get_chat_conversation, list_cars, list_chat_conversations,
+    post_chat_message,
 };
 use crate::components::markdown;
 use crate::components::{Icon, IconColor, IconSize};
@@ -566,8 +566,8 @@ fn attach_stream(
 
     // snapshot: everything the server already had when we connected.
     let on_snapshot = {
-        let handler = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
-            move |ev: web_sys::MessageEvent| {
+        let handler =
+            Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |ev: web_sys::MessageEvent| {
                 let Some(data) = ev.data().as_string() else {
                     return;
                 };
@@ -588,21 +588,18 @@ fn attach_stream(
                                 .filter_map(|t| t["name"].as_str().map(str::to_string))
                                 .collect();
                         }
-                        turn.running = matches!(
-                            value["status"].as_str(),
-                            Some("pending") | Some("running")
-                        );
+                        turn.running =
+                            matches!(value["status"].as_str(), Some("pending") | Some("running"));
                     }
                 });
-            },
-        );
+            });
         handler
     };
     let _ = es.add_event_listener_with_callback("snapshot", on_snapshot.as_ref().unchecked_ref());
     on_snapshot.forget();
 
-    let on_delta = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
-        move |ev: web_sys::MessageEvent| {
+    let on_delta =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |ev: web_sys::MessageEvent| {
             let Some(data) = ev.data().as_string() else {
                 return;
             };
@@ -621,13 +618,12 @@ fn attach_stream(
                     }
                 }
             });
-        },
-    );
+        });
     let _ = es.add_event_listener_with_callback("delta", on_delta.as_ref().unchecked_ref());
     on_delta.forget();
 
-    let on_tool = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
-        move |ev: web_sys::MessageEvent| {
+    let on_tool =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |ev: web_sys::MessageEvent| {
             let Some(data) = ev.data().as_string() else {
                 return;
             };
@@ -644,10 +640,8 @@ fn attach_stream(
                     turn.tools.push(name.to_string());
                 }
             });
-        },
-    );
-    let _ =
-        es.add_event_listener_with_callback("tool_started", on_tool.as_ref().unchecked_ref());
+        });
+    let _ = es.add_event_listener_with_callback("tool_started", on_tool.as_ref().unchecked_ref());
     on_tool.forget();
 
     let on_done = {
@@ -714,21 +708,23 @@ fn attach_stream(
 
     // Transport-level failure (the connection itself dropped), distinct from the
     // `error` event the server sends for a failed generation.
-    let on_transport_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-        if let Some(es) = source.get_untracked()
-            && es.ready_state() == web_sys::EventSource::CLOSED
-        {
-            live.update(|turn| {
-                if let Some(turn) = turn
-                    && turn.running
-                {
-                    turn.running = false;
-                    turn.error = Some("The connection dropped. Reload to see the answer.".into());
-                }
-            });
-            source.set(None);
-        }
-    });
+    let on_transport_error =
+        Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
+            if let Some(es) = source.get_untracked()
+                && es.ready_state() == web_sys::EventSource::CLOSED
+            {
+                live.update(|turn| {
+                    if let Some(turn) = turn
+                        && turn.running
+                    {
+                        turn.running = false;
+                        turn.error =
+                            Some("The connection dropped. Reload to see the answer.".into());
+                    }
+                });
+                source.set(None);
+            }
+        });
     es.set_onerror(Some(on_transport_error.as_ref().unchecked_ref()));
     on_transport_error.forget();
 

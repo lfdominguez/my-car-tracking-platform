@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::error::AiError;
@@ -145,12 +145,8 @@ pub async fn run_chat(
         let mut streamed = String::new();
 
         let turn = client
-            .chat_completion_stream(
-                model,
-                &messages,
-                &tool_defs,
-                opts.max_tokens,
-                |delta| match delta {
+            .chat_completion_stream(model, &messages, &tool_defs, opts.max_tokens, |delta| {
+                match delta {
                     StreamDelta::Text(text) => {
                         let offset = base_offset + streamed.len();
                         streamed.push_str(&text);
@@ -159,8 +155,8 @@ pub async fn run_chat(
                     StreamDelta::ToolCallNamed(name) => {
                         sink.emit(ChatEvent::ToolStarted { name });
                     }
-                },
-            )
+                }
+            })
             .await?;
 
         if resolved_model.is_none() {
@@ -241,7 +237,10 @@ pub async fn run_chat(
     }
 
     // Ran out of round trips. Anything already streamed is still worth keeping.
-    warn!(max_turns = opts.max_turns, "chat turn hit the round-trip cap");
+    warn!(
+        max_turns = opts.max_turns,
+        "chat turn hit the round-trip cap"
+    );
     let message = if content.trim().is_empty() {
         "I ran out of steps before I could finish that. Try narrowing the question — \
          for example to one car or one month."

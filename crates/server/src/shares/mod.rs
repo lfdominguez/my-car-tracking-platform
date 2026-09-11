@@ -12,7 +12,7 @@ use shared::ShareRole;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
-use crate::audit::{self, actions, AuditEvent};
+use crate::audit::{self, AuditEvent, actions};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::middleware::client_ip;
@@ -233,13 +233,12 @@ async fn delete_share(
     }
 
     // v1 revoke: drop DEK wrap (does not re-encrypt history / wipe offline copies).
-    let wrap_res = sqlx::query(
-        "DELETE FROM vault_car_deks WHERE car_id = $1 AND recipient_user_id = $2",
-    )
-    .bind(car_id)
-    .bind(target_user_id)
-    .execute(&state.pool)
-    .await;
+    let wrap_res =
+        sqlx::query("DELETE FROM vault_car_deks WHERE car_id = $1 AND recipient_user_id = $2")
+            .bind(car_id)
+            .bind(target_user_id)
+            .execute(&state.pool)
+            .await;
     if wrap_res.map(|r| r.rows_affected() > 0).unwrap_or(false) {
         let car_id_str = car_id.to_string();
         let shared_user_id = target_user_id.to_string();

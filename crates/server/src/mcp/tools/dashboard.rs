@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::trips::stats;
 use crate::error::AppResult;
+use crate::trips::stats;
 use crate::units::{convert_distance_m, convert_fuel_l, convert_odometer_km, convert_speed_kph};
 
 use super::ToolCtx;
@@ -104,11 +104,11 @@ pub async fn get_dashboard_summary(
     );
     let global = sqlx::query_as::<_, GlobalRow>(sqlx::AssertSqlSafe(global_sql.as_str()))
         .bind(ctx.user.id)
-    .bind(car_id)
-    .bind(from)
-    .bind(to)
-    .fetch_one(&ctx.state.pool)
-    .await?;
+        .bind(car_id)
+        .bind(from)
+        .bind(to)
+        .fetch_one(&ctx.state.pool)
+        .await?;
 
     let car_sql = format!(
         r#"
@@ -214,11 +214,11 @@ pub async fn get_dashboard_summary(
     );
     let car_rows = sqlx::query_as::<_, CarDashRow>(sqlx::AssertSqlSafe(car_sql.as_str()))
         .bind(ctx.user.id)
-    .bind(car_id)
-    .bind(from)
-    .bind(to)
-    .fetch_all(&ctx.state.pool)
-    .await?;
+        .bind(car_id)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&ctx.state.pool)
+        .await?;
 
     let cars = car_rows
         .into_iter()

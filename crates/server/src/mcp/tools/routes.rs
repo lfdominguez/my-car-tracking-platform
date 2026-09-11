@@ -8,7 +8,7 @@ use crate::mcp::token::clamp_list_limit;
 use crate::shares::access::can_read_car;
 use crate::units::convert_distance_m;
 
-use super::{reject_vault, ToolCtx};
+use super::{ToolCtx, reject_vault};
 
 #[derive(Debug, Serialize)]
 pub struct CorridorListItem {

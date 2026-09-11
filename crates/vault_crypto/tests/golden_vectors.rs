@@ -84,9 +84,7 @@ fn identity_from_recovery_matches_vector() {
 #[test]
 fn wrap_unwrap_matches_vector() {
     let v = load();
-    let rk_bytes: [u8; 32] = hex_decode(&v.recovery_key_bytes_hex)
-        .try_into()
-        .unwrap();
+    let rk_bytes: [u8; 32] = hex_decode(&v.recovery_key_bytes_hex).try_into().unwrap();
     let secret = identity_from_recovery(&RecoveryKey::from_bytes(rk_bytes));
     let pk = public_identity(&secret);
     let dek_bytes: [u8; 32] = hex_decode(&v.dek_hex).try_into().unwrap();
@@ -127,8 +125,13 @@ fn object_encrypt_decrypt_matches_vector() {
     assert_eq!(hex::encode(&n), v.object.nonce_hex);
     assert_eq!(hex::encode(&ct), v.object.ciphertext_hex);
 
-    let pt = decrypt_object(&dek, &hex_decode(&v.object.nonce_hex), &hex_decode(&v.object.ciphertext_hex), &aad)
-        .unwrap();
+    let pt = decrypt_object(
+        &dek,
+        &hex_decode(&v.object.nonce_hex),
+        &hex_decode(&v.object.ciphertext_hex),
+        &aad,
+    )
+    .unwrap();
     assert_eq!(pt, v.object.plaintext_utf8.as_bytes());
 }
 
@@ -137,13 +140,7 @@ fn object_aad_mismatch_fails_on_vector_ciphertext() {
     let v = load();
     let dek_bytes: [u8; 32] = hex_decode(&v.dek_hex).try_into().unwrap();
     let dek = Dek::from_bytes(dek_bytes);
-    let bad_aad = aad_v1(
-        Uuid::nil(),
-        "track_points_chunk",
-        Uuid::nil(),
-        Some(0),
-        1,
-    );
+    let bad_aad = aad_v1(Uuid::nil(), "track_points_chunk", Uuid::nil(), Some(0), 1);
     let err = decrypt_object(
         &dek,
         &hex_decode(&v.object.nonce_hex),

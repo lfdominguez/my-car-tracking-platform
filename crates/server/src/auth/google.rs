@@ -14,11 +14,11 @@ use std::net::SocketAddr;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use crate::audit::{self, actions, AuditEvent};
+use crate::audit::{self, AuditEvent, actions};
 use crate::auth::create_session;
 use crate::auth::ensure_dev_user;
 use crate::auth::session::{
-    clear_oauth_state_cookie, oauth_state_from_jar, set_oauth_state_cookie, NewSessionMeta,
+    NewSessionMeta, clear_oauth_state_cookie, oauth_state_from_jar, set_oauth_state_cookie,
 };
 use crate::error::{AppError, AppResult};
 use crate::http_client::outbound_client;
@@ -230,8 +230,14 @@ mod tests {
 
     #[test]
     fn oauth_state_accepts_equal() {
-        assert!(oauth_state_matches(Some("csrf-token-1"), Some("csrf-token-1")));
-        assert!(!oauth_state_matches(Some("csrf-token-1"), Some("csrf-token-2")));
+        assert!(oauth_state_matches(
+            Some("csrf-token-1"),
+            Some("csrf-token-1")
+        ));
+        assert!(!oauth_state_matches(
+            Some("csrf-token-1"),
+            Some("csrf-token-2")
+        ));
     }
 }
 
@@ -260,11 +266,15 @@ async fn reqwest_oauth2_adapter(
     let resp_headers = resp.headers().clone();
     let bytes = resp.bytes().await?.to_vec();
 
-    let mut builder = axum::http::Response::builder().status(status).version(version);
+    let mut builder = axum::http::Response::builder()
+        .status(status)
+        .version(version);
     for (name, value) in &resp_headers {
         builder = builder.header(name, value);
     }
-    Ok(builder.body(bytes).expect("valid HTTP response from reqwest"))
+    Ok(builder
+        .body(bytes)
+        .expect("valid HTTP response from reqwest"))
 }
 
 async fn upsert_google_user(state: &AppState, profile: &GoogleProfile) -> AppResult<Uuid> {

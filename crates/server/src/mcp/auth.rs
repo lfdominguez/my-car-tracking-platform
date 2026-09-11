@@ -1,7 +1,7 @@
 //! Bearer token authentication for MCP HTTP requests.
 
 use axum::extract::State;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use sqlx::PgPool;
@@ -92,11 +92,7 @@ pub async fn mcp_bearer_middleware(
             req.extensions_mut().insert(user);
             next.run(req).await
         }
-        Err(_) => (
-            StatusCode::UNAUTHORIZED,
-            "invalid MCP token",
-        )
-            .into_response(),
+        Err(_) => (StatusCode::UNAUTHORIZED, "invalid MCP token").into_response(),
     }
 }
 

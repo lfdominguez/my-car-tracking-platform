@@ -38,8 +38,8 @@ pub struct OrsClient {
 
 impl OrsClient {
     pub fn new(api_key: impl Into<String>) -> Self {
-        let http = crate::http_client::outbound_client()
-            .expect("failed to build outbound HTTP client");
+        let http =
+            crate::http_client::outbound_client().expect("failed to build outbound HTTP client");
         Self {
             api_key: api_key.into(),
             http,
@@ -149,8 +149,7 @@ struct GeoJsonSegment {
 }
 
 pub fn parse_directions_geojson(text: &str, preference: &str) -> Result<OrsRoute, OrsError> {
-    let fc: GeoJsonFc =
-        serde_json::from_str(text).map_err(|e| OrsError::Parse(e.to_string()))?;
+    let fc: GeoJsonFc = serde_json::from_str(text).map_err(|e| OrsError::Parse(e.to_string()))?;
     let feat = fc
         .features
         .into_iter()
@@ -183,10 +182,7 @@ pub fn parse_directions_geojson(text: &str, preference: &str) -> Result<OrsRoute
     });
 
     let (distance_m, duration_secs) = if let Some(s) = props.summary {
-        (
-            s.distance.unwrap_or(0.0),
-            s.duration.unwrap_or(0.0),
-        )
+        (s.distance.unwrap_or(0.0), s.duration.unwrap_or(0.0))
     } else if let Some(segs) = &props.segments {
         let d: f64 = segs.iter().filter_map(|s| s.distance).sum();
         let t: f64 = segs.iter().filter_map(|s| s.duration).sum();

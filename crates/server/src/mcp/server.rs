@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use axum::middleware as axum_mw;
 use axum::Router;
+use axum::middleware as axum_mw;
 use chrono::{DateTime, Utc};
 use http::request::Parts;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -11,16 +11,16 @@ use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::state::AppState;
 
-use super::auth::{mcp_bearer_middleware, McpUser};
+use super::auth::{McpUser, mcp_bearer_middleware};
 use super::tools::{self, ToolCtx};
 
 #[derive(Clone)]
@@ -93,9 +93,8 @@ struct ListCorridorsArgs {
 }
 
 fn parse_uuid(s: &str, field: &str) -> Result<Uuid, McpError> {
-    Uuid::parse_str(s.trim()).map_err(|_| {
-        McpError::invalid_params(format!("invalid {field} uuid"), None)
-    })
+    Uuid::parse_str(s.trim())
+        .map_err(|_| McpError::invalid_params(format!("invalid {field} uuid"), None))
 }
 
 fn parse_opt_uuid(s: &Option<String>, field: &str) -> Result<Option<Uuid>, McpError> {
@@ -163,7 +162,9 @@ impl CarTrackingMcp {
         tools::json_ok(data)
     }
 
-    #[tool(description = "Get trip header KPIs by trip_id (distance, duration, speeds, fuel, flags).")]
+    #[tool(
+        description = "Get trip header KPIs by trip_id (distance, duration, speeds, fuel, flags)."
+    )]
     async fn get_trip(
         &self,
         Extension(parts): Extension<Parts>,
@@ -233,7 +234,9 @@ impl CarTrackingMcp {
         tools::json_ok(data)
     }
 
-    #[tool(description = "Stored traffic congestion summary for a trip if analyzed (does not run analysis).")]
+    #[tool(
+        description = "Stored traffic congestion summary for a trip if analyzed (does not run analysis)."
+    )]
     async fn get_trip_traffic_summary(
         &self,
         Extension(parts): Extension<Parts>,
@@ -247,7 +250,9 @@ impl CarTrackingMcp {
         tools::json_ok(data)
     }
 
-    #[tool(description = "Stored AI route analysis report for a trip if present (does not trigger analysis).")]
+    #[tool(
+        description = "Stored AI route analysis report for a trip if present (does not trigger analysis)."
+    )]
     async fn get_trip_ai_report(
         &self,
         Extension(parts): Extension<Parts>,
@@ -330,21 +335,14 @@ impl ServerHandler for CarTrackingMcp {
 /// Always keeps loopback entries for local tooling. Optional `extra_csv` is a
 /// comma-separated list (env `MCP_ALLOWED_HOSTS`) for aliases / LAN names.
 pub fn build_mcp_allowed_hosts(public_base_url: &str, extra_csv: Option<&str>) -> Vec<String> {
-    let mut hosts: Vec<String> = vec![
-        "localhost".into(),
-        "127.0.0.1".into(),
-        "::1".into(),
-    ];
+    let mut hosts: Vec<String> = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
 
     let push_unique = |hosts: &mut Vec<String>, candidate: &str| {
         let candidate = candidate.trim();
         if candidate.is_empty() {
             return;
         }
-        if hosts
-            .iter()
-            .any(|h| h.eq_ignore_ascii_case(candidate))
-        {
+        if hosts.iter().any(|h| h.eq_ignore_ascii_case(candidate)) {
             return;
         }
         hosts.push(candidate.to_string());
@@ -391,10 +389,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     Router::new()
         .nest_service("/mcp", service)
-        .layer(axum_mw::from_fn_with_state(
-            state,
-            mcp_bearer_middleware,
-        ))
+        .layer(axum_mw::from_fn_with_state(state, mcp_bearer_middleware))
 }
 
 #[cfg(test)]
@@ -425,7 +420,10 @@ mod tests {
         assert!(hosts.iter().any(|h| h == "192.168.88.10"));
         // Deduped public host from URL + extras
         assert_eq!(
-            hosts.iter().filter(|h| h.as_str() == "track.example.com").count(),
+            hosts
+                .iter()
+                .filter(|h| h.as_str() == "track.example.com")
+                .count(),
             1
         );
     }

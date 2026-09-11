@@ -2,12 +2,16 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use rand::Rng;
 
+use crate::NONCE_LEN;
 use crate::dek::Dek;
 use crate::error::Error;
-use crate::NONCE_LEN;
 
 /// Encrypt plaintext under DEK with AAD. Returns (nonce, ciphertext||tag).
-pub fn encrypt_object(dek: &Dek, plaintext: &[u8], aad: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
+pub fn encrypt_object(
+    dek: &Dek,
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rng().fill_bytes(&mut nonce_bytes);
     encrypt_object_with_nonce(dek, plaintext, aad, nonce_bytes)
@@ -42,13 +46,7 @@ pub fn decrypt_object(dek: &Dek, nonce: &[u8], ct: &[u8], aad: &[u8]) -> Result<
     let cipher = Aes256Gcm::new_from_slice(dek.as_bytes()).map_err(|_| Error::Decrypt)?;
     let nonce = Nonce::try_from(nonce).map_err(|_| Error::InvalidNonce)?;
     cipher
-        .decrypt(
-            &nonce,
-            Payload {
-                msg: ct,
-                aad,
-            },
-        )
+        .decrypt(&nonce, Payload { msg: ct, aad })
         .map_err(|_| Error::Decrypt)
 }
 

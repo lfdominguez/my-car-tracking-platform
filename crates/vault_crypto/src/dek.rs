@@ -135,13 +135,7 @@ pub fn unwrap_dek(wrapped: &WrappedDek, secret: &IdentitySecret) -> Result<Dek, 
     wrap_key.zeroize();
     let nonce = Nonce::try_from(nonce_bytes).map_err(|_| Error::InvalidWrappedDek)?;
     let plain = cipher
-        .decrypt(
-            &nonce,
-            Payload {
-                msg: ct,
-                aad: b"",
-            },
-        )
+        .decrypt(&nonce, Payload { msg: ct, aad: b"" })
         .map_err(|_| Error::Decrypt)?;
 
     Dek::try_from_slice(&plain)

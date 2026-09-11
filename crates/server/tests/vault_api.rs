@@ -4,8 +4,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::json;
 use server::build_router;
 use server::config::Config;

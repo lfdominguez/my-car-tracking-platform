@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 

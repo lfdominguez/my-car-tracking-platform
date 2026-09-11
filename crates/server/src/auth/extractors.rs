@@ -3,7 +3,7 @@ use axum::http::request::Parts;
 use axum_extra::extract::CookieJar;
 use uuid::Uuid;
 
-use crate::auth::session::{load_session_user, SESSION_COOKIE};
+use crate::auth::session::{SESSION_COOKIE, load_session_user};
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::units::UnitSystem;

@@ -5,7 +5,7 @@
 //! passes `<script>` and friends straight through by default, and nothing the model
 //! writes needs raw HTML anyway.
 
-use pulldown_cmark::{html, Event, Options, Parser};
+use pulldown_cmark::{Event, Options, Parser, html};
 
 /// Render markdown to HTML with all raw HTML removed.
 pub fn render(markdown: &str) -> String {

@@ -1,8 +1,6 @@
 //! MCP bearer token helpers (peppered hash, same scheme as device tokens).
 
-use crate::devices::{
-    hash_token as device_hash_token, issue_plaintext_token, verify_token_hash,
-};
+use crate::devices::{hash_token as device_hash_token, issue_plaintext_token, verify_token_hash};
 
 /// Issue a new MCP plaintext token (shown once).
 pub fn issue_mcp_token() -> String {

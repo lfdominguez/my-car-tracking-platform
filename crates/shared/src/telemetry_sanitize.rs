@@ -62,14 +62,7 @@ fn hold_last_good_pass(points: &mut [SpeedRpmPoint]) {
             MAX_SPEED_KPH,
             MAX_SPEED_DELTA_KPH_S,
         );
-        p.rpm = accept(
-            p.rpm,
-            p.t,
-            last_rpm,
-            last_rpm_t,
-            MAX_RPM,
-            MAX_RPM_DELTA_S,
-        );
+        p.rpm = accept(p.rpm, p.t, last_rpm, last_rpm_t, MAX_RPM, MAX_RPM_DELTA_S);
         if p.speed_kph.is_some() {
             last_speed = p.speed_kph;
             last_speed_t = Some(p.t);
@@ -215,6 +208,9 @@ mod tests {
             energy_from_soc_kwh(Some(80.0), Some(60.0), Some(50.0)),
             Some(10.0)
         );
-        assert_eq!(energy_from_soc_kwh(Some(50.0), Some(60.0), Some(50.0)), None);
+        assert_eq!(
+            energy_from_soc_kwh(Some(50.0), Some(60.0), Some(50.0)),
+            None
+        );
     }
 }

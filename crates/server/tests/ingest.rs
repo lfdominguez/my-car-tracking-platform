@@ -125,14 +125,12 @@ async fn track_count(pool: &sqlx::PgPool, car_id: Uuid, started_at: DateTime<Utc
 }
 
 async fn latest_track_id(pool: &sqlx::PgPool, car_id: Uuid) -> Option<Uuid> {
-    sqlx::query_scalar(
-        "SELECT id FROM tracks WHERE car_id = $1 ORDER BY started_at DESC LIMIT 1",
-    )
-    .bind(car_id)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
+    sqlx::query_scalar("SELECT id FROM tracks WHERE car_id = $1 ORDER BY started_at DESC LIMIT 1")
+        .bind(car_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
 }
 
 #[tokio::test]
@@ -363,8 +361,16 @@ async fn finished_track_late_samples_accepted_within_window() {
         .unwrap();
     assert!(resp.status().is_success());
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["accepted"], 1, "late in-window sample must be accepted: {body}");
-    assert!(body["rejected"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+    assert_eq!(
+        body["accepted"], 1,
+        "late in-window sample must be accepted: {body}"
+    );
+    assert!(
+        body["rejected"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(false)
+    );
 }
 
 #[tokio::test]
@@ -430,7 +436,10 @@ async fn finished_track_samples_far_outside_window_rejected() {
         .unwrap();
     assert!(resp.status().is_success());
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["accepted"], 0, "out-of-window late sample must be rejected: {body}");
+    assert_eq!(
+        body["accepted"], 0,
+        "out-of-window late sample must be rejected: {body}"
+    );
     assert_eq!(body["rejected"][0]["reason"], "track_finished");
 }
 
@@ -479,15 +488,17 @@ async fn stop_with_one_point_purges_track() {
     let start = Utc::now();
     let tracking_id = start.to_rfc3339();
 
-    assert!(client
-        .post(format!("{base}/api/track/start"))
-        .header("Authorization", format!("Basic {token}"))
-        .json(&json!({ "timestamp_start": start }))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+    assert!(
+        client
+            .post(format!("{base}/api/track/start"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&json!({ "timestamp_start": start }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
 
     let sample = json!({
         "tracking_id": tracking_id,
@@ -497,25 +508,29 @@ async fn stop_with_one_point_purges_track() {
         "acc": 5.0,
         "vehicle_speed_kph": 10.0
     });
-    assert!(client
-        .post(format!("{base}/api/track/sample"))
-        .header("Authorization", format!("Basic {token}"))
-        .json(&sample)
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+    assert!(
+        client
+            .post(format!("{base}/api/track/sample"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&sample)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
 
-    assert!(client
-        .post(format!("{base}/api/track/stop"))
-        .header("Authorization", format!("Basic {token}"))
-        .json(&json!({ "id": tracking_id }))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+    assert!(
+        client
+            .post(format!("{base}/api/track/stop"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&json!({ "id": tracking_id }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
 
     assert_eq!(
         track_count(&pool, car_id, start).await,
@@ -533,15 +548,17 @@ async fn stop_with_two_points_keeps_finished_track() {
     let start = Utc::now();
     let tracking_id = start.to_rfc3339();
 
-    assert!(client
-        .post(format!("{base}/api/track/start"))
-        .header("Authorization", format!("Basic {token}"))
-        .json(&json!({ "timestamp_start": start }))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+    assert!(
+        client
+            .post(format!("{base}/api/track/start"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&json!({ "timestamp_start": start }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
 
     for i in 0..2 {
         let sample = json!({
@@ -552,26 +569,30 @@ async fn stop_with_two_points_keeps_finished_track() {
             "acc": 5.0,
             "vehicle_speed_kph": 40.0
         });
-        assert!(client
-            .post(format!("{base}/api/track/sample"))
+        assert!(
+            client
+                .post(format!("{base}/api/track/sample"))
+                .header("Authorization", format!("Basic {token}"))
+                .json(&sample)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+    }
+
+    assert!(
+        client
+            .post(format!("{base}/api/track/stop"))
             .header("Authorization", format!("Basic {token}"))
-            .json(&sample)
+            .json(&json!({ "id": tracking_id }))
             .send()
             .await
             .unwrap()
             .status()
-            .is_success());
-    }
-
-    assert!(client
-        .post(format!("{base}/api/track/stop"))
-        .header("Authorization", format!("Basic {token}"))
-        .json(&json!({ "id": tracking_id }))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+            .is_success()
+    );
 
     let row: Option<(bool, i64)> = sqlx::query_as(
         r#"
@@ -599,15 +620,17 @@ async fn stop_with_vault_chunk_keeps_track_even_without_plaintext_points() {
     let start = Utc::now();
     let tracking_id = start.to_rfc3339();
 
-    assert!(client
-        .post(format!("{base}/api/track/start"))
-        .header("Authorization", format!("Basic {token}"))
-        .json(&json!({ "timestamp_start": start }))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+    assert!(
+        client
+            .post(format!("{base}/api/track/start"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&json!({ "timestamp_start": start }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
 
     let track_id = latest_track_id(&pool, car_id)
         .await
@@ -630,15 +653,17 @@ async fn stop_with_vault_chunk_keeps_track_even_without_plaintext_points() {
     .await
     .expect("insert vault chunk");
 
-    assert!(client
-        .post(format!("{base}/api/track/stop"))
-        .header("Authorization", format!("Basic {token}"))
-        .json(&json!({ "id": tracking_id }))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+    assert!(
+        client
+            .post(format!("{base}/api/track/stop"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&json!({ "id": tracking_id }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
 
     assert_eq!(
         track_count(&pool, car_id, start).await,
@@ -702,14 +727,13 @@ async fn batch_accepts_samples_without_gps() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["accepted"], 2, "rejected: {}", body["rejected"]);
 
-    let track_id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2",
-    )
-    .bind(car_id)
-    .bind(start)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let track_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2")
+            .bind(car_id)
+            .bind(start)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // The fixless row is stored with NULL geography and the "unknown accuracy"
     // sentinel, while its engine telemetry survives intact.
@@ -724,12 +748,13 @@ async fn batch_accepts_samples_without_gps() {
     assert_eq!(acc, -1.0);
     assert_eq!(rpm, Some(820.0));
 
-    let with_gps: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM track_points WHERE track_id = $1 AND gps IS NOT NULL")
-            .bind(track_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let with_gps: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM track_points WHERE track_id = $1 AND gps IS NOT NULL",
+    )
+    .bind(track_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(with_gps, 1);
 
     // Half a coordinate pair is still a client bug.

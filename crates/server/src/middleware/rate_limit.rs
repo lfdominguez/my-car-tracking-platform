@@ -4,11 +4,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use governor::clock::{Clock, DefaultClock};
 use governor::state::keyed::DefaultKeyedStateStore;
 use governor::{Quota, RateLimiter};
@@ -71,10 +71,7 @@ pub fn client_ip(
     trust_forwarded: bool,
 ) -> IpAddr {
     if trust_forwarded {
-        if let Some(xff) = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-        {
+        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
             if let Some(first) = xff.split(',').next() {
                 if let Ok(ip) = first.trim().parse::<IpAddr>() {
                     return ip;
@@ -136,7 +133,10 @@ mod tests {
     #[test]
     fn client_ip_trusts_xff_when_enabled() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.4, 10.0.0.1"));
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("198.51.100.4, 10.0.0.1"),
+        );
         let addr: SocketAddr = "203.0.113.9:443".parse().unwrap();
         assert_eq!(
             client_ip(&headers, Some(addr), true),

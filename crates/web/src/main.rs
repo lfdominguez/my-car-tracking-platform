@@ -1,8 +1,8 @@
 mod api;
-mod default_car;
-mod units;
 mod components;
+mod default_car;
 mod pages;
+mod units;
 mod vault;
 
 use leptos::prelude::*;
@@ -14,11 +14,11 @@ use crate::components::provide_theme;
 use crate::pages::cars::{CarDetailPage, CarsPage};
 use crate::pages::chat::{ChatConversationPage, ChatPage};
 use crate::pages::dashboard::DashboardPage;
-use crate::pages::settings::SettingsPage;
 use crate::pages::landing::LandingPage;
 use crate::pages::login::LoginPage;
 use crate::pages::not_found::NotFoundPage;
 use crate::pages::routes::{RouteCorridorPage, RoutesPage};
+use crate::pages::settings::SettingsPage;
 use crate::pages::trips::{TripDetailPage, TripsPage};
 use crate::vault::provide_vault_session;
 

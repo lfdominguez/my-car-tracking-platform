@@ -162,11 +162,7 @@ fn integrate_fuel_l_filtered(
         total += rate * hours;
         segments += 1;
     }
-    if segments == 0 {
-        None
-    } else {
-        Some(total)
-    }
+    if segments == 0 { None } else { Some(total) }
 }
 
 /// Prefer odometer start/end delta (m) when sane; else GPS track length.
@@ -234,17 +230,15 @@ mod tests {
             RateSample {
                 t: t(0),
                 rate_lph: Some(2.0),
-                            speed_kph: None,
+                speed_kph: None,
             },
             RateSample {
                 t: t(1800),
                 rate_lph: Some(2.0),
-                            speed_kph: None,
+                speed_kph: None,
             },
         ];
-        assert!(
-            (integrate_fuel_l(&s, Duration::hours(2)).unwrap() - 1.0).abs() < 1e-9
-        );
+        assert!((integrate_fuel_l(&s, Duration::hours(2)).unwrap() - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -253,12 +247,12 @@ mod tests {
             RateSample {
                 t: t(0),
                 rate_lph: Some(10.0),
-                            speed_kph: None,
+                speed_kph: None,
             },
             RateSample {
                 t: t(600), // 10 min > 5 min
                 rate_lph: Some(10.0),
-                            speed_kph: None,
+                speed_kph: None,
             },
         ];
         assert!(integrate_fuel_l(&s, MAX_RATE_GAP).is_none());
@@ -270,17 +264,17 @@ mod tests {
             RateSample {
                 t: t(0),
                 rate_lph: None,
-                            speed_kph: None,
+                speed_kph: None,
             },
             RateSample {
                 t: t(60),
                 rate_lph: Some(3.0),
-                            speed_kph: None,
+                speed_kph: None,
             },
             RateSample {
                 t: t(120),
                 rate_lph: Some(3.0),
-                            speed_kph: None,
+                speed_kph: None,
             },
         ];
         // only second segment: 3 L/h * 60s
@@ -305,10 +299,7 @@ mod tests {
     fn economy_rejects_coarse_odo_under_gps() {
         // Real trip shape: GPS ~8.6 km, integer odo only ticks 1 km.
         let m = economy_distance_m(Some(8643.66), Some(25409.0), Some(25410.0)).unwrap();
-        assert!(
-            (m - 8643.66).abs() < 1e-3,
-            "expected GPS distance, got {m}"
-        );
+        assert!((m - 8643.66).abs() < 1e-3, "expected GPS distance, got {m}");
     }
 
     #[test]
@@ -513,5 +504,4 @@ mod tests {
         assert!(integrate_fuel_l_moving(&s, Duration::hours(2)).is_none());
         assert!(integrate_fuel_l(&s, Duration::hours(2)).unwrap() > 0.0);
     }
-
 }

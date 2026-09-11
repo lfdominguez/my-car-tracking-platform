@@ -46,7 +46,10 @@ pub fn session_absolutely_expired(
     now > expires_at
 }
 
-pub fn should_touch_last_seen(last_seen: chrono::DateTime<Utc>, now: chrono::DateTime<Utc>) -> bool {
+pub fn should_touch_last_seen(
+    last_seen: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+) -> bool {
     now >= last_seen + Duration::seconds(60)
 }
 

@@ -151,12 +151,7 @@ pub fn split_bbox_tiles(
     tiles
 }
 
-pub fn build_overpass_bbox_ql(
-    min_lat: f64,
-    min_lon: f64,
-    max_lat: f64,
-    max_lon: f64,
-) -> String {
+pub fn build_overpass_bbox_ql(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> String {
     format!(
         r#"[out:json][timeout:{OVERPASS_QL_TIMEOUT_SECS}];
 way["highway"]({min_lat},{min_lon},{max_lat},{max_lon});
@@ -174,9 +169,7 @@ pub fn build_overpass_around_ql(points: &[(f64, f64)], radius_m: f64) -> String 
         ));
     }
     body.push_str(");\n");
-    format!(
-        "[out:json][timeout:{OVERPASS_QL_TIMEOUT_SECS}];\n{body}out tags geom;"
-    )
+    format!("[out:json][timeout:{OVERPASS_QL_TIMEOUT_SECS}];\n{body}out tags geom;")
 }
 
 fn merge_ways(into: &mut std::collections::BTreeMap<i64, OsmWay>, ways: Vec<OsmWay>) {
@@ -274,9 +267,9 @@ pub async fn fetch_ways_bbox(
         }
     }
     if ok_tiles == 0 {
-        return Err(last_err.unwrap_or_else(|| {
-            OverpassError::Parse("overpass returned no tiles".into())
-        }));
+        return Err(
+            last_err.unwrap_or_else(|| OverpassError::Parse("overpass returned no tiles".into()))
+        );
     }
     Ok(merged.into_values().collect())
 }
@@ -298,9 +291,9 @@ pub async fn fetch_ways_around_points(
         if !lat.is_finite() || !lon.is_finite() {
             continue;
         }
-        let dup = unique.iter().any(|(a, b)| {
-            (a - lat).abs() < 1e-5 && (b - lon).abs() < 1e-5
-        });
+        let dup = unique
+            .iter()
+            .any(|(a, b)| (a - lat).abs() < 1e-5 && (b - lon).abs() < 1e-5);
         if !dup {
             unique.push((lat, lon));
         }
@@ -332,9 +325,8 @@ pub async fn fetch_ways_around_points(
         }
     }
     if ok_batches == 0 {
-        return Err(last_err.unwrap_or_else(|| {
-            OverpassError::Parse("overpass around queries all failed".into())
-        }));
+        return Err(last_err
+            .unwrap_or_else(|| OverpassError::Parse("overpass around queries all failed".into())));
     }
     Ok(merged.into_values().collect())
 }
@@ -448,7 +440,6 @@ pub fn free_flow_kph(matched: Option<&MatchedWay>) -> (f64, Option<i64>, bool) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,7 +476,9 @@ mod tests {
         assert!(!is_transient_overpass_status(400));
         assert!(!is_transient_overpass_status(200));
         assert!(is_transient_overpass_error(&OverpassError::Status(504)));
-        assert!(!is_transient_overpass_error(&OverpassError::Parse("x".into())));
+        assert!(!is_transient_overpass_error(&OverpassError::Parse(
+            "x".into()
+        )));
     }
 
     #[test]

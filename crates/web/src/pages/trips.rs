@@ -1,24 +1,22 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 
 use crate::api::{
-    delete_trip, fetch_trip_analysis, finish_trip, get_trip, list_cars, list_trips,
-    start_trip_analysis, start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames,
-    vault_create_job, Car, Trip, TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame,
-};
-use crate::vault::{
-    build_analysis_context_json, decrypt_ai_report, decrypt_track_meta, decrypt_track_points,
-    seal_ai_report, use_vault_session, VaultUnlockGate,
+    Car, Trip, TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame, delete_trip,
+    fetch_trip_analysis, finish_trip, get_trip, list_cars, list_trips, start_trip_analysis,
+    start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames, vault_create_job,
 };
 use crate::components::charts::TripTelemetryDashboard;
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
-use crate::units::{
-    avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, use_unit_prefs,
+use crate::units::{avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, use_unit_prefs};
+use crate::vault::{
+    VaultUnlockGate, build_analysis_context_json, decrypt_ai_report, decrypt_track_meta,
+    decrypt_track_points, seal_ai_report, use_vault_session,
 };
 
 fn fmt_duration(s: Option<f64>) -> String {
@@ -66,13 +64,15 @@ fn fmt_signed_duration(delta_secs: f64) -> String {
     format!("{sign}{}", fmt_engine_on_seconds(delta_secs.abs()))
 }
 
-
 /// Format an API RFC3339 timestamp in the **browser local** timezone.
 /// (Raw UTC strings made morning trips look like afternoon and hard to spot.)
 fn pretty_started(s: &str) -> String {
     use chrono::{DateTime, Local};
     if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
-        return dt.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+        return dt
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
     }
     // Fallback: strip Z and show clock without claiming local.
     let s = s.trim().trim_end_matches('Z');
@@ -180,9 +180,7 @@ fn save_trips_filter(f: TripListFilter) {
 
 fn local_midnight(date: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
     use chrono::{Local, TimeZone};
-    let naive = date
-        .and_hms_opt(0, 0, 0)
-        .expect("midnight is always valid");
+    let naive = date.and_hms_opt(0, 0, 0).expect("midnight is always valid");
     Local
         .from_local_datetime(&naive)
         .single()
@@ -193,9 +191,7 @@ fn local_midnight(date: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
 fn start_of_local_month() -> chrono::DateTime<chrono::Utc> {
     use chrono::{Datelike, Local};
     let today = Local::now().date_naive();
-    let first = today
-        .with_day(1)
-        .expect("day 1 exists for every month");
+    let first = today.with_day(1).expect("day 1 exists for every month");
     local_midnight(first)
 }
 
@@ -748,10 +744,8 @@ pub fn TripDetailPage() -> impl IntoView {
                     match decrypt_track_points(&sess, &car_id, &id_fetch).await {
                         Ok(p) => {
                             if alive_fetch.load(Ordering::SeqCst) {
-                                let coords: Vec<[f64; 2]> = p
-                                    .iter()
-                                    .filter_map(|pt| Some([pt.lon?, pt.lat?]))
-                                    .collect();
+                                let coords: Vec<[f64; 2]> =
+                                    p.iter().filter_map(|pt| Some([pt.lon?, pt.lat?])).collect();
                                 geojson.set(Some(serde_json::json!({
                                     "type": "LineString",
                                     "coordinates": coords,
@@ -916,354 +910,352 @@ pub fn TripDetailPage() -> impl IntoView {
     });
 
     view! {
-        <div class="topbar">
-            <div>
-                <h1 class="section-title">
-                    <Icon name="chart-line" color=IconColor::Accent />
-                    {move || {
-                        trip.get()
-                            .map(|t| format!("{} · {}", t.car_name, pretty_started(&t.started_at)))
-                            .unwrap_or_else(|| "Trip".into())
-                    }}
-                </h1>
-                <p class="muted">
-                    {move || {
-                        trip.get()
-                            .map(|t| {
-                                // Sample count is diagnostics, not a headline metric — it
-                                // rides the meta line instead of taking a stat row.
-                                let status = if t.finished {
-                                    "Finished".to_string()
-                                } else {
-                                    open_trip_status_label(
-                                        t.last_point_at.as_deref(),
-                                        &t.started_at,
+            <div class="topbar">
+                <div>
+                    <h1 class="section-title">
+                        <Icon name="chart-line" color=IconColor::Accent />
+                        {move || {
+                            trip.get()
+                                .map(|t| format!("{} · {}", t.car_name, pretty_started(&t.started_at)))
+                                .unwrap_or_else(|| "Trip".into())
+                        }}
+                    </h1>
+                    <p class="muted">
+                        {move || {
+                            trip.get()
+                                .map(|t| {
+                                    // Sample count is diagnostics, not a headline metric — it
+                                    // rides the meta line instead of taking a stat row.
+                                    let status = if t.finished {
+                                        "Finished".to_string()
+                                    } else {
+                                        open_trip_status_label(
+                                            t.last_point_at.as_deref(),
+                                            &t.started_at,
+                                        )
+                                    };
+                                    format!(
+                                        "{status} · fuel {} · {} samples",
+                                        t.fuel_type_snapshot, t.point_count,
                                     )
+                                })
+                                .unwrap_or_else(|| "Loading trip analytics…".into())
+                        }}
+                    </p>
+                </div>
+                <div class="trip-detail-actions">
+                    <Show when=move || trip.get().map(|t| !t.finished).unwrap_or(false)>
+                        <button
+                            type="button"
+                            class="btn sm"
+                            prop:disabled=move || finishing.get() || deleting.get()
+                            on:click=move |_| {
+                                let Some(t) = trip.get_untracked() else {
+                                    return;
                                 };
-                                format!(
-                                    "{status} · fuel {} · {} samples",
-                                    t.fuel_type_snapshot, t.point_count,
-                                )
-                            })
-                            .unwrap_or_else(|| "Loading trip analytics…".into())
-                    }}
-                </p>
-            </div>
-            <div class="trip-detail-actions">
-                <Show when=move || trip.get().map(|t| !t.finished).unwrap_or(false)>
+                                if finishing.get_untracked() || t.finished {
+                                    return;
+                                }
+                                if !confirm(
+                                    "Mark this trip as finished? Use this if the phone never sent stop. Late GPS samples can still upload for a while.",
+                                ) {
+                                    return;
+                                }
+                                let id = t.id.clone();
+                                finishing.set(true);
+                                leptos::task::spawn_local(async move {
+                                    match finish_trip(&id).await {
+                                        Ok(updated) => {
+                                            trip.set(Some(updated));
+                                            error.set(None);
+                                        }
+                                        Err(e) => error.set(Some(e.to_string())),
+                                    }
+                                    finishing.set(false);
+                                });
+                            }
+                        >
+                            <span class="icon-label">
+                                <Icon name="flag-checkered" size=IconSize::Sm />
+                                {move || if finishing.get() { "Finishing…" } else { "Finish trip" }}
+                            </span>
+                        </button>
+                    </Show>
                     <button
                         type="button"
-                        class="btn sm"
-                        prop:disabled=move || finishing.get() || deleting.get()
+                        class="btn ghost sm err"
+                        prop:disabled=move || deleting.get() || finishing.get() || trip.get().is_none()
                         on:click=move |_| {
                             let Some(t) = trip.get_untracked() else {
                                 return;
                             };
-                            if finishing.get_untracked() || t.finished {
+                            if deleting.get_untracked() {
                                 return;
                             }
-                            if !confirm(
-                                "Mark this trip as finished? Use this if the phone never sent stop. Late GPS samples can still upload for a while.",
-                            ) {
+                            if !confirm("Delete this trip permanently? This cannot be undone.") {
                                 return;
                             }
                             let id = t.id.clone();
-                            finishing.set(true);
+                            let nav = navigate.clone();
+                            deleting.set(true);
                             leptos::task::spawn_local(async move {
-                                match finish_trip(&id).await {
-                                    Ok(updated) => {
-                                        trip.set(Some(updated));
-                                        error.set(None);
+                                match delete_trip(&id).await {
+                                    Ok(()) => {
+                                        nav("/app/trips", Default::default());
                                     }
-                                    Err(e) => error.set(Some(e.to_string())),
+                                    Err(e) => {
+                                        error.set(Some(e.to_string()));
+                                        deleting.set(false);
+                                    }
                                 }
-                                finishing.set(false);
                             });
                         }
                     >
                         <span class="icon-label">
-                            <Icon name="flag-checkered" size=IconSize::Sm />
-                            {move || if finishing.get() { "Finishing…" } else { "Finish trip" }}
+                            <Icon name="trash" size=IconSize::Sm />
+                            {move || if deleting.get() { "Deleting…" } else { "Delete" }}
                         </span>
                     </button>
-                </Show>
-                <button
-                    type="button"
-                    class="btn ghost sm err"
-                    prop:disabled=move || deleting.get() || finishing.get() || trip.get().is_none()
-                    on:click=move |_| {
-                        let Some(t) = trip.get_untracked() else {
-                            return;
-                        };
-                        if deleting.get_untracked() {
-                            return;
-                        }
-                        if !confirm("Delete this trip permanently? This cannot be undone.") {
-                            return;
-                        }
-                        let id = t.id.clone();
-                        let nav = navigate.clone();
-                        deleting.set(true);
-                        leptos::task::spawn_local(async move {
-                            match delete_trip(&id).await {
-                                Ok(()) => {
-                                    nav("/app/trips", Default::default());
-                                }
-                                Err(e) => {
-                                    error.set(Some(e.to_string()));
-                                    deleting.set(false);
-                                }
-                            }
-                        });
-                    }
-                >
-                    <span class="icon-label">
-                        <Icon name="trash" size=IconSize::Sm />
-                        {move || if deleting.get() { "Deleting…" } else { "Delete" }}
-                    </span>
-                </button>
-                <A href="/app/trips">
-                    <span class="btn">
-                        <span class="icon-label">
-                            <Icon name="arrow-left" size=IconSize::Sm />
-                            "All trips"
+                    <A href="/app/trips">
+                        <span class="btn">
+                            <span class="icon-label">
+                                <Icon name="arrow-left" size=IconSize::Sm />
+                                "All trips"
+                            </span>
                         </span>
-                    </span>
-                </A>
-            </div>
-        </div>
-
-        <Show when=move || error.get().is_some()>
-            <div class="error">{move || error.get().unwrap_or_default()}</div>
-        </Show>
-
-        <Show when=move || loading.get() && trip.get().is_none()>
-            <div class="card">
-                <div class="empty-state compact">
-                    <Icon name="spinner-gap" size=IconSize::Lg color=IconColor::Accent />
-                    <div>"Loading trip…"</div>
+                    </A>
                 </div>
             </div>
-        </Show>
 
-        <Show when=move || trip.get().is_some()>
-            {
-                move || {
-                    let t = trip.get().expect("shown when some");
-                    let p = prefs.get();
-                    let econ_dist = t.economy_distance_m.or(t.distance_m);
-                    let l100 = fmt_economy(
-                        avg_economy(t.fuel_used_l, econ_dist, &p),
-                        &p,
-                    );
-                    let l100_moving = fmt_economy(
-                        avg_economy(t.fuel_used_moving_l, econ_dist, &p),
-                        &p,
-                    );
-                    let econ_hint = if t.economy_distance_m.is_some()
-                        && t.distance_m.is_some()
-                        && t.economy_distance_m != t.distance_m
-                    {
-                        Some("full fuel (incl. idle) ÷ odometer distance".to_string())
-                    } else {
-                        Some("full fuel (incl. idle) ÷ GPS distance".to_string())
-                    };
-                    let econ_moving_hint =
-                        Some("fuel while speed ≥ 1 km/h ÷ same distance".to_string());
-                    let econ_label: &'static str = match p.system {
-                        crate::units::UnitSystem::Metric => "Avg L/100km",
-                        crate::units::UnitSystem::Us => "Avg mpg",
-                    };
-                    let fuel_hint = t
-                        .fuel_from_level_l
-                        .map(|lvl| format!("Tank gauge reads ~{}", fmt_fuel(Some(lvl), &p)));
-                    view! {
-                        <div class="stat-panel-grid">
-                            <section class="stat-panel">
-                                <h2 class="stat-panel-title">
-                                    <Icon name="speedometer" size=IconSize::Sm color=IconColor::Accent />
-                                    "Motion"
-                                </h2>
-                                <dl class="stat-rows">
-                                    <StatRow label="Distance" value=fmt_distance(t.distance_m, &p) />
-                                    <StatRow label="Duration" value=fmt_duration(t.duration_s) />
-                                    <StatRow label="Avg speed" value=fmt_speed(t.avg_speed_kph, &p) />
-                                    <StatRow label="Max speed" value=fmt_speed(t.max_speed_kph, &p) />
-                                </dl>
-                            </section>
-                            <section class="stat-panel">
-                                <h2 class="stat-panel-title">
-                                    <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Accent />
-                                    "Fuel"
-                                </h2>
-                                <dl class="stat-rows">
-                                    <StatRow label="Used" value=fmt_fuel(t.fuel_used_l, &p) hint=fuel_hint />
-                                    <StatRow label="Type" value=t.fuel_type_snapshot.clone() />
-                                    <StatRow label=econ_label value=l100 hint=econ_hint />
-                                    <StatRow label="While moving" value=l100_moving hint=econ_moving_hint />
-                                </dl>
-                            </section>
-                        </div>
+            <Show when=move || error.get().is_some()>
+                <div class="error">{move || error.get().unwrap_or_default()}</div>
+            </Show>
+
+            <Show when=move || loading.get() && trip.get().is_none()>
+                <div class="card">
+                    <div class="empty-state compact">
+                        <Icon name="spinner-gap" size=IconSize::Lg color=IconColor::Accent />
+                        <div>"Loading trip…"</div>
+                    </div>
+                </div>
+            </Show>
+
+            <Show when=move || trip.get().is_some()>
+                {
+                    move || {
+                        let t = trip.get().expect("shown when some");
+                        let p = prefs.get();
+                        let econ_dist = t.economy_distance_m.or(t.distance_m);
+                        let l100 = fmt_economy(
+                            avg_economy(t.fuel_used_l, econ_dist, &p),
+                            &p,
+                        );
+                        let l100_moving = fmt_economy(
+                            avg_economy(t.fuel_used_moving_l, econ_dist, &p),
+                            &p,
+                        );
+                        let econ_hint = if t.economy_distance_m.is_some()
+                            && t.distance_m.is_some()
+                            && t.economy_distance_m != t.distance_m
+                        {
+                            Some("full fuel (incl. idle) ÷ odometer distance".to_string())
+                        } else {
+                            Some("full fuel (incl. idle) ÷ GPS distance".to_string())
+                        };
+                        let econ_moving_hint =
+                            Some("fuel while speed ≥ 1 km/h ÷ same distance".to_string());
+                        let econ_label: &'static str = match p.system {
+                            crate::units::UnitSystem::Metric => "Avg L/100km",
+                            crate::units::UnitSystem::Us => "Avg mpg",
+                        };
+                        let fuel_hint = t
+                            .fuel_from_level_l
+                            .map(|lvl| format!("Tank gauge reads ~{}", fmt_fuel(Some(lvl), &p)));
+                        view! {
+                            <div class="stat-panel-grid">
+                                <section class="stat-panel">
+                                    <h2 class="stat-panel-title">
+                                        <Icon name="speedometer" size=IconSize::Sm color=IconColor::Accent />
+                                        "Motion"
+                                    </h2>
+                                    <dl class="stat-rows">
+                                        <StatRow label="Distance" value=fmt_distance(t.distance_m, &p) />
+                                        <StatRow label="Duration" value=fmt_duration(t.duration_s) />
+                                        <StatRow label="Avg speed" value=fmt_speed(t.avg_speed_kph, &p) />
+                                        <StatRow label="Max speed" value=fmt_speed(t.max_speed_kph, &p) />
+                                    </dl>
+                                </section>
+                                <section class="stat-panel">
+                                    <h2 class="stat-panel-title">
+                                        <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Accent />
+                                        "Fuel"
+                                    </h2>
+                                    <dl class="stat-rows">
+                                        <StatRow label="Used" value=fmt_fuel(t.fuel_used_l, &p) hint=fuel_hint />
+                                        <StatRow label="Type" value=t.fuel_type_snapshot.clone() />
+                                        <StatRow label=econ_label value=l100 hint=econ_hint />
+                                        <StatRow label="While moving" value=l100_moving hint=econ_moving_hint />
+                                    </dl>
+                                </section>
+                            </div>
+                        }
                     }
                 }
-            }
-        </Show>
+            </Show>
 
-<Show when=move || {
-            let pts = points.get();
-            first_last(&pts, |pt| pt.odometer_value_km).is_some()
-                || first_last(&pts, |pt| pt.engine_on_time).is_some()
-        }>
-            <div class="context-chip-row" aria-label="Trip context counters">
-                <Show when=move || first_last(&points.get(), |pt| pt.odometer_value_km).is_some()>
-                    {
-                        move || {
-                            let p = prefs.get();
-                            let (start, end) = first_last(&points.get(), |pt| pt.odometer_value_km)
-                                .expect("shown when some");
-                            let delta = end - start;
-                            let unit = p.labels.odometer;
-                            view! {
-                                <div class="context-chip">
-                                    <span class="context-chip-label">
-                                        <Icon name="gauge" color=IconColor::Accent />
-                                        "Odometer"
-                                    </span>
-                                    <span class="context-chip-range">
-                                        <span class="context-chip-num">{fmt_odo_value(start, unit)}</span>
-                                        <span class="context-chip-arrow" aria-hidden="true">"→"</span>
-                                        <span class="context-chip-num">{fmt_odo_value(end, unit)}</span>
-                                    </span>
-                                    <span class="context-chip-delta">{format!("{delta:+.1} {unit}")}</span>
-                                </div>
+    <Show when=move || {
+                let pts = points.get();
+                first_last(&pts, |pt| pt.odometer_value_km).is_some()
+                    || first_last(&pts, |pt| pt.engine_on_time).is_some()
+            }>
+                <div class="context-chip-row" aria-label="Trip context counters">
+                    <Show when=move || first_last(&points.get(), |pt| pt.odometer_value_km).is_some()>
+                        {
+                            move || {
+                                let p = prefs.get();
+                                let (start, end) = first_last(&points.get(), |pt| pt.odometer_value_km)
+                                    .expect("shown when some");
+                                let delta = end - start;
+                                let unit = p.labels.odometer;
+                                view! {
+                                    <div class="context-chip">
+                                        <span class="context-chip-label">
+                                            <Icon name="gauge" color=IconColor::Accent />
+                                            "Odometer"
+                                        </span>
+                                        <span class="context-chip-range">
+                                            <span class="context-chip-num">{fmt_odo_value(start, unit)}</span>
+                                            <span class="context-chip-arrow" aria-hidden="true">"→"</span>
+                                            <span class="context-chip-num">{fmt_odo_value(end, unit)}</span>
+                                        </span>
+                                        <span class="context-chip-delta">{format!("{delta:+.1} {unit}")}</span>
+                                    </div>
+                                }
                             }
                         }
-                    }
-                </Show>
-                <Show when=move || first_last(&points.get(), |pt| pt.engine_on_time).is_some()>
-                    {
-                        move || {
-                            let (start, end) = first_last(&points.get(), |pt| pt.engine_on_time)
-                                .expect("shown when some");
-                            let delta = end - start;
-                            view! {
-                                <div class="context-chip">
-                                    <span class="context-chip-label">
-                                        <Icon name="timer" color=IconColor::Accent />
-                                        "Engine run"
-                                    </span>
-                                    <span class="context-chip-range">
-                                        <span class="context-chip-num">{fmt_engine_on_seconds(start)}</span>
-                                        <span class="context-chip-arrow" aria-hidden="true">"→"</span>
-                                        <span class="context-chip-num">{fmt_engine_on_seconds(end)}</span>
-                                    </span>
-                                    <span class="context-chip-delta">{fmt_signed_duration(delta)}</span>
-                                </div>
+                    </Show>
+                    <Show when=move || first_last(&points.get(), |pt| pt.engine_on_time).is_some()>
+                        {
+                            move || {
+                                let (start, end) = first_last(&points.get(), |pt| pt.engine_on_time)
+                                    .expect("shown when some");
+                                let delta = end - start;
+                                view! {
+                                    <div class="context-chip">
+                                        <span class="context-chip-label">
+                                            <Icon name="timer" color=IconColor::Accent />
+                                            "Engine run"
+                                        </span>
+                                        <span class="context-chip-range">
+                                            <span class="context-chip-num">{fmt_engine_on_seconds(start)}</span>
+                                            <span class="context-chip-arrow" aria-hidden="true">"→"</span>
+                                            <span class="context-chip-num">{fmt_engine_on_seconds(end)}</span>
+                                        </span>
+                                        <span class="context-chip-delta">{fmt_signed_duration(delta)}</span>
+                                    </div>
+                                }
                             }
                         }
-                    }
-                </Show>
-            </div>
-        </Show>
-
-
-        <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !use_vault_session().is_unlocked()>
-            <VaultUnlockGate message="Unlock the vault to decrypt trip points and AI reports.".to_string()/>
-        </Show>
-
-        <TripAiPanel
-            trip_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
-            trip=trip
-            points=points
-            analysis=analysis
-            analysis_busy=analysis_busy
-            analysis_err=analysis_err
-        />
-
-        <div class="card route-card">
-            <div class="telemetry-section-head">
-                <h2 class="section-title">
-                    <Icon name="map-pin" color=IconColor::Accent />
-                    "Route"
-                </h2>
-                <span class="muted">
-                    {move || {
-                        if traffic_frames.get().is_empty() {
-                            "Speed-colored route · Liberty".to_string()
-                        } else {
-                            "Traffic-colored route · Liberty".to_string()
-                        }
-                    }}
-                </span>
-            </div>
-            {traffic_route_toolbar(
-                trip,
-                traffic_frames,
-                traffic_busy,
-                traffic_err,
-            )}
-            <TripMap
-                geojson=geojson.into()
-                points=points
-                traffic_frames=Signal::derive(move || traffic_frames.get())
-            />
-            <div class="map-legend">
-                <div class="map-speed-legend" title="Free flow → jam (or trip speed scale)">
-                    <span class="map-speed-label" id="trip-speed-min">"—"</span>
-                    <div class="map-speed-bar" id="trip-speed-bar" aria-hidden="true"></div>
-                    <span class="map-speed-label" id="trip-speed-max">"—"</span>
+                    </Show>
                 </div>
-                <div class="map-legend-actions">
-                    <p class="muted map-legend-note">
+            </Show>
+
+
+            <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !use_vault_session().is_unlocked()>
+                <VaultUnlockGate message="Unlock the vault to decrypt trip points and AI reports.".to_string()/>
+            </Show>
+
+            <TripAiPanel
+                trip_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
+                trip=trip
+                points=points
+                analysis=analysis
+                analysis_busy=analysis_busy
+                analysis_err=analysis_err
+            />
+
+            <div class="card route-card">
+                <div class="telemetry-section-head">
+                    <h2 class="section-title">
+                        <Icon name="map-pin" color=IconColor::Accent />
+                        "Route"
+                    </h2>
+                    <span class="muted">
                         {move || {
                             if traffic_frames.get().is_empty() {
-                                format!(
-                                    "Circles = stops ≥1 min · chevrons show speed ({}) · hover route for RPM · click to pin charts",
-                                    prefs.get().labels.speed
-                                )
+                                "Speed-colored route · Liberty".to_string()
                             } else {
-                                format!(
-                                    "Route colors = congestion · grey = signal stop · chevrons show speed ({})",
-                                    prefs.get().labels.speed
-                                )
+                                "Traffic-colored route · Liberty".to_string()
                             }
                         }}
-                    </p>
-                    <button
-                        type="button"
-                        class="btn btn-ghost btn-sm"
-                        id="trip-selection-clear"
-                        hidden
-                    >
-                        "Clear selection"
-                    </button>
+                    </span>
+                </div>
+                {traffic_route_toolbar(
+                    trip,
+                    traffic_frames,
+                    traffic_busy,
+                    traffic_err,
+                )}
+                <TripMap
+                    geojson=geojson.into()
+                    points=points
+                    traffic_frames=Signal::derive(move || traffic_frames.get())
+                />
+                <div class="map-legend">
+                    <div class="map-speed-legend" title="Free flow → jam (or trip speed scale)">
+                        <span class="map-speed-label" id="trip-speed-min">"—"</span>
+                        <div class="map-speed-bar" id="trip-speed-bar" aria-hidden="true"></div>
+                        <span class="map-speed-label" id="trip-speed-max">"—"</span>
+                    </div>
+                    <div class="map-legend-actions">
+                        <p class="muted map-legend-note">
+                            {move || {
+                                if traffic_frames.get().is_empty() {
+                                    format!(
+                                        "Circles = stops ≥1 min · chevrons show speed ({}) · hover route for RPM · click to pin charts",
+                                        prefs.get().labels.speed
+                                    )
+                                } else {
+                                    format!(
+                                        "Route colors = congestion · grey = signal stop · chevrons show speed ({})",
+                                        prefs.get().labels.speed
+                                    )
+                                }
+                            }}
+                        </p>
+                        <button
+                            type="button"
+                            class="btn btn-ghost btn-sm"
+                            id="trip-selection-clear"
+                            hidden
+                        >
+                            "Clear selection"
+                        </button>
+                    </div>
                 </div>
             </div>
-        </div>
 
-        
 
-        <div class="telemetry-block">
-            <div class="telemetry-block-head">
-                <h2 class="section-title">
-                    <Icon name="pulse" color=IconColor::Accent />
-                    "Telemetry"
-                </h2>
-                <p class="muted">"Summary badges, overview charts by default, category filters, and smooth trends — expand ⓘ on any chart for what it means."</p>
+
+            <div class="telemetry-block">
+                <div class="telemetry-block-head">
+                    <h2 class="section-title">
+                        <Icon name="pulse" color=IconColor::Accent />
+                        "Telemetry"
+                    </h2>
+                    <p class="muted">"Summary badges, overview charts by default, category filters, and smooth trends — expand ⓘ on any chart for what it means."</p>
+                </div>
+                <TripTelemetryDashboard
+                    points=points.into()
+                    trip_economy=Signal::derive(move || {
+                        let t = trip.get()?;
+                        let p = prefs.get();
+                        avg_economy(t.fuel_used_l, t.economy_distance_m.or(t.distance_m), &p)
+                    })
+                />
             </div>
-            <TripTelemetryDashboard
-                points=points.into()
-                trip_economy=Signal::derive(move || {
-                    let t = trip.get()?;
-                    let p = prefs.get();
-                    avg_economy(t.fuel_used_l, t.economy_distance_m.or(t.distance_m), &p)
-                })
-            />
-        </div>
-    }
+        }
 }
-
-
 
 /// Traffic controls live on the Route card (map is colored by congestion).
 fn traffic_route_toolbar(
@@ -1477,7 +1469,11 @@ fn traffic_route_toolbar(
     }
 }
 
-fn friendly_traffic_status(status: &str, analyzed: bool, busy: bool) -> (&'static str, &'static str) {
+fn friendly_traffic_status(
+    status: &str,
+    analyzed: bool,
+    busy: bool,
+) -> (&'static str, &'static str) {
     if busy || status == "pending" {
         return ("Estimating…", "ai-status-badge is-running");
     }
@@ -1609,7 +1605,8 @@ fn TripAiPanel(
                     if !sess.is_unlocked() {
                         if alive_job.load(Ordering::SeqCst) {
                             analysis_err.set(Some(
-                                "Unlock vault and consent to send a temporary analysis bundle.".into(),
+                                "Unlock vault and consent to send a temporary analysis bundle."
+                                    .into(),
                             ));
                             analysis_busy.set(false);
                         }
@@ -1637,12 +1634,10 @@ fn TripAiPanel(
                                     job.error.unwrap_or_else(|| "Vault analysis failed".into()),
                                 ));
                             } else if let Some(report) = job.result {
-                                if let Err(e) =
-                                    seal_ai_report(&sess, &t.car_id, &id, &report).await
+                                if let Err(e) = seal_ai_report(&sess, &t.car_id, &id, &report).await
                                 {
-                                    analysis_err.set(Some(format!(
-                                        "Analysis ok but seal failed: {e}"
-                                    )));
+                                    analysis_err
+                                        .set(Some(format!("Analysis ok but seal failed: {e}")));
                                 }
                                 analysis.set(Some(TripAnalysis {
                                     analyzed: true,
@@ -1657,8 +1652,7 @@ fn TripAiPanel(
                         }
                         Err(e) => {
                             if alive_job.load(Ordering::SeqCst) {
-                                analysis_err
-                                    .set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                                analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
                             }
                         }
                     }
@@ -1681,9 +1675,8 @@ fn TripAiPanel(
                                 }
                                 Err(e) => {
                                     if alive_job.load(Ordering::SeqCst) {
-                                        analysis_err.set(Some(sanitize_analysis_ui_error(
-                                            &e.to_string(),
-                                        )));
+                                        analysis_err
+                                            .set(Some(sanitize_analysis_ui_error(&e.to_string())));
                                     }
                                     break;
                                 }
@@ -1692,8 +1685,7 @@ fn TripAiPanel(
                         },
                         Err(e) => {
                             if alive_job.load(Ordering::SeqCst) {
-                                analysis_err
-                                    .set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                                analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
                             }
                         }
                     }

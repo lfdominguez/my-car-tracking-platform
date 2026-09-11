@@ -2,11 +2,11 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::api::TripPoint;
-use crate::units::{
-    headline_economy, integrated_economy, use_unit_prefs, windowed_economy_series, EconomySample,
-    ECONOMY_WINDOW_S,
-};
 use crate::components::{Icon, IconColor, IconSize};
+use crate::units::{
+    ECONOMY_WINDOW_S, EconomySample, headline_economy, integrated_economy, use_unit_prefs,
+    windowed_economy_series,
+};
 
 #[wasm_bindgen(inline_js = r#"
 const __tripCharts = new Map();
@@ -494,8 +494,7 @@ struct PanelDef {
 /// them every chart label falls back to the browser's default sans and visibly
 /// disagrees with the rest of the UI.
 const CHART_FONT_UI: &str = "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
-const CHART_FONT_NUM: &str =
-    "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace";
+const CHART_FONT_NUM: &str = "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace";
 
 /// Healthy closed-loop fuel trim band (percent). Outside this is worth investigating.
 const FUEL_TRIM_HEALTHY_PCT: f64 = 10.0;
@@ -602,11 +601,7 @@ fn mean_finite(vals: impl Iterator<Item = f64>) -> Option<f64> {
             n += 1;
         }
     }
-    if n == 0 {
-        None
-    } else {
-        Some(sum / n as f64)
-    }
+    if n == 0 { None } else { Some(sum / n as f64) }
 }
 
 fn max_finite(vals: impl Iterator<Item = f64>) -> Option<f64> {
@@ -1065,7 +1060,9 @@ fn build_mixture_option(
 
     let stft = series.iter().find(|s| s.name.starts_with("STFT"));
     let ltft = series.iter().find(|s| s.name.starts_with("LTFT"));
-    let lambda = series.iter().find(|s| s.name.to_ascii_lowercase().contains("lambda"));
+    let lambda = series
+        .iter()
+        .find(|s| s.name.to_ascii_lowercase().contains("lambda"));
 
     let use_right = lambda.map(|s| series_has_data(&s.data)).unwrap_or(false);
     let (_tooltip, legend, grid, data_zoom) = shared_chart_chrome(use_right, true);
@@ -1346,10 +1343,7 @@ fn build_signal_chips(
     ) {
         chips.push(SignalChip {
             label: "Speed".into(),
-            value: format!(
-                "avg {:.0} · max {:.0} {}",
-                avg, max, prefs.labels.speed
-            ),
+            value: format!("avg {:.0} · max {:.0} {}", avg, max, prefs.labels.speed),
         });
     }
     if let Some(peak) = max_finite(raw.iter().filter_map(coalesce_rpm)) {
@@ -1381,7 +1375,10 @@ fn build_signal_chips(
             value: format!("last {:.0}° · max {:.0}°C", last, max),
         });
     }
-    let volts: Vec<f64> = raw.iter().filter_map(|p| p.control_module_voltage).collect();
+    let volts: Vec<f64> = raw
+        .iter()
+        .filter_map(|p| p.control_module_voltage)
+        .collect();
     if let (Some(min_v), Some(max_v)) = (
         min_finite(volts.iter().copied()),
         max_finite(volts.iter().copied()),
@@ -1759,11 +1756,7 @@ pub fn TripTelemetryDashboard(
                 || p.mass_air_flow.is_some()
         });
 
-        let line_smooth = if want_smooth {
-            LINE_SMOOTH_VISUAL
-        } else {
-            0.0
-        };
+        let line_smooth = if want_smooth { LINE_SMOOTH_VISUAL } else { 0.0 };
         Some((labels, times, sections, has_obd, line_smooth))
     });
 
@@ -2106,8 +2099,16 @@ mod tests {
         ];
         let opt = build_mixture_option(&labels, &times, &series, 0.0);
         let y0 = &opt["yAxis"][0];
-        assert!(y0.get("min").is_none(), "min must be omitted, got {:?}", y0.get("min"));
-        assert!(y0.get("max").is_none(), "max must be omitted, got {:?}", y0.get("max"));
+        assert!(
+            y0.get("min").is_none(),
+            "min must be omitted, got {:?}",
+            y0.get("min")
+        );
+        assert!(
+            y0.get("max").is_none(),
+            "max must be omitted, got {:?}",
+            y0.get("max")
+        );
         // Candlestick series must not contain JSON null data points.
         for s in opt["series"].as_array().unwrap() {
             if s["type"] == "candlestick" {
@@ -2118,4 +2119,3 @@ mod tests {
         }
     }
 }
-

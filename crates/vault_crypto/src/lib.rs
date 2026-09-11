@@ -21,12 +21,12 @@ mod recovery;
 
 pub use aad::aad_v1;
 pub use dek::{
-    generate_dek, unwrap_dek, wrap_dek, wrap_dek_with_eph, wrap_dek_with_rng, Dek, WrappedDek,
+    Dek, WrappedDek, generate_dek, unwrap_dek, wrap_dek, wrap_dek_with_eph, wrap_dek_with_rng,
 };
 pub use error::Error;
-pub use identity::{identity_from_recovery, public_identity, IdentityPublic, IdentitySecret};
+pub use identity::{IdentityPublic, IdentitySecret, identity_from_recovery, public_identity};
 pub use object::{decrypt_object, encrypt_object, encrypt_object_with_nonce};
-pub use recovery::{generate_recovery_key, RecoveryKey};
+pub use recovery::{RecoveryKey, generate_recovery_key};
 
 /// Domain separation for identity key derivation.
 pub const HKDF_INFO_IDENTITY: &[u8] = b"ctp-vault-id-x25519-v1";
@@ -44,4 +44,3 @@ pub const WRAPPED_DEK_OVERHEAD: usize = X25519_LEN + NONCE_LEN + 16;
 
 /// Algorithm label stored alongside wraps in the DB.
 pub const WRAP_ALG_V1: &str = "x25519-hkdf-sha256-aes256gcm-v1";
-

@@ -2,18 +2,21 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 
 use crate::api::{
-    get_dashboard, list_trips, DashboardCarSummary, DashboardSummary, Trip, TripListOpts,
+    DashboardCarSummary, DashboardSummary, Trip, TripListOpts, get_dashboard, list_trips,
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{
-    avg_economy, fmt_distance, fmt_distance_value, fmt_economy, fmt_fuel, fmt_odometer_delta,
-    use_unit_prefs, UnitPrefs,
+    UnitPrefs, avg_economy, fmt_distance, fmt_distance_value, fmt_economy, fmt_fuel,
+    fmt_odometer_delta, use_unit_prefs,
 };
 
 fn pretty_started_local(s: &str) -> String {
     use chrono::{DateTime, Local};
     if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
-        return dt.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+        return dt
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
     }
     s.to_string()
 }
@@ -248,7 +251,9 @@ fn RadialGauge(pct: Option<f64>, label: &'static str, icon: &'static str) -> imp
         Some(_) => "danger",
         None => "unknown",
     };
-    let value_text = clamped.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "—".into());
+    let value_text = clamped
+        .map(|v| format!("{v:.0}%"))
+        .unwrap_or_else(|| "—".into());
 
     view! {
         <div class=format!("dash-gauge dash-gauge--{tone}")>
@@ -287,9 +292,17 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefs) -> impl IntoView {
     // Full-electric cars show HV battery state of charge; everything else
     // (gasoline/diesel/hybrid) shows the liquid-fuel tank reading.
     let is_electric = car.fuel_class.eq_ignore_ascii_case("FULL_ELECTRIC");
-    let gauge_pct = if is_electric { car.battery_soc_pct } else { car.fuel_level_pct };
+    let gauge_pct = if is_electric {
+        car.battery_soc_pct
+    } else {
+        car.fuel_level_pct
+    };
     let gauge_label = if is_electric { "Battery" } else { "Fuel" };
-    let gauge_icon = if is_electric { "battery-full" } else { "gas-pump" };
+    let gauge_icon = if is_electric {
+        "battery-full"
+    } else {
+        "gas-pump"
+    };
 
     let tracked = fmt_distance(Some(car.tracked_distance_m), &prefs);
     let trips_label = if car.trip_count == 1 {

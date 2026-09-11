@@ -6,7 +6,7 @@ use axum::routing::{delete, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
-use crate::audit::{self, actions, AuditEvent};
+use crate::audit::{self, AuditEvent, actions};
 use crate::auth::AuthUser;
 use crate::error::AppResult;
 use crate::state::AppState;
@@ -78,10 +78,7 @@ async fn rotate_mcp_token(
     }))
 }
 
-async fn revoke_mcp_token(
-    State(state): State<AppState>,
-    user: AuthUser,
-) -> AppResult<StatusCode> {
+async fn revoke_mcp_token(State(state): State<AppState>, user: AuthUser) -> AppResult<StatusCode> {
     sqlx::query(
         r#"
         UPDATE users
@@ -120,7 +117,13 @@ mod tests {
 
     #[test]
     fn mcp_url_trims_slash() {
-        assert_eq!(mcp_url("http://localhost:8080/"), "http://localhost:8080/mcp");
-        assert_eq!(mcp_url("http://localhost:8080"), "http://localhost:8080/mcp");
+        assert_eq!(
+            mcp_url("http://localhost:8080/"),
+            "http://localhost:8080/mcp"
+        );
+        assert_eq!(
+            mcp_url("http://localhost:8080"),
+            "http://localhost:8080/mcp"
+        );
     }
 }

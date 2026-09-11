@@ -111,11 +111,20 @@ async fn mcp_token_rotate_revoke_and_bearer_gate() {
         .send()
         .await
         .expect("rotate");
-    assert!(rotate.status().is_success(), "rotate status {}", rotate.status());
+    assert!(
+        rotate.status().is_success(),
+        "rotate status {}",
+        rotate.status()
+    );
     let body: serde_json::Value = rotate.json().await.expect("rotate json");
     let token = body["token"].as_str().expect("token").to_string();
     assert!(!token.is_empty());
-    assert!(body["hint"].as_str().map(|h| !h.is_empty()).unwrap_or(false));
+    assert!(
+        body["hint"]
+            .as_str()
+            .map(|h| !h.is_empty())
+            .unwrap_or(false)
+    );
     assert!(body["mcp_url"].as_str().unwrap_or("").ends_with("/mcp"));
 
     let me1: serde_json::Value = ctx

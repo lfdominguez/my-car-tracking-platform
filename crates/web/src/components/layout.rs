@@ -4,7 +4,7 @@ use leptos_router::hooks::{use_location, use_navigate};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
-use crate::api::{get_me, logout, Me};
+use crate::api::{Me, get_me, logout};
 use crate::components::{Icon, IconColor, ThemeToggle};
 use crate::units::{UnitPrefs, UnitPrefsSignal};
 
@@ -37,7 +37,8 @@ pub fn AppLayout() -> impl IntoView {
             let on_off = Closure::wrap(Box::new(move |_e: web_sys::Event| {
                 offline_sig.set(true);
             }) as Box<dyn FnMut(_)>);
-            let _ = win.add_event_listener_with_callback("offline", on_off.as_ref().unchecked_ref());
+            let _ =
+                win.add_event_listener_with_callback("offline", on_off.as_ref().unchecked_ref());
             on_off.forget();
 
             let offline_sig = offline;

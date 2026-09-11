@@ -5,11 +5,11 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::frames::{build_frames, label_frames, RawPoint, ScoredFrame};
+use super::frames::{RawPoint, ScoredFrame, build_frames, label_frames};
 use super::overpass::{fetch_ways_bbox, free_flow_kph, match_way, upsert_ways};
-use super::score::{apply_history_boost, TrafficLevel};
+use super::score::{TrafficLevel, apply_history_boost};
 use crate::http_client;
-use crate::route_opt::{haversine_m, LatLon};
+use crate::route_opt::{LatLon, haversine_m};
 
 #[derive(Debug, thiserror::Error)]
 pub enum JobError {
@@ -62,16 +62,7 @@ pub async fn process_finished_track(
         return Ok(());
     }
 
-    let rows = sqlx::query_as::<
-        _,
-        (
-            DateTime<Utc>,
-            f64,
-            f64,
-            Option<f64>,
-            Option<f64>,
-        ),
-    >(
+    let rows = sqlx::query_as::<_, (DateTime<Utc>, f64, f64, Option<f64>, Option<f64>)>(
         r#"
         SELECT recorded_at,
                ST_Y(gps::geometry) AS lat,

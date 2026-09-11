@@ -108,7 +108,11 @@ pub fn v_ff_from_osm(maxspeed_kph: Option<f64>, highway: &str) -> f64 {
 }
 
 /// Optional history boost: raise free-flow toward off-peak p85, capped.
-pub fn apply_history_boost(v_ff: f64, p85_offpeak: Option<f64>, has_explicit_maxspeed: bool) -> f64 {
+pub fn apply_history_boost(
+    v_ff: f64,
+    p85_offpeak: Option<f64>,
+    has_explicit_maxspeed: bool,
+) -> f64 {
     let Some(p85) = p85_offpeak.filter(|v| v.is_finite() && *v > 0.0) else {
         return v_ff;
     };
@@ -146,7 +150,10 @@ mod tests {
     #[test]
     fn position_types_cover_complex_vs_city() {
         assert_eq!(position_type_from_highway("service"), "service_access");
-        assert_eq!(position_type_from_highway("residential"), "residential_street");
+        assert_eq!(
+            position_type_from_highway("residential"),
+            "residential_street"
+        );
         assert_eq!(position_type_from_highway("living_street"), "living_street");
         assert_eq!(position_type_from_highway("primary"), "primary_city_road");
         assert_eq!(position_type_from_highway("motorway_link"), "motorway");

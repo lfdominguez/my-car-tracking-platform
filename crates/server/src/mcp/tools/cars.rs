@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::shares::access::can_read_car;
 
-use super::{reject_vault, ToolCtx};
+use super::{ToolCtx, reject_vault};
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct CarRow {

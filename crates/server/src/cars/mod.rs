@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use axum::body::Body;
 use axum::extract::{Multipart, Path as AxumPath, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -31,10 +31,7 @@ pub fn router() -> Router<AppState> {
 
 /// Photo routes (GET/POST) — higher body limit applied by `build_router`.
 pub fn photo_router() -> Router<AppState> {
-    Router::new().route(
-        "/api/cars/{id}/photo",
-        get(get_photo).post(upload_photo),
-    )
+    Router::new().route("/api/cars/{id}/photo", get(get_photo).post(upload_photo))
 }
 
 /// Detected image type from magic bytes.
@@ -68,16 +65,11 @@ pub fn sniff_image(bytes: &[u8]) -> Option<ImageKind> {
     if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
         return Some(ImageKind::Jpeg);
     }
-    if bytes.len() >= 8
-        && bytes[0..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
-    {
+    if bytes.len() >= 8 && bytes[0..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
         return Some(ImageKind::Png);
     }
     // RIFF....WEBP
-    if bytes.len() >= 12
-        && &bytes[0..4] == b"RIFF"
-        && &bytes[8..12] == b"WEBP"
-    {
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         return Some(ImageKind::Webp);
     }
     None
@@ -99,20 +91,13 @@ fn content_type_for_path(path: &str) -> &'static str {
 
 /// Ensure stored photo_path stays under upload_dir (no path traversal).
 fn resolve_photo_file(upload_dir: &Path, photo_path: &str) -> AppResult<PathBuf> {
-    if photo_path.is_empty()
-        || photo_path.contains("..")
-        || Path::new(photo_path).is_absolute()
-    {
+    if photo_path.is_empty() || photo_path.contains("..") || Path::new(photo_path).is_absolute() {
         return Err(AppError::NotFound);
     }
 
-    let canon_root = upload_dir
-        .canonicalize()
-        .map_err(|_| AppError::NotFound)?;
+    let canon_root = upload_dir.canonicalize().map_err(|_| AppError::NotFound)?;
     let candidate = canon_root.join(photo_path);
-    let canon_candidate = candidate
-        .canonicalize()
-        .map_err(|_| AppError::NotFound)?;
+    let canon_candidate = candidate.canonicalize().map_err(|_| AppError::NotFound)?;
 
     if !canon_candidate.starts_with(&canon_root) {
         return Err(AppError::NotFound);
@@ -144,7 +129,6 @@ pub struct CarRow {
     /// Owner has active vault; sensitive fields may be placeholders.
     pub vault_sealed: bool,
 }
-
 
 fn seal_car_if_vault(mut car: CarRow) -> CarRow {
     if car.vault_sealed {
@@ -184,10 +168,7 @@ pub struct UpdateCarRequest {
     pub notes: Option<String>,
 }
 
-async fn list_cars(
-    State(state): State<AppState>,
-    user: AuthUser,
-) -> AppResult<Json<Vec<CarRow>>> {
+async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<Json<Vec<CarRow>>> {
     let rows = sqlx::query_as::<_, CarRow>(
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
@@ -226,10 +207,8 @@ async fn create_car(
         return Err(AppError::BadRequest("name required".into()));
     }
     let id = Uuid::new_v4();
-    let (fuel_class, fuel_type) = shared::normalize_fuel(
-        body.fuel_class.as_deref(),
-        body.fuel_type.as_deref(),
-    );
+    let (fuel_class, fuel_type) =
+        shared::normalize_fuel(body.fuel_class.as_deref(), body.fuel_type.as_deref());
     let stoich = body
         .stoich_afr
         .or_else(|| fuel_type.stoich_afr())
@@ -344,8 +323,12 @@ async fn update_car(
 
     let (fuel_class, fuel_type) = if body.fuel_class.is_some() || body.fuel_type.is_some() {
         shared::normalize_fuel(
-            body.fuel_class.as_deref().or(Some(current.fuel_class.as_str())),
-            body.fuel_type.as_deref().or(Some(current.fuel_type.as_str())),
+            body.fuel_class
+                .as_deref()
+                .or(Some(current.fuel_class.as_str())),
+            body.fuel_type
+                .as_deref()
+                .or(Some(current.fuel_type.as_str())),
         )
     } else {
         (
@@ -444,10 +427,8 @@ async fn get_photo(
     let ct = content_type_for_path(&photo_path);
     let mut res = Response::new(Body::from(bytes));
     *res.status_mut() = StatusCode::OK;
-    res.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(ct),
-    );
+    res.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(ct));
     res.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=3600"),
@@ -492,9 +473,8 @@ async fn upload_photo(
     if bytes.len() > MAX_PHOTO_BYTES {
         return Err(AppError::BadRequest("photo too large (max 8MB)".into()));
     }
-    let kind = sniff_image(&bytes).ok_or_else(|| {
-        AppError::BadRequest("photo must be a jpeg, png, or webp image".into())
-    })?;
+    let kind = sniff_image(&bytes)
+        .ok_or_else(|| AppError::BadRequest("photo must be a jpeg, png, or webp image".into()))?;
 
     let rel = format!("cars/{id}.{}", kind.extension());
     // config.upload_dir was created and canonicalized at startup; keep every path
@@ -551,7 +531,10 @@ mod tests {
 
     #[test]
     fn sniff_jpeg_png_webp() {
-        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0]), Some(ImageKind::Jpeg));
+        assert_eq!(
+            sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some(ImageKind::Jpeg)
+        );
         assert_eq!(
             sniff_image(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
             Some(ImageKind::Png)

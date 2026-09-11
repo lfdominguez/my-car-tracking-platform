@@ -419,7 +419,6 @@ pub async fn start_trip_analysis(id: &str) -> Result<AnalyzeAccepted, ApiError> 
     send_body_json(req).await
 }
 
-
 pub async fn get_public_config() -> Result<PublicConfig, ApiError> {
     send_json(Request::get("/api/public-config")).await
 }
@@ -553,9 +552,7 @@ pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
         return Err(ApiError::Message("Trip not found".into()));
     }
     if resp.status() == 403 {
-        return Err(ApiError::Message(
-            "Not allowed to delete this trip".into(),
-        ));
+        return Err(ApiError::Message("Not allowed to delete this trip".into()));
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
@@ -928,7 +925,10 @@ pub async fn vault_status() -> Result<VaultStatus, ApiError> {
     send_json(Request::get("/api/vault/status")).await
 }
 
-pub async fn vault_enable(identity_pubkey_b64: &str, identity_version: i32) -> Result<VaultStatus, ApiError> {
+pub async fn vault_enable(
+    identity_pubkey_b64: &str,
+    identity_version: i32,
+) -> Result<VaultStatus, ApiError> {
     let req = with_creds(Request::post("/api/vault/enable"))
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({
@@ -1092,9 +1092,7 @@ pub async fn list_chat_conversations() -> Result<Vec<ChatConversation>, ApiError
     send_json(Request::get("/api/chat/conversations")).await
 }
 
-pub async fn create_chat_conversation(
-    car_id: Option<&str>,
-) -> Result<ChatConversation, ApiError> {
+pub async fn create_chat_conversation(car_id: Option<&str>) -> Result<ChatConversation, ApiError> {
     let body = serde_json::json!({ "car_id": car_id });
     let req = with_creds(Request::post("/api/chat/conversations"))
         .header("Content-Type", "application/json")

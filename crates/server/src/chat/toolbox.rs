@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -206,8 +206,7 @@ fn parse_required_args<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, S
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed == "null" {
         return Err(
-            "this tool needs arguments. Pass a single JSON object matching the tool schema."
-                .into(),
+            "this tool needs arguments. Pass a single JSON object matching the tool schema.".into(),
         );
     }
     parse_json(trimmed)
@@ -217,7 +216,9 @@ fn parse_json<T: serde::de::DeserializeOwned>(trimmed: &str) -> Result<T, String
     let cleaned = strip_code_fences(trimmed);
     let candidate = extract_json_object(cleaned).unwrap_or(cleaned);
     serde_json::from_str(candidate).map_err(|e| {
-        format!("could not read arguments: {e}. Pass a single JSON object matching the tool schema.")
+        format!(
+            "could not read arguments: {e}. Pass a single JSON object matching the tool schema."
+        )
     })
 }
 
@@ -258,9 +259,7 @@ fn parse_opt_dt(s: &Option<String>, field: &str) -> Result<Option<DateTime<Utc>>
         Some(v) if v.trim().is_empty() => Ok(None),
         Some(v) => DateTime::parse_from_rfc3339(v.trim())
             .map(|d| Some(d.with_timezone(&Utc)))
-            .map_err(|_| {
-                format!("{field} must be RFC3339, e.g. 2026-08-01T00:00:00Z")
-            }),
+            .map_err(|_| format!("{field} must be RFC3339, e.g. 2026-08-01T00:00:00Z")),
     }
 }
 
@@ -293,9 +292,8 @@ fn no_params() -> Value {
 /// The 13 read-only tools, in the order a model should reach for them.
 pub fn definitions() -> Vec<Value> {
     let trip_id = || json!({ "trip_id": str_prop("Trip id (uuid) from list_trips.") });
-    let car_filter = || {
-        str_prop("Optional car id (uuid) to restrict to one car. Omit for all accessible cars.")
-    };
+    let car_filter =
+        || str_prop("Optional car id (uuid) to restrict to one car. Omit for all accessible cars.");
     let from_filter =
         || str_prop("Optional inclusive start timestamp, RFC3339, e.g. 2026-08-01T00:00:00Z.");
     let to_filter = || str_prop("Optional inclusive end timestamp, RFC3339.");
@@ -415,7 +413,11 @@ mod tests {
     #[test]
     fn every_tool_has_a_name_description_and_object_schema() {
         let defs = definitions();
-        assert_eq!(defs.len(), 13, "tool count changed; update the plan doc too");
+        assert_eq!(
+            defs.len(),
+            13,
+            "tool count changed; update the plan doc too"
+        );
         for def in &defs {
             let f = &def["function"];
             assert!(f["name"].as_str().is_some_and(|n| !n.is_empty()), "{def}");
@@ -486,7 +488,11 @@ mod tests {
 
     #[test]
     fn parse_uuid_and_dates_explain_the_expected_format() {
-        assert!(parse_uuid("not-a-uuid", "car_id").unwrap_err().contains("uuid"));
+        assert!(
+            parse_uuid("not-a-uuid", "car_id")
+                .unwrap_err()
+                .contains("uuid")
+        );
         let err = parse_opt_dt(&Some("August".into()), "from").unwrap_err();
         assert!(err.contains("RFC3339"), "{err}");
         assert!(parse_opt_dt(&Some("  ".into()), "from").unwrap().is_none());

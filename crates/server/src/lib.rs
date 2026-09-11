@@ -22,9 +22,9 @@ pub mod units;
 pub mod vault;
 pub mod web;
 
+use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::middleware as axum_mw;
-use axum::Router;
 use tower_http::trace::TraceLayer;
 
 use crate::middleware::{

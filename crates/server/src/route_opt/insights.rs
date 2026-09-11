@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::stats::{
-    aggregate_by_variant, aggregate_by_variant_context, aggregate_samples, best_variant_id,
-    AggregateStats, ContextKey, VariantSample,
+    AggregateStats, ContextKey, VariantSample, aggregate_by_variant, aggregate_by_variant_context,
+    aggregate_samples, best_variant_id,
 };
 
 #[derive(Debug, Clone)]
@@ -83,7 +83,10 @@ pub fn build_insights(
             .unwrap_or_else(|| "this corridor".into());
         let variant_n = by_var.len();
         let title = if overall.n < min_n {
-            format!("Forming baseline · {}", fmt_mins(overall.median_duration_secs))
+            format!(
+                "Forming baseline · {}",
+                fmt_mins(overall.median_duration_secs)
+            )
         } else {
             format!("Typical drive · {}", fmt_mins(overall.median_duration_secs))
         };
@@ -205,22 +208,10 @@ pub fn build_insights(
         });
     };
 
-    push_prefer(
-        &mut out,
-        ranked_strong,
-        60.0,
-        "prefer_variant",
-        1.0,
-    );
+    push_prefer(&mut out, ranked_strong, 60.0, "prefer_variant", 1.0);
     // Soft comparison only if strong did not already fire
     if !out.iter().any(|i| i.kind == "prefer_variant") {
-        push_prefer(
-            &mut out,
-            ranked_soft,
-            45.0,
-            "prefer_variant_soft",
-            0.65,
-        );
+        push_prefer(&mut out, ranked_soft, 45.0, "prefer_variant_soft", 0.65);
     }
 
     // —— Time-of-day: current hour + weekday/weekend ——
@@ -413,10 +404,9 @@ pub fn build_insights(
         .map(|s| s.duration_secs)
         .collect();
     if wd.len() >= soft_n && we.len() >= soft_n {
-        if let (Some(med_wd), Some(med_we)) = (
-            super::stats::median(&mut wd),
-            super::stats::median(&mut we),
-        ) {
+        if let (Some(med_wd), Some(med_we)) =
+            (super::stats::median(&mut wd), super::stats::median(&mut we))
+        {
             let delta = (med_wd - med_we).abs();
             if delta >= 90.0 {
                 let (faster, slower, fast_med, slow_med) = if med_we < med_wd {

@@ -771,17 +771,19 @@ async fn build_route_position_profile(
 
     for (pct, p) in anchors {
         let (osm_highway, maxspeed_kph) = match (p.lat, p.lon) {
-            (Some(lat), Some(lon)) => match match_way(pool, lon, lat, ROUTE_POSITION_MATCH_RADIUS_M)
-                .await
-                .ok()
-                .flatten()
-            {
-                Some(m) => {
-                    matched += 1;
-                    (Some(m.highway), m.maxspeed_kph)
+            (Some(lat), Some(lon)) => {
+                match match_way(pool, lon, lat, ROUTE_POSITION_MATCH_RADIUS_M)
+                    .await
+                    .ok()
+                    .flatten()
+                {
+                    Some(m) => {
+                        matched += 1;
+                        (Some(m.highway), m.maxspeed_kph)
+                    }
+                    None => (None, None),
                 }
-                None => (None, None),
-            },
+            }
             _ => (None, None),
         };
 
