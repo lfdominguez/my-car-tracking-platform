@@ -1,6 +1,6 @@
 //! Car CRUD and photo upload.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use axum::body::Body;
 use axum::extract::{Multipart, Path as AxumPath, State};
@@ -482,10 +482,33 @@ async fn upload_photo(
     })?;
 
     let rel = format!("cars/{id}.{}", kind.extension());
-    let dir = state.config.upload_dir.join("cars");
+    let upload_root = &state.config.upload_dir;
+    if !upload_root.is_absolute()
+        || upload_root
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(AppError::BadRequest("invalid upload directory".into()));
+    }
+
+    let dir = upload_root.join("cars");
+    if !dir.starts_with(upload_root) {
+        return Err(AppError::BadRequest("invalid upload directory".into()));
+    }
+
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
+
+    let root_canon = tokio::fs::canonicalize(upload_root)
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let dir_canon = tokio::fs::canonicalize(&dir)
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    if !dir_canon.starts_with(&root_canon) {
+        return Err(AppError::BadRequest("invalid upload directory".into()));
+    }
 
     // Remove prior photo with a different extension if present.
     if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
