@@ -105,12 +105,20 @@ fn resolve_photo_file(upload_dir: &Path, photo_path: &str) -> AppResult<PathBuf>
     {
         return Err(AppError::NotFound);
     }
-    let abs = upload_dir.join(photo_path);
-    let canon_root = upload_dir;
-    if !abs.starts_with(canon_root) {
+
+    let canon_root = upload_dir
+        .canonicalize()
+        .map_err(|_| AppError::NotFound)?;
+    let candidate = canon_root.join(photo_path);
+    let canon_candidate = candidate
+        .canonicalize()
+        .map_err(|_| AppError::NotFound)?;
+
+    if !canon_candidate.starts_with(&canon_root) {
         return Err(AppError::NotFound);
     }
-    Ok(abs)
+
+    Ok(canon_candidate)
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
