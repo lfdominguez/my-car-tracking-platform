@@ -2,7 +2,9 @@
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use shared::speed_events::{self, SpeedEventThresholds, SpeedSample};
 use uuid::Uuid;
 use vault_crypto::{
     aad_v1, decrypt_object, encrypt_object, generate_dek, unwrap_dek, wrap_dek, Dek, IdentityPublic,
@@ -290,6 +292,24 @@ pub fn build_analysis_context_json(
         .iter()
         .filter_map(|p| p.vehicle_speed_kph.or(p.engine_vel))
         .collect();
+
+    // Same detector the server runs, so a vault trip is analysed on real numbers
+    // instead of the hardcoded zeros this builder used to emit — which read to the
+    // model as flawless driving.
+    let speed_series: Vec<SpeedSample> = points
+        .iter()
+        .filter_map(|p| {
+            let t = DateTime::parse_from_rfc3339(&p.recorded_at)
+                .ok()?
+                .with_timezone(&Utc);
+            Some(SpeedSample {
+                t,
+                speed_kph: p.vehicle_speed_kph.or(p.engine_vel),
+            })
+        })
+        .collect();
+    let events = speed_events::compute_speed_events(&speed_series, trip.distance_m);
+    let thresholds = SpeedEventThresholds::default();
     let max_speed = speeds.iter().cloned().fold(None, |acc: Option<f64>, v| {
         Some(acc.map(|a| a.max(v)).unwrap_or(v))
     });
@@ -333,8 +353,15 @@ pub fn build_analysis_context_json(
             "p50_kph": avg_speed,
             "p95_kph": max_speed,
             "max_kph": max_speed,
-            "hard_accel_events": 0,
-            "hard_brake_events": 0,
+            "hard_accel_events": events.hard_accel_events,
+            "hard_brake_events": events.hard_brake_events,
+            "severe_accel_events": events.severe_accel_events,
+            "severe_brake_events": events.severe_brake_events,
+            "peak_accel_kph_s": events.peak_accel_kph_s,
+            "peak_decel_kph_s": events.peak_decel_kph_s,
+            "hard_accel_per_100km": events.hard_accel_per_100km,
+            "hard_brake_per_100km": events.hard_brake_per_100km,
+            "event_thresholds": thresholds,
             "moving_share": null,
         },
         "engine": {},

@@ -1,5 +1,8 @@
 //! Shared DTOs and constants used by the server and (optionally) the web crate.
 
+pub mod speed_events;
+pub mod telemetry_sanitize;
+
 use serde::{Deserialize, Serialize};
 
 /// Powertrain / energy source sent to the app and IA analysis.

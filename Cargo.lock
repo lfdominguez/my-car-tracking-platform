@@ -79,6 +79,7 @@ dependencies = [
  "rig",
  "serde",
  "serde_json",
+ "shared",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

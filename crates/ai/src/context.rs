@@ -66,10 +66,38 @@ pub struct SpeedProfile {
     pub p50_kph: Option<f64>,
     pub p95_kph: Option<f64>,
     pub max_kph: Option<f64>,
-    pub hard_accel_events: u32,
-    pub hard_brake_events: u32,
+    /// Harsh-manoeuvre counts. One event = one run of consecutive over-threshold
+    /// samples, so a five-second stop is one brake, not five. `None` means the trip
+    /// carries no usable OBD speed series — unknown, **not** gentle driving.
+    #[serde(default)]
+    pub hard_accel_events: Option<u32>,
+    #[serde(default)]
+    pub hard_brake_events: Option<u32>,
+    /// Subset of the hard counts at or beyond the severe threshold.
+    #[serde(default)]
+    pub severe_accel_events: Option<u32>,
+    #[serde(default)]
+    pub severe_brake_events: Option<u32>,
+    /// Most extreme rate reached inside any counted event (km/h per second).
+    #[serde(default)]
+    pub peak_accel_kph_s: Option<f64>,
+    #[serde(default)]
+    pub peak_decel_kph_s: Option<f64>,
+    /// Distance-normalized rates; `None` when distance is unknown or under 1 km.
+    /// Prefer these over the raw counts when judging driving style.
+    #[serde(default)]
+    pub hard_accel_per_100km: Option<f64>,
+    #[serde(default)]
+    pub hard_brake_per_100km: Option<f64>,
+    /// What "hard" meant for this trip, so a report can state the bar it used.
+    #[serde(default)]
+    pub event_thresholds: SpeedEventThresholds,
     pub moving_share: Option<f64>,
 }
+
+/// Thresholds behind [`SpeedProfile`]'s event counts. Re-exported from `shared`
+/// so the server and the client-side vault path cannot drift apart.
+pub use shared::speed_events::SpeedEventThresholds;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EngineStats {

@@ -94,7 +94,10 @@ impl Tool for GetSpeedProfile {
     type Output = String;
 
     fn description(&self) -> String {
-        "Speed percentiles, hard accel/brake counts, moving share.".into()
+        "Speed percentiles, moving share, and harsh accel/brake events: grouped counts, severe \
+         subsets, peak rates, per-100km rates, and the thresholds used. A null count means no \
+         usable speed series (unknown), not zero."
+            .into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -505,7 +508,7 @@ pub struct EvaluateMathArgs {
 pub const EVALUATE_MATH_ARGS_HINT: &str = "evaluate_math expects {\"expression\":\"...\",\"variables\":{\"name\": number, ...}}. \
 `variables` must be a JSON object of finite numbers (not a string). Put all arithmetic in `expression` \
 (e.g. expression=\"a / (b * c)\", variables={\"a\":113,\"b\":0.42,\"c\":0.63}). Example: \
-{\"expression\":\"hard_accel_events / moving_hours\",\"variables\":{\"hard_accel_events\":113,\"moving_hours\":0.27}}.";
+{\"expression\":\"l_per_100km(liters, km)\",\"variables\":{\"liters\":1.24,\"km\":18.6}}.";
 
 /// Stateless safe math evaluator (free-form + trip helpers).
 #[derive(Clone, Default)]
@@ -518,7 +521,7 @@ impl Tool for EvaluateMath {
     type Output = String;
 
     fn description(&self) -> String {
-        "Evaluate a safe math expression. Use for L/100km, MPG, unit conversions, and general arithmetic. Helpers: l_per_100km(liters,km), mpg_us(liters,km), kph_to_mph, mph_to_kph, km_to_mi, mi_to_km, m_to_mi, mi_to_m, l_to_gal_us, gal_us_to_l, seconds_to_hours, pow, log, sqrt, min, max, abs, ln, exp, floor, ceil, round. Optional `variables` is a JSON object mapping names to numbers only (never a stringified JSON blob; never put formulas in values — put math in `expression`). Returns JSON {expression, result, error}. Example args: {\"expression\":\"hard_accel_events / moving_hours\",\"variables\":{\"hard_accel_events\":113,\"moving_hours\":0.27}}.".into()
+        "Evaluate a safe math expression. Use for L/100km, MPG, unit conversions, and general arithmetic. Helpers: l_per_100km(liters,km), mpg_us(liters,km), kph_to_mph, mph_to_kph, km_to_mi, mi_to_km, m_to_mi, mi_to_m, l_to_gal_us, gal_us_to_l, seconds_to_hours, pow, log, sqrt, min, max, abs, ln, exp, floor, ceil, round. Optional `variables` is a JSON object mapping names to numbers only (never a stringified JSON blob; never put formulas in values — put math in `expression`). Returns JSON {expression, result, error}. Example args: {\"expression\":\"l_per_100km(liters, km)\",\"variables\":{\"liters\":1.24,\"km\":18.6}}.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -686,7 +689,7 @@ impl Tool for SubmitAnalysisReport {
             "properties": {
                 "summary": {
                     "type": "string",
-                    "description": "Short executive summary: places/road types visited (from get_route_position_profile when available) PLUS key findings each with brief numbers (e.g. stop counts, max coolant °C, hard_brake_events). No unproven qualitative-only claims."
+                    "description": "Short executive summary: places/road types visited (from get_route_position_profile when available) PLUS key findings each with brief numbers (e.g. stop counts, max coolant °C, hard brakes per 100 km). No unproven qualitative-only claims."
                 },
                 "mechanical_findings": {
                     "type": "array",
@@ -709,7 +712,7 @@ impl Tool for SubmitAnalysisReport {
                     "properties": {
                         "assessment": {
                             "type": "string",
-                            "description": "Overall style with proof (e.g. 'Stop-heavy residential drive: 4 stops ≥60s, hard_accel=8, hard_brake=12, p95 speed 48 kph')."
+                            "description": "Overall style with proof, preferring the distance-normalized rates (e.g. 'Stop-heavy residential drive: 4 stops ≥60s, 2 hard brakes (5.7/100km, peak -11.8 km/h/s), p95 speed 48 kph'). Say 'unknown' when the harsh-event counts are null."
                         },
                         "positives": {
                             "type": "array",
@@ -809,8 +812,15 @@ mod tests {
                 p50_kph: Some(40.0),
                 p95_kph: Some(75.0),
                 max_kph: Some(80.0),
-                hard_accel_events: 0,
-                hard_brake_events: 0,
+                hard_accel_events: Some(0),
+                hard_brake_events: Some(0),
+                severe_accel_events: Some(0),
+                severe_brake_events: Some(0),
+                peak_accel_kph_s: None,
+                peak_decel_kph_s: None,
+                hard_accel_per_100km: Some(0.0),
+                hard_brake_per_100km: Some(0.0),
+                event_thresholds: Default::default(),
                 moving_share: Some(0.9),
             },
             engine: EngineStats::default(),

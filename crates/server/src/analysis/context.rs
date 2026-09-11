@@ -4,11 +4,12 @@ use std::collections::BTreeMap;
 
 use ai::{
     EngineStats, FuelMixtureStats, RoutePositionProfile, RoutePositionSample, SamplePoint,
-    SpeedProfile, StopEvent, StopSummary, ThermalElectricalStats, TrafficSummary,
-    TripAnalysisContext, TripOverview, UnitLabels,
+    SpeedEventThresholds, SpeedProfile, StopEvent, StopSummary, ThermalElectricalStats,
+    TrafficSummary, TripAnalysisContext, TripOverview, UnitLabels,
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use shared::speed_events::{self, SpeedSample};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -79,7 +80,20 @@ impl PointRow {
     }
 }
 
-fn sanitize_analysis_points(points: &mut [PointRow]) {
+/// Sanitize speed/RPM in place and hand back the **raw** speed series.
+///
+/// Harsh-event detection must not read the sanitized series: `sanitize_speed_rpm`
+/// rejects any step beyond ~0.99 g and holds the previous value, which turns a
+/// genuine emergency stop into a flat plateau. Percentiles and graphs want the
+/// smoothed curve; the event detector wants the raw one.
+fn sanitize_analysis_points(points: &mut [PointRow]) -> Vec<SpeedSample> {
+    let raw: Vec<SpeedSample> = points
+        .iter()
+        .map(|p| SpeedSample {
+            t: p.recorded_at,
+            speed_kph: p.speed(),
+        })
+        .collect();
     let mut series: Vec<crate::trips::SpeedRpmPoint> = points
         .iter()
         .map(|p| crate::trips::SpeedRpmPoint {
@@ -99,6 +113,7 @@ fn sanitize_analysis_points(points: &mut [PointRow]) {
             p.engine_rpm = s.rpm;
         }
     }
+    raw
 }
 
 pub async fn build_trip_analysis_context(
@@ -169,7 +184,7 @@ pub async fn build_trip_analysis_context(
     .bind(track_id)
     .fetch_all(pool)
     .await?;
-    sanitize_analysis_points(&mut points);
+    let raw_speed = sanitize_analysis_points(&mut points);
 
     // Distance / duration / fuel similar to trips module
     let stats = sqlx::query_as::<_, StatsRow>(
@@ -323,7 +338,7 @@ pub async fn build_trip_analysis_context(
         ve: track.ve,
     };
 
-    let speed = compute_speed_profile(&points);
+    let speed = compute_speed_profile(&points, &raw_speed, stats.distance_m);
     let engine = compute_engine_stats(&points);
     let fuel = compute_fuel_stats(&points);
     let thermal = compute_thermal_stats(&points);
@@ -406,54 +421,41 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
     sorted.get(idx.clamp(0, sorted.len() - 1)).copied()
 }
 
-fn compute_speed_profile(points: &[PointRow]) -> SpeedProfile {
+/// Percentiles and moving share come from the sanitized `points`; harsh-event
+/// counts come from `raw_speed` via [`shared::speed_events`], which the vault path
+/// in `crates/web` shares so both report the same numbers.
+fn compute_speed_profile(
+    points: &[PointRow],
+    raw_speed: &[SpeedSample],
+    distance_m: Option<f64>,
+) -> SpeedProfile {
     let mut speeds: Vec<f64> = points.iter().filter_map(|p| p.speed()).collect();
     let sample_count = speeds.len();
     speeds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mut hard_accel = 0u32;
-    let mut hard_brake = 0u32;
-    let mut moving = 0usize;
-    for w in points.windows(2) {
-        let (a, b) = (&w[0], &w[1]);
-        let sa = match a.speed() {
-            Some(v) => v,
-            None => continue,
-        };
-        let sb = match b.speed() {
-            Some(v) => v,
-            None => continue,
-        };
-        let dt = (b.recorded_at - a.recorded_at).num_milliseconds() as f64 / 1000.0;
-        if dt <= 0.05 || dt > 30.0 {
-            continue;
-        }
-        // kph/s roughly
-        let acc = (sb - sa) / dt;
-        if acc > 3.5 {
-            hard_accel += 1;
-        }
-        if acc < -4.0 {
-            hard_brake += 1;
-        }
-    }
-    for s in &speeds {
-        if *s > 2.0 {
-            moving += 1;
-        }
-    }
+    let moving = speeds.iter().filter(|s| **s > 2.0).count();
     let moving_share = if sample_count > 0 {
         Some(moving as f64 / sample_count as f64)
     } else {
         None
     };
+
+    let events = speed_events::compute_speed_events(raw_speed, distance_m);
+
     SpeedProfile {
         sample_count,
         min_kph: speeds.first().copied(),
         p50_kph: percentile(&speeds, 0.50),
         p95_kph: percentile(&speeds, 0.95),
         max_kph: speeds.last().copied(),
-        hard_accel_events: hard_accel,
-        hard_brake_events: hard_brake,
+        hard_accel_events: events.hard_accel_events,
+        hard_brake_events: events.hard_brake_events,
+        severe_accel_events: events.severe_accel_events,
+        severe_brake_events: events.severe_brake_events,
+        peak_accel_kph_s: events.peak_accel_kph_s,
+        peak_decel_kph_s: events.peak_decel_kph_s,
+        hard_accel_per_100km: events.hard_accel_per_100km,
+        hard_brake_per_100km: events.hard_brake_per_100km,
+        event_thresholds: SpeedEventThresholds::default(),
         moving_share,
     }
 }
@@ -849,6 +851,47 @@ mod tests {
         let stops = compute_stops(&pts);
         assert_eq!(stops.stop_count, 1);
         assert!(stops.longest_stop_secs >= 60.0);
+    }
+
+    #[test]
+    fn hard_braking_survives_the_graph_sanitizer() {
+        // ~-36 km/h/s: beyond MAX_SPEED_DELTA_KPH_S, so the hold-last-good pass
+        // flattens it in `points`. The event detector reads the raw series returned
+        // by sanitize_analysis_points and must still see one severe brake.
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let speeds = [100.0, 64.0, 30.0, 30.0, 30.0];
+        let mut pts: Vec<PointRow> = speeds
+            .iter()
+            .enumerate()
+            .map(|(i, v)| pt(t0 + chrono::Duration::seconds(i as i64), *v))
+            .collect();
+
+        let raw = sanitize_analysis_points(&mut pts);
+        // The sanitized series really did lose the step ...
+        assert_eq!(pts[1].speed(), Some(100.0));
+        // ... while the raw one kept it.
+        assert_eq!(raw[1].speed_kph, Some(64.0));
+
+        let profile = compute_speed_profile(&pts, &raw, Some(10_000.0));
+        assert_eq!(profile.hard_brake_events, Some(1));
+        assert_eq!(profile.severe_brake_events, Some(1));
+        assert_eq!(profile.hard_brake_per_100km, Some(10.0));
+    }
+
+    #[test]
+    fn a_trip_without_obd_speed_reports_unknown_events() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let mut pts: Vec<PointRow> = (0..30)
+            .map(|i| {
+                let mut p = pt(t0 + chrono::Duration::seconds(i), 0.0);
+                p.vehicle_speed_kph = None;
+                p
+            })
+            .collect();
+        let raw = sanitize_analysis_points(&mut pts);
+        let profile = compute_speed_profile(&pts, &raw, Some(10_000.0));
+        assert_eq!(profile.hard_brake_events, None);
+        assert_eq!(profile.hard_accel_events, None);
     }
 
     #[test]
