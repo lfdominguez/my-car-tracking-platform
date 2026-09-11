@@ -564,9 +564,16 @@ mod tests {
 
     #[test]
     fn resolve_rejects_traversal() {
-        let root = PathBuf::from("/tmp/uploads");
+        // resolve_photo_file canonicalizes, so the fixture must exist on disk.
+        let root = std::env::temp_dir().join(format!("ctp-resolve-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("cars")).expect("create fixture");
+        std::fs::write(root.join("cars/x.jpg"), b"x").expect("write fixture");
+
         assert!(resolve_photo_file(&root, "../etc/passwd").is_err());
         assert!(resolve_photo_file(&root, "/etc/passwd").is_err());
         assert!(resolve_photo_file(&root, "cars/x.jpg").is_ok());
+        assert!(resolve_photo_file(&root, "cars/missing.jpg").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
