@@ -11,6 +11,9 @@ pub fn hash_token(plaintext: &str, pepper: &str) -> String {
     device_hash_token(plaintext, pepper)
 }
 
+/// Counterpart to `hash_token`; unused while MCP tokens are only ever issued
+/// and compared through the device path, kept so the pair stays together.
+#[allow(dead_code)]
 pub fn verify_token(plaintext: &str, pepper: &str, expected_hash: &str) -> bool {
     verify_token_hash(plaintext, pepper, expected_hash)
 }

@@ -86,7 +86,7 @@ async fn setup() -> Option<(String, reqwest::Client, String, Uuid, sqlx::PgPool)
     .bind(device_id)
     .bind(car_id)
     .bind(&token_hash)
-    .bind(&token.chars().take(8).collect::<String>())
+    .bind(token.chars().take(8).collect::<String>())
     .execute(&pool)
     .await
     .ok()?;

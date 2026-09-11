@@ -106,24 +106,22 @@ fn isolated_spike_pass(points: &mut [SpeedRpmPoint]) {
         let prev_s = points[i - 1].speed_kph;
         let cur_s = points[i].speed_kph;
         let next_s = points[i + 1].speed_kph;
-        if let (Some(p), Some(c), Some(n)) = (prev_s, cur_s, next_s) {
-            if (c - p).abs() > ISOLATED_SPEED_JUMP_KPH
-                && (c - n).abs() > ISOLATED_SPEED_JUMP_KPH
-                && (n - p).abs() <= NEIGHBOR_AGREE_SPEED_KPH
-            {
-                points[i].speed_kph = Some((p + n) / 2.0);
-            }
+        if let (Some(p), Some(c), Some(n)) = (prev_s, cur_s, next_s)
+            && (c - p).abs() > ISOLATED_SPEED_JUMP_KPH
+            && (c - n).abs() > ISOLATED_SPEED_JUMP_KPH
+            && (n - p).abs() <= NEIGHBOR_AGREE_SPEED_KPH
+        {
+            points[i].speed_kph = Some((p + n) / 2.0);
         }
         let prev_r = points[i - 1].rpm;
         let cur_r = points[i].rpm;
         let next_r = points[i + 1].rpm;
-        if let (Some(p), Some(c), Some(n)) = (prev_r, cur_r, next_r) {
-            if (c - p).abs() > ISOLATED_RPM_JUMP
-                && (c - n).abs() > ISOLATED_RPM_JUMP
-                && (n - p).abs() <= NEIGHBOR_AGREE_RPM
-            {
-                points[i].rpm = Some((p + n) / 2.0);
-            }
+        if let (Some(p), Some(c), Some(n)) = (prev_r, cur_r, next_r)
+            && (c - p).abs() > ISOLATED_RPM_JUMP
+            && (c - n).abs() > ISOLATED_RPM_JUMP
+            && (n - p).abs() <= NEIGHBOR_AGREE_RPM
+        {
+            points[i].rpm = Some((p + n) / 2.0);
         }
     }
 }

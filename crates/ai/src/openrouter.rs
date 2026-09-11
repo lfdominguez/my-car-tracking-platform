@@ -885,7 +885,10 @@ mod tests {
         assert!(err.to_string().contains("Provider down"), "{err}");
     }
 
+    // The point of this test is to pin constants, so constant assertions are
+    // exactly what is wanted here.
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn retry_and_timeout_constants_are_sane() {
         // Documented resilience knobs for slow OpenRouter body reads.
         assert!(REQUEST_TIMEOUT.as_secs() >= 180);

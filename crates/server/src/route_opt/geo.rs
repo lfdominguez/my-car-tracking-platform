@@ -109,10 +109,10 @@ pub fn path_signature(coords: &[LatLon], cell_m: f64) -> String {
     let mut cells: Vec<(i32, i32)> = Vec::new();
     let mut last: Option<LatLon> = None;
     for &c in coords {
-        if let Some(prev) = last {
-            if haversine_m(prev, c) < cell_m * 0.4 {
-                continue;
-            }
+        if let Some(prev) = last
+            && haversine_m(prev, c) < cell_m * 0.4
+        {
+            continue;
         }
         let key = cell_key(c.lat, c.lon, cell_m);
         if cells.last().copied() != Some(key) {
@@ -276,6 +276,13 @@ pub fn interior_dwells(
 }
 
 /// Pick split dwell: longest, preferring farther from home when close.
+///
+/// The tie-break below is written as explicit tiers -- clearly longer, near-tie
+/// but farther out, marginally longer -- which read as the policy they encode.
+/// The first tier is subsumed by the third (anything more than 30s longer is
+/// also longer), so clippy sees identical arms; the redundancy is deliberate and
+/// changing the shape here would change route selection, so it stays as is.
+#[allow(clippy::if_same_then_else)]
 pub fn best_split_dwell(
     start: LatLon,
     dwells: &[DwellSegment],

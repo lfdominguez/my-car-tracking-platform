@@ -1,4 +1,12 @@
 //! Pure helpers for trip fuel used (Σ rate×Δt), economy distance, tank-level cross-check.
+//!
+//! Most of this module is a reference implementation rather than a caller: the
+//! production path computes these figures in SQL (see `trips/stats.rs`, whose
+//! queries carry `Keep in sync with fuel_stats::…` comments) while the functions
+//! and constants here are the readable definition those queries are validated
+//! against by the unit tests below and by `tests/track_stats.rs`. They are
+//! therefore unused outside `cfg(test)` by design.
+#![allow(dead_code)]
 
 use chrono::{DateTime, Duration, Utc};
 
@@ -175,22 +183,23 @@ pub fn economy_distance_m(
     odo_end_km: Option<f64>,
 ) -> Option<f64> {
     let gps = gps_m.filter(|d| d.is_finite() && *d > 0.0);
-    if let (Some(s), Some(e)) = (odo_start_km, odo_end_km) {
-        if s.is_finite() && e.is_finite() {
-            let d_km = e - s;
-            if d_km >= ODO_MIN_KM {
-                let gps_km = gps.map(|g| g / 1000.0);
-                let max_km = gps_km.map(|g| g * 1.5 + 2.0).unwrap_or(f64::INFINITY);
-                if d_km <= max_km {
-                    if let Some(g_km) = gps_km {
-                        // Allow ~1.5 km short for integer odo rounding, but not 1 km vs 8 km.
-                        let min_sane = (g_km - 1.5).max(g_km * 0.5);
-                        if d_km + 1e-9 < min_sane {
-                            return gps;
-                        }
+    if let (Some(s), Some(e)) = (odo_start_km, odo_end_km)
+        && s.is_finite()
+        && e.is_finite()
+    {
+        let d_km = e - s;
+        if d_km >= ODO_MIN_KM {
+            let gps_km = gps.map(|g| g / 1000.0);
+            let max_km = gps_km.map(|g| g * 1.5 + 2.0).unwrap_or(f64::INFINITY);
+            if d_km <= max_km {
+                if let Some(g_km) = gps_km {
+                    // Allow ~1.5 km short for integer odo rounding, but not 1 km vs 8 km.
+                    let min_sane = (g_km - 1.5).max(g_km * 0.5);
+                    if d_km + 1e-9 < min_sane {
+                        return gps;
                     }
-                    return Some(d_km * 1000.0);
                 }
+                return Some(d_km * 1000.0);
             }
         }
     }

@@ -21,6 +21,8 @@ pub struct RawPoint {
 }
 
 #[derive(Debug, Clone)]
+// Some fields are carried for completeness of the record and are not read yet.
+#[allow(dead_code)]
 pub struct TrafficFrame {
     pub seq: i32,
     pub t_start: DateTime<Utc>,
@@ -104,11 +106,9 @@ pub fn build_frames(points: &[RawPoint]) -> Vec<TrafficFrame> {
 
         let mut accel_sum = 0.0;
         let mut accel_n = 0usize;
-        for a in accels.iter().take(end).skip(start) {
-            if let Some(v) = a {
-                accel_sum += *v;
-                accel_n += 1;
-            }
+        for v in accels.iter().take(end).skip(start).flatten() {
+            accel_sum += *v;
+            accel_n += 1;
         }
         let mean_accel = if accel_n > 0 {
             accel_sum / accel_n as f64

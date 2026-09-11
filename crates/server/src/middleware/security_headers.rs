@@ -141,18 +141,24 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+type HeaderLayer = SetResponseHeaderLayer<HeaderValue>;
+
+/// The security-header layers applied to every response. The last is optional
+/// because HSTS is only set when the deployment terminates TLS.
+type SecurityHeaderLayers = (
+    HeaderLayer,
+    HeaderLayer,
+    HeaderLayer,
+    HeaderLayer,
+    HeaderLayer,
+    Option<HeaderLayer>,
+);
+
 pub fn security_headers_layer(
     enable_hsts: bool,
     script_hashes: &[String],
     allow_cloudflare_analytics: bool,
-) -> (
-    SetResponseHeaderLayer<HeaderValue>,
-    SetResponseHeaderLayer<HeaderValue>,
-    SetResponseHeaderLayer<HeaderValue>,
-    SetResponseHeaderLayer<HeaderValue>,
-    SetResponseHeaderLayer<HeaderValue>,
-    Option<SetResponseHeaderLayer<HeaderValue>>,
-) {
+) -> SecurityHeaderLayers {
     let nosniff = SetResponseHeaderLayer::overriding(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

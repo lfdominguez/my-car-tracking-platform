@@ -588,10 +588,8 @@ async fn find_or_create_variant(
         let id: Uuid = row.try_get("id")?;
         let sig: String = row.try_get("signature")?;
         let sim = super::geo::signature_similarity(signature, &sig);
-        if sim >= VARIANT_SIM {
-            if best.map(|(_, s)| sim > s).unwrap_or(true) {
-                best = Some((id, sim));
-            }
+        if sim >= VARIANT_SIM && best.map(|(_, s)| sim > s).unwrap_or(true) {
+            best = Some((id, sim));
         }
     }
     if let Some((id, _)) = best {

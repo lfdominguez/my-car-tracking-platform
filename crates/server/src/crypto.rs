@@ -78,19 +78,19 @@ pub fn decrypt_secret_versioned(
 
     // Try current
     let key = derive(&ring.current);
-    if let Ok(cipher) = Aes256Gcm::new_from_slice(&key) {
-        if let Ok(plain) = cipher.decrypt(&nonce, ciphertext) {
-            return String::from_utf8(plain).map_err(|_| CryptoError::Decrypt);
-        }
+    if let Ok(cipher) = Aes256Gcm::new_from_slice(&key)
+        && let Ok(plain) = cipher.decrypt(&nonce, ciphertext)
+    {
+        return String::from_utf8(plain).map_err(|_| CryptoError::Decrypt);
     }
 
     // Try previous
     if let Some(prev) = &ring.previous {
         let key = derive(prev);
-        if let Ok(cipher) = Aes256Gcm::new_from_slice(&key) {
-            if let Ok(plain) = cipher.decrypt(&nonce, ciphertext) {
-                return String::from_utf8(plain).map_err(|_| CryptoError::Decrypt);
-            }
+        if let Ok(cipher) = Aes256Gcm::new_from_slice(&key)
+            && let Ok(plain) = cipher.decrypt(&nonce, ciphertext)
+        {
+            return String::from_utf8(plain).map_err(|_| CryptoError::Decrypt);
         }
     }
 

@@ -89,13 +89,12 @@ pub async fn analyze_trip(
                     "content": content,
                 }));
 
-                if tc.name == SubmitAnalysisReport::NAME {
-                    if let Some(report) = slot.take() {
-                        if report.validate().is_ok() {
-                            info!(turns = turn_idx + 1, "analysis report submitted");
-                            return Ok(report);
-                        }
-                    }
+                if tc.name == SubmitAnalysisReport::NAME
+                    && let Some(report) = slot.take()
+                    && report.validate().is_ok()
+                {
+                    info!(turns = turn_idx + 1, "analysis report submitted");
+                    return Ok(report);
                 }
             }
             continue;
@@ -134,10 +133,10 @@ pub async fn analyze_trip(
         break;
     }
 
-    if let Some(report) = slot.take() {
-        if report.validate().is_ok() {
-            return Ok(report);
-        }
+    if let Some(report) = slot.take()
+        && report.validate().is_ok()
+    {
+        return Ok(report);
     }
 
     if let Some(text) = last_text {

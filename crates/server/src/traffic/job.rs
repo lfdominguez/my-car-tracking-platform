@@ -198,10 +198,10 @@ pub async fn process_finished_track(
             .ok()
             .flatten();
         let (mut v_ff, way_id, has_ms) = free_flow_kph(matched.as_ref());
-        if let Some(wid) = way_id {
-            if let Ok(Some(p85)) = offpeak_p85(pool, car_id, wid).await {
-                v_ff = apply_history_boost(v_ff, Some(p85), has_ms);
-            }
+        if let Some(wid) = way_id
+            && let Ok(Some(p85)) = offpeak_p85(pool, car_id, wid).await
+        {
+            v_ff = apply_history_boost(v_ff, Some(p85), has_ms);
         }
         scored.push(ScoredFrame {
             frame,
@@ -347,6 +347,9 @@ fn summarize(frames: &[ScoredFrame]) -> (serde_json::Value, serde_json::Value, f
     )
 }
 
+// Arguments mirror the columns of trip_traffic_summaries one-for-one; grouping
+// them into a struct would only move the same list somewhere else.
+#[allow(clippy::too_many_arguments)]
 async fn upsert_summary(
     pool: &PgPool,
     track_id: Uuid,

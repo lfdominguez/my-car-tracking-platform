@@ -362,14 +362,13 @@ fn parse_basic_token(header: &str) -> Option<String> {
     if !rest.is_empty() {
         // Try base64 decode; if it yields token or user:pass, use it; else raw.
         if let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest)
+            && let Ok(s) = String::from_utf8(bytes)
         {
-            if let Ok(s) = String::from_utf8(bytes) {
-                if let Some((_u, p)) = s.split_once(':') {
-                    return Some(p.to_string());
-                }
-                if !s.is_empty() {
-                    return Some(s);
-                }
+            if let Some((_u, p)) = s.split_once(':') {
+                return Some(p.to_string());
+            }
+            if !s.is_empty() {
+                return Some(s);
             }
         }
         return Some(rest.to_string());

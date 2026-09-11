@@ -186,15 +186,14 @@ impl Config {
             .unwrap_or(crate::trips::DEFAULT_STALE_FINISH_AFTER_SECS)
             .max(60);
 
-        if is_local_dev {
-            if session_secret == DEFAULT_SESSION_SECRET
+        if is_local_dev
+            && (session_secret == DEFAULT_SESSION_SECRET
                 || secrets_key == DEFAULT_SESSION_SECRET
-                || device_token_pepper == DEFAULT_SESSION_SECRET
-            {
-                tracing::warn!(
-                    "using default/weak secrets suitable only for local development; set SESSION_SECRET, SECRETS_KEY, and DEVICE_TOKEN_PEPPER before any real deploy"
-                );
-            }
+                || device_token_pepper == DEFAULT_SESSION_SECRET)
+        {
+            tracing::warn!(
+                "using default/weak secrets suitable only for local development; set SESSION_SECRET, SECRETS_KEY, and DEVICE_TOKEN_PEPPER before any real deploy"
+            );
         }
         if allow_dev_login {
             tracing::warn!(

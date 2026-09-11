@@ -15,6 +15,8 @@ use super::stats::{
 };
 
 #[derive(Debug, Clone)]
+// Some fields are carried for completeness of the record and are not read yet.
+#[allow(dead_code)]
 pub struct OrsAltRef {
     pub preference: String,
     pub duration_secs: f64,
@@ -130,10 +132,12 @@ pub fn build_insights(
     }
 
     // —— Soft: single path only ——
-    if by_var.len() == 1 && overall.n >= 1 {
-        if let Some((vid, stats)) = by_var.iter().next() {
-            let bl = label_of(variant_labels, *vid, "this path");
-            out.push(InsightDraft {
+    if by_var.len() == 1
+        && overall.n >= 1
+        && let Some((vid, stats)) = by_var.iter().next()
+    {
+        let bl = label_of(variant_labels, *vid, "this path");
+        out.push(InsightDraft {
                 kind: "single_path".into(),
                 title: format!("One recorded path · {bl}"),
                 body: format!(
@@ -145,7 +149,6 @@ pub fn build_insights(
                 score: 0.55,
                 context: json!({ "variant_id": vid, "n": stats.n }),
             });
-        }
     }
 
     // —— Strong (+ soft) prefer_variant when ≥2 variants ——
@@ -345,10 +348,10 @@ pub fn build_insights(
                 .filter(|s| s.variant_id == best_id && s.hour_bin == h)
                 .map(|s| s.duration_secs)
                 .collect();
-            if durs.len() >= soft_n {
-                if let Some(med) = super::stats::median(&mut durs) {
-                    hour_meds.push((h, med, durs.len()));
-                }
+            if durs.len() >= soft_n
+                && let Some(med) = super::stats::median(&mut durs)
+            {
+                hour_meds.push((h, med, durs.len()));
             }
         }
         if hour_meds.len() >= 2 {
@@ -403,35 +406,35 @@ pub fn build_insights(
         .filter(|s| s.is_weekend)
         .map(|s| s.duration_secs)
         .collect();
-    if wd.len() >= soft_n && we.len() >= soft_n {
-        if let (Some(med_wd), Some(med_we)) =
+    if wd.len() >= soft_n
+        && we.len() >= soft_n
+        && let (Some(med_wd), Some(med_we)) =
             (super::stats::median(&mut wd), super::stats::median(&mut we))
-        {
-            let delta = (med_wd - med_we).abs();
-            if delta >= 90.0 {
-                let (faster, slower, fast_med, slow_med) = if med_we < med_wd {
-                    ("weekends", "weekdays", med_we, med_wd)
-                } else {
-                    ("weekdays", "weekends", med_wd, med_we)
-                };
-                out.push(InsightDraft {
-                    kind: "weekend_vs_weekday".into(),
-                    title: format!("{faster} run quicker on this OD"),
-                    body: format!(
-                        "{faster} median {} vs {slower} {} — about {} difference (n_wd={}, n_we={}).",
-                        fmt_mins(fast_med),
-                        fmt_mins(slow_med),
-                        fmt_mins(delta),
-                        wd.len(),
-                        we.len()
-                    ),
-                    score: delta / 60.0 + 0.25,
-                    context: json!({
-                        "weekday_median_secs": med_wd,
-                        "weekend_median_secs": med_we,
-                    }),
-                });
-            }
+    {
+        let delta = (med_wd - med_we).abs();
+        if delta >= 90.0 {
+            let (faster, slower, fast_med, slow_med) = if med_we < med_wd {
+                ("weekends", "weekdays", med_we, med_wd)
+            } else {
+                ("weekdays", "weekends", med_wd, med_we)
+            };
+            out.push(InsightDraft {
+                kind: "weekend_vs_weekday".into(),
+                title: format!("{faster} run quicker on this OD"),
+                body: format!(
+                    "{faster} median {} vs {slower} {} — about {} difference (n_wd={}, n_we={}).",
+                    fmt_mins(fast_med),
+                    fmt_mins(slow_med),
+                    fmt_mins(delta),
+                    wd.len(),
+                    we.len()
+                ),
+                score: delta / 60.0 + 0.25,
+                context: json!({
+                    "weekday_median_secs": med_wd,
+                    "weekend_median_secs": med_we,
+                }),
+            });
         }
     }
 
@@ -462,21 +465,21 @@ pub fn build_insights(
     }
 
     // —— ORS reference vs best recorded ——
-    if let Some(best_id) = best_variant_id(&by_var, 1) {
-        if let Some(best) = by_var.get(&best_id) {
-            if let Some(alt) = ors_alts
-                .iter()
-                .filter(|a| a.duration_secs.is_finite() && a.duration_secs > 0.0)
-                .min_by(|a, b| {
-                    a.duration_secs
-                        .partial_cmp(&b.duration_secs)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-            {
-                let delta = best.median_duration_secs - alt.duration_secs;
-                let bl = label_of(variant_labels, best_id, "your usual path");
-                if delta >= 120.0 && best.n >= soft_n {
-                    out.push(InsightDraft {
+    if let Some(best_id) = best_variant_id(&by_var, 1)
+        && let Some(best) = by_var.get(&best_id)
+        && let Some(alt) = ors_alts
+            .iter()
+            .filter(|a| a.duration_secs.is_finite() && a.duration_secs > 0.0)
+            .min_by(|a, b| {
+                a.duration_secs
+                    .partial_cmp(&b.duration_secs)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    {
+        let delta = best.median_duration_secs - alt.duration_secs;
+        let bl = label_of(variant_labels, best_id, "your usual path");
+        if delta >= 120.0 && best.n >= soft_n {
+            out.push(InsightDraft {
                         kind: "ors_reference".into(),
                         title: "Router suggests a faster line".into(),
                         body: format!(
@@ -494,46 +497,44 @@ pub fn build_insights(
                             "best_variant_id": best_id,
                         }),
                     });
-                } else if delta.abs() < 90.0 && best.n >= 1 {
-                    out.push(InsightDraft {
-                        kind: "ors_matches".into(),
-                        title: "Your path matches the router".into(),
-                        body: format!(
-                            "{bl} averages {} vs ORS {} estimate of {}. \
+        } else if delta.abs() < 90.0 && best.n >= 1 {
+            out.push(InsightDraft {
+                kind: "ors_matches".into(),
+                title: "Your path matches the router".into(),
+                body: format!(
+                    "{bl} averages {} vs ORS {} estimate of {}. \
                              You're already close to the freeflow suggestion.",
-                            fmt_mins(best.median_duration_secs),
-                            alt.preference,
-                            fmt_mins(alt.duration_secs)
-                        ),
-                        score: 0.4,
-                        context: json!({
-                            "ors_preference": alt.preference,
-                            "ors_duration_secs": alt.duration_secs,
-                            "best_variant_id": best_id,
-                        }),
-                    });
-                } else if delta <= -120.0 && best.n >= soft_n {
-                    // Recorded faster than router — rare but nice
-                    out.push(InsightDraft {
-                        kind: "beats_router".into(),
-                        title: format!("{bl} beats the router estimate"),
-                        body: format!(
-                            "Your drives on {bl} median {} — about {} quicker than ORS {} ({}). \
+                    fmt_mins(best.median_duration_secs),
+                    alt.preference,
+                    fmt_mins(alt.duration_secs)
+                ),
+                score: 0.4,
+                context: json!({
+                    "ors_preference": alt.preference,
+                    "ors_duration_secs": alt.duration_secs,
+                    "best_variant_id": best_id,
+                }),
+            });
+        } else if delta <= -120.0 && best.n >= soft_n {
+            // Recorded faster than router — rare but nice
+            out.push(InsightDraft {
+                kind: "beats_router".into(),
+                title: format!("{bl} beats the router estimate"),
+                body: format!(
+                    "Your drives on {bl} median {} — about {} quicker than ORS {} ({}). \
                              Local knowledge or light traffic may be helping.",
-                            fmt_mins(best.median_duration_secs),
-                            fmt_mins(-delta),
-                            alt.preference,
-                            fmt_mins(alt.duration_secs)
-                        ),
-                        score: (-delta / 60.0) * 0.35,
-                        context: json!({
-                            "ors_preference": alt.preference,
-                            "delta_secs": delta,
-                            "best_variant_id": best_id,
-                        }),
-                    });
-                }
-            }
+                    fmt_mins(best.median_duration_secs),
+                    fmt_mins(-delta),
+                    alt.preference,
+                    fmt_mins(alt.duration_secs)
+                ),
+                score: (-delta / 60.0) * 0.35,
+                context: json!({
+                    "ors_preference": alt.preference,
+                    "delta_secs": delta,
+                    "best_variant_id": best_id,
+                }),
+            });
         }
     }
 

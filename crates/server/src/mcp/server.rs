@@ -348,13 +348,13 @@ pub fn build_mcp_allowed_hosts(public_base_url: &str, extra_csv: Option<&str>) -
         hosts.push(candidate.to_string());
     };
 
-    if let Ok(url) = url::Url::parse(public_base_url) {
-        if let Some(host) = url.host_str() {
-            push_unique(&mut hosts, host);
-            // Explicit non-default port (e.g. :8443) — some clients send Host: name:port.
-            if let Some(port) = url.port() {
-                push_unique(&mut hosts, &format!("{host}:{port}"));
-            }
+    if let Ok(url) = url::Url::parse(public_base_url)
+        && let Some(host) = url.host_str()
+    {
+        push_unique(&mut hosts, host);
+        // Explicit non-default port (e.g. :8443) — some clients send Host: name:port.
+        if let Some(port) = url.port() {
+            push_unique(&mut hosts, &format!("{host}:{port}"));
         }
     }
 

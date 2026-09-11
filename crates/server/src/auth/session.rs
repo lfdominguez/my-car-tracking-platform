@@ -27,6 +27,9 @@ pub struct NewSessionMeta<'a> {
     pub user_agent: Option<&'a str>,
 }
 
+/// Not called today; kept as the read side of `SESSION_COOKIE` so callers
+/// never hard-code the cookie name.
+#[allow(dead_code)]
 pub fn session_cookie_name() -> &'static str {
     SESSION_COOKIE
 }

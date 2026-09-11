@@ -47,7 +47,9 @@ impl ChatHub {
         self.channels.write().await.remove(&message_id);
     }
 
+    /// Test-only accessor; `is_empty` would be dead weight beside it.
     #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
     pub async fn len(&self) -> usize {
         self.channels.read().await.len()
     }

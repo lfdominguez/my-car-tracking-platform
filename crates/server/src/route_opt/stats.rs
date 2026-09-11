@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
+// Some fields are carried for completeness of the record and are not read yet.
+#[allow(dead_code)]
 pub struct VariantSample {
     pub variant_id: Uuid,
     pub hour_bin: u8,

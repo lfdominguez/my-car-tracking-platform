@@ -352,7 +352,7 @@ async fn corridor_detail(
     }
     let mut hour_stats = Vec::new();
     for ((hour, weekend, vid), mut durs) in hour_groups {
-        if durs.len() < 1 {
+        if durs.is_empty() {
             continue;
         }
         let med = super::stats::median(&mut durs).unwrap_or(0.0);
@@ -404,10 +404,10 @@ async fn corridor_detail(
         if d.len() < 2 {
             continue;
         }
-        if let Some(med) = super::stats::median(&mut d) {
-            if now_best.map(|(_, m, _)| med < m).unwrap_or(true) {
-                now_best = Some((vid, med, d.len()));
-            }
+        if let Some(med) = super::stats::median(&mut d)
+            && now_best.map(|(_, m, _)| med < m).unwrap_or(true)
+        {
+            now_best = Some((vid, med, d.len()));
         }
     }
     let recommendation_for_now = if let Some((vid, med, n)) = now_best {

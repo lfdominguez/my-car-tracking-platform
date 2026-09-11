@@ -2,30 +2,22 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Severity {
+    #[default]
     Low,
     Medium,
     High,
-}
-
-impl Default for Severity {
-    fn default() -> Self {
-        Self::Low
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Confidence {
     Low,
+    #[default]
     Medium,
     High,
-}
-
-impl Default for Confidence {
-    fn default() -> Self {
-        Self::Medium
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -617,7 +617,7 @@ pub fn coerce_math_variables(value: Value) -> Result<BTreeMap<String, f64>, Stri
                 Err(parse_err) => {
                     // Common failure: double-encoded object with bare expressions
                     // e.g. "{\"x\": 1, \"y\": 0.4 * 0.6}" — invalid JSON because of `*`.
-                    if trimmed.starts_with('{') && trimmed.contains(|c| matches!(c, '*' | '/')) {
+                    if trimmed.starts_with('{') && trimmed.contains(['*', '/']) {
                         return Err(format!(
                             "`variables` was a string that is not valid JSON ({parse_err}). \
                              Likely a formula was embedded in a value (e.g. 0.4 * 0.6). \

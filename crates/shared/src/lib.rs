@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 /// Powertrain / energy source sent to the app and IA analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[derive(Default)]
 pub enum FuelClass {
+    #[default]
     Gasoline,
     Diesel,
     Hybrid,
@@ -58,17 +60,13 @@ impl FuelClass {
     }
 }
 
-impl Default for FuelClass {
-    fn default() -> Self {
-        Self::Gasoline
-    }
-}
-
 /// Android-compatible fuel *grade* labels (ethanol / diesel blend).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[derive(Default)]
 pub enum FuelType {
     E0,
+    #[default]
     E10,
     E27,
     E100,
@@ -134,12 +132,6 @@ impl FuelType {
             Self::B7 => Some(835.0),
             Self::Custom => None,
         }
-    }
-}
-
-impl Default for FuelType {
-    fn default() -> Self {
-        Self::E10
     }
 }
 

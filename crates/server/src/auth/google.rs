@@ -217,30 +217,6 @@ async fn fetch_google_profile(access_token: &str) -> AppResult<GoogleProfile> {
         .map_err(|e| AppError::internal(format!("userinfo parse failed: {e}")))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::oauth_state_matches;
-
-    #[test]
-    fn oauth_state_requires_both_sides() {
-        assert!(!oauth_state_matches(None, Some("abc")));
-        assert!(!oauth_state_matches(Some("abc"), None));
-        assert!(!oauth_state_matches(Some(""), Some("")));
-    }
-
-    #[test]
-    fn oauth_state_accepts_equal() {
-        assert!(oauth_state_matches(
-            Some("csrf-token-1"),
-            Some("csrf-token-1")
-        ));
-        assert!(!oauth_state_matches(
-            Some("csrf-token-1"),
-            Some("csrf-token-2")
-        ));
-    }
-}
-
 /// Bridge reqwest 0.13 to oauth2 5's `Fn(HttpRequest) -> Future` blanket impl.
 /// oauth2 5 bundles reqwest 0.12 support only; we adapt manually to keep reqwest 0.13.
 async fn reqwest_oauth2_adapter(
@@ -333,4 +309,28 @@ fn build_oauth_client(state: &AppState) -> AppResult<OAuthClient> {
         .set_token_uri(token_url)
         .set_redirect_uri(redirect);
     Ok(client)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::oauth_state_matches;
+
+    #[test]
+    fn oauth_state_requires_both_sides() {
+        assert!(!oauth_state_matches(None, Some("abc")));
+        assert!(!oauth_state_matches(Some("abc"), None));
+        assert!(!oauth_state_matches(Some(""), Some("")));
+    }
+
+    #[test]
+    fn oauth_state_accepts_equal() {
+        assert!(oauth_state_matches(
+            Some("csrf-token-1"),
+            Some("csrf-token-1")
+        ));
+        assert!(!oauth_state_matches(
+            Some("csrf-token-1"),
+            Some("csrf-token-2")
+        ));
+    }
 }

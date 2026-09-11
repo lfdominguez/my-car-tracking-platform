@@ -323,10 +323,10 @@ async fn track_samples(
                 accepted += 1;
                 // The entry is present by now: the resolving arm inserts before it
                 // returns, so this is a lookup rather than a second resolve.
-                if let Some(Some(track)) = tracks.get(&sample.tracking_id) {
-                    if track.finished {
-                        stale_stats.insert(track.track_id);
-                    }
+                if let Some(Some(track)) = tracks.get(&sample.tracking_id)
+                    && track.finished
+                {
+                    stale_stats.insert(track.track_id);
                 }
             }
             Err(SampleError::Duplicate) => rejected.push(RejectedSample {

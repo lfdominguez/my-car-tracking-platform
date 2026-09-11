@@ -21,6 +21,8 @@ pub enum OrsError {
 }
 
 #[derive(Debug, Clone)]
+// Some fields are carried for completeness of the record and are not read yet.
+#[allow(dead_code)]
 pub struct OrsRoute {
     pub preference: String,
     pub distance_m: f64,
@@ -46,6 +48,9 @@ impl OrsClient {
         }
     }
 
+    /// Unused while route_opt reads cached ORS references rather than calling
+    /// the API live; kept as the client's primary entry point.
+    #[allow(dead_code)]
     pub async fn directions(
         &self,
         start: LatLon,
@@ -157,18 +162,18 @@ pub fn parse_directions_geojson(text: &str, preference: &str) -> Result<OrsRoute
         .ok_or_else(|| OrsError::Parse("no features".into()))?;
 
     let mut coordinates = Vec::new();
-    if let Some(geom) = feat.geometry {
-        if let Some(coords) = geom.coordinates {
-            // LineString: [[lon,lat], ...] or with elevation [[lon,lat,ele], ...]
-            if let Some(arr) = coords.as_array() {
-                for pt in arr {
-                    if let Some(p) = pt.as_array() {
-                        if p.len() >= 2 {
-                            let lon = p[0].as_f64().unwrap_or(0.0);
-                            let lat = p[1].as_f64().unwrap_or(0.0);
-                            coordinates.push([lon, lat]);
-                        }
-                    }
+    if let Some(geom) = feat.geometry
+        && let Some(coords) = geom.coordinates
+    {
+        // LineString: [[lon,lat], ...] or with elevation [[lon,lat,ele], ...]
+        if let Some(arr) = coords.as_array() {
+            for pt in arr {
+                if let Some(p) = pt.as_array()
+                    && p.len() >= 2
+                {
+                    let lon = p[0].as_f64().unwrap_or(0.0);
+                    let lat = p[1].as_f64().unwrap_or(0.0);
+                    coordinates.push([lon, lat]);
                 }
             }
         }
