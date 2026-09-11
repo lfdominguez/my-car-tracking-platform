@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::AppResult;
 use crate::state::AppState;
+use crate::trips::stats;
 use crate::units::{convert_distance_m, convert_fuel_l, convert_odometer_km, convert_speed_kph};
 
 pub fn router() -> Router<AppState> {
@@ -75,7 +76,10 @@ async fn summary(
     user: AuthUser,
     Query(q): Query<SummaryQuery>,
 ) -> AppResult<Json<DashboardSummary>> {
-    let global = sqlx::query_as::<_, GlobalSummaryRow>(
+    // Both queries in this handler used to aggregate every point of every accessible
+    // trip on each request. They now read per-trip statistics computed once at finish
+    // time, falling back to the live aggregate only for trips that have none.
+    let global_sql = format!(
         r#"
         WITH accessible AS (
             SELECT id FROM cars WHERE owner_user_id = $1
@@ -89,52 +93,34 @@ async fn summary(
               AND ($2::uuid IS NULL OR t.car_id = $2)
               AND ($3::timestamptz IS NULL OR t.started_at >= $3)
               AND ($4::timestamptz IS NULL OR t.started_at <= $4)
-        ),
-        trip_stats AS (
-            SELECT
-                t.id,
-                COALESCE(
-                  CASE WHEN COUNT(tp.gps) >= 2
-                    THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)
-                    ELSE 0 END, 0
-                ) AS distance_m,
-                COALESCE(
-                  EXTRACT(EPOCH FROM (
-                    COALESCE(t.finished_at, MAX(tp.recorded_at), t.started_at) - t.started_at
-                  )), 0
-                ) AS duration_s,
-                COALESCE(
-                  CASE
-                    WHEN COUNT(tp.fuel_consumption_rate) > 0
-                      AND MAX(tp.recorded_at) > MIN(tp.recorded_at)
-                    THEN AVG(tp.fuel_consumption_rate)
-                         * EXTRACT(EPOCH FROM (MAX(tp.recorded_at) - MIN(tp.recorded_at))) / 3600.0
-                    ELSE 0
-                  END, 0
-                ) AS fuel_l,
-                AVG(COALESCE(tp.vehicle_speed_kph, tp.engine_vel)) AS avg_speed
-            FROM filtered_tracks t
-            LEFT JOIN track_points tp ON tp.track_id = t.id
-            GROUP BY t.id, t.started_at, t.finished_at
         )
         SELECT
             (SELECT COUNT(*) FROM filtered_tracks)::bigint AS trip_count,
-            COALESCE((SELECT SUM(distance_m) FROM trip_stats), 0)::float8 AS total_distance_m,
-            COALESCE((SELECT SUM(duration_s) FROM trip_stats), 0)::float8 AS total_duration_s,
-            COALESCE((SELECT SUM(fuel_l) FROM trip_stats), 0)::float8 AS total_fuel_l,
-            (SELECT AVG(avg_speed) FROM trip_stats) AS avg_speed_kph,
+            COALESCE(SUM(COALESCE(s.distance_m, live.distance_m, 0)), 0)::float8 AS total_distance_m,
+            COALESCE(SUM(EXTRACT(EPOCH FROM (
+                COALESCE(t.finished_at, s.last_point_at, live.last_at, t.started_at) - t.started_at
+            ))), 0)::float8 AS total_duration_s,
+            COALESCE(SUM(COALESCE(s.fuel_used_l, live.fuel_used_l, 0)), 0)::float8 AS total_fuel_l,
+            AVG(COALESCE(s.avg_speed_kph, live.avg_speed_kph)) AS avg_speed_kph,
             (SELECT COUNT(*) FROM accessible
               WHERE $2::uuid IS NULL OR id = $2)::bigint AS car_count
+        FROM filtered_tracks t
+        JOIN cars c ON c.id = t.car_id
+        {stats_join}
+        {lateral}
         "#,
-    )
-    .bind(user.id)
+        stats_join = stats::stats_join("s"),
+        lateral = stats::lateral("live", "AND s.track_id IS NULL"),
+    );
+    let global = sqlx::query_as::<_, GlobalSummaryRow>(sqlx::AssertSqlSafe(global_sql.as_str()))
+        .bind(user.id)
     .bind(q.car_id)
     .bind(q.from)
     .bind(q.to)
     .fetch_one(&state.pool)
     .await?;
 
-    let car_rows = sqlx::query_as::<_, CarDashboardSummary>(
+    let car_sql = format!(
         r#"
         WITH accessible AS (
             SELECT c.id, c.name, c.make_model, c.photo_path, c.fuel_class
@@ -154,17 +140,14 @@ async fn summary(
             SELECT
                 t.car_id,
                 t.id AS track_id,
-                COALESCE(
-                  CASE WHEN COUNT(tp.gps) >= 2
-                    THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)
-                    ELSE 0 END, 0
-                )::float8 AS distance_m
+                COALESCE(s.distance_m, live.distance_m, 0)::float8 AS distance_m
             FROM tracks t
-            LEFT JOIN track_points tp ON tp.track_id = t.id
+            JOIN cars c ON c.id = t.car_id
+            {stats_join}
+            {lateral}
             WHERE t.car_id IN (SELECT id FROM filtered)
               AND ($3::timestamptz IS NULL OR t.started_at >= $3)
               AND ($4::timestamptz IS NULL OR t.started_at <= $4)
-            GROUP BY t.car_id, t.id
         ),
         car_trip AS (
             SELECT
@@ -174,36 +157,88 @@ async fn summary(
             FROM trip_dist
             GROUP BY car_id
         ),
-        latest_odo AS (
-            SELECT DISTINCT ON (t.car_id)
-                t.car_id,
-                tp.odometer_value_km::float8 AS odometer,
-                tp.recorded_at AS odometer_at
-            FROM track_points tp
-            JOIN tracks t ON t.id = tp.track_id
+        -- The three "latest reading per car" lookups below used to scan every point of
+        -- every accessible trip. They now read the per-trip endpoints instead, ordered
+        -- by when the reading was taken (odo_end_at, not last_point_at: a trip can stop
+        -- reporting odometer well before its final sample, and ordering by the wrong
+        -- timestamp would pick the wrong trip).
+        --
+        -- The UNION ALL arm keeps in-progress trips visible: without it a car would
+        -- show the previous trip's odometer while it is on the road, which is exactly
+        -- when it matters most.
+        -- Trips with no usable stored row — in practice only the one being driven.
+        -- MATERIALIZED matters: without it the planner runs each lookup's backward
+        -- scan for every track and only then discards the ones that had stats, which
+        -- is catastrophic for a column that is always NULL (a car with no battery
+        -- reading scans the trip end to end before giving up).
+        unstatted AS MATERIALIZED (
+            SELECT t.id, t.car_id
+            FROM tracks t
             WHERE t.car_id IN (SELECT id FROM filtered)
-              AND tp.odometer_value_km IS NOT NULL
-            ORDER BY t.car_id, tp.recorded_at DESC
+              AND {no_usable_stats}
+        ),
+        latest_odo AS (
+            SELECT DISTINCT ON (car_id) car_id, odometer, odometer_at
+            FROM (
+                SELECT t.car_id, s.odo_end_km AS odometer, s.odo_end_at AS odometer_at
+                FROM tracks t
+                {stats_join_inner}
+                WHERE t.car_id IN (SELECT id FROM filtered)
+                  AND s.odo_end_km IS NOT NULL
+                UNION ALL
+                SELECT u.car_id, p.odometer_value_km::float8, p.recorded_at
+                FROM unstatted u
+                JOIN LATERAL (
+                    SELECT tp.odometer_value_km, tp.recorded_at
+                    FROM track_points tp
+                    WHERE tp.track_id = u.id AND tp.odometer_value_km IS NOT NULL
+                    ORDER BY tp.recorded_at DESC
+                    LIMIT 1
+                ) p ON true
+            ) u
+            ORDER BY car_id, odometer_at DESC
         ),
         latest_fuel AS (
-            SELECT DISTINCT ON (t.car_id)
-                t.car_id,
-                tp.fuel_level_pct::float8 AS fuel_level_pct
-            FROM track_points tp
-            JOIN tracks t ON t.id = tp.track_id
-            WHERE t.car_id IN (SELECT id FROM filtered)
-              AND tp.fuel_level_pct IS NOT NULL
-            ORDER BY t.car_id, tp.recorded_at DESC
+            SELECT DISTINCT ON (car_id) car_id, fuel_level_pct
+            FROM (
+                SELECT t.car_id, s.fuel_level_end_pct AS fuel_level_pct, s.fuel_level_end_at AS at
+                FROM tracks t
+                {stats_join_inner}
+                WHERE t.car_id IN (SELECT id FROM filtered)
+                  AND s.fuel_level_end_pct IS NOT NULL
+                UNION ALL
+                SELECT u.car_id, p.fuel_level_pct::float8, p.recorded_at
+                FROM unstatted u
+                JOIN LATERAL (
+                    SELECT tp.fuel_level_pct, tp.recorded_at
+                    FROM track_points tp
+                    WHERE tp.track_id = u.id AND tp.fuel_level_pct IS NOT NULL
+                    ORDER BY tp.recorded_at DESC
+                    LIMIT 1
+                ) p ON true
+            ) u
+            ORDER BY car_id, at DESC
         ),
         latest_battery AS (
-            SELECT DISTINCT ON (t.car_id)
-                t.car_id,
-                tp.battery_soc_pct::float8 AS battery_soc_pct
-            FROM track_points tp
-            JOIN tracks t ON t.id = tp.track_id
-            WHERE t.car_id IN (SELECT id FROM filtered)
-              AND tp.battery_soc_pct IS NOT NULL
-            ORDER BY t.car_id, tp.recorded_at DESC
+            SELECT DISTINCT ON (car_id) car_id, battery_soc_pct
+            FROM (
+                SELECT t.car_id, s.battery_soc_end_pct AS battery_soc_pct, s.battery_soc_end_at AS at
+                FROM tracks t
+                {stats_join_inner}
+                WHERE t.car_id IN (SELECT id FROM filtered)
+                  AND s.battery_soc_end_pct IS NOT NULL
+                UNION ALL
+                SELECT u.car_id, p.battery_soc_pct::float8, p.recorded_at
+                FROM unstatted u
+                JOIN LATERAL (
+                    SELECT tp.battery_soc_pct, tp.recorded_at
+                    FROM track_points tp
+                    WHERE tp.track_id = u.id AND tp.battery_soc_pct IS NOT NULL
+                    ORDER BY tp.recorded_at DESC
+                    LIMIT 1
+                ) p ON true
+            ) u
+            ORDER BY car_id, at DESC
         )
         SELECT
             f.id AS car_id,
@@ -224,8 +259,13 @@ async fn summary(
         LEFT JOIN latest_battery lb ON lb.car_id = f.id
         ORDER BY f.name
         "#,
-    )
-    .bind(user.id)
+        stats_join = stats::stats_join("s"),
+        stats_join_inner = stats::stats_join_required("s"),
+        no_usable_stats = stats::no_usable_stats(),
+        lateral = stats::lateral("live", "AND s.track_id IS NULL"),
+    );
+    let car_rows = sqlx::query_as::<_, CarDashboardSummary>(sqlx::AssertSqlSafe(car_sql.as_str()))
+        .bind(user.id)
     .bind(q.car_id)
     .bind(q.from)
     .bind(q.to)

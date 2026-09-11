@@ -25,6 +25,11 @@ pub const SCHEMA_VERSION: i16 = 1;
 /// (a `tracks` row) and `c` (its `cars` row) in scope, and is completed by the caller
 /// with its own `FROM track_points tp WHERE tp.track_id = t.id ...` — see [`lateral`].
 ///
+/// The `/*GATE*/` markers are where [`lateral`] injects its gate. They sit on the two
+/// correlated fuel sub-queries, which scan `track_points` independently of the outer
+/// aggregate and so are not covered by a predicate on the outer `WHERE`. Left
+/// unreplaced they are inert SQL comments.
+///
 /// The fuel expressions mirror `fuel_stats::sanitize_fuel_rate_lph` and
 /// `apply_powertrain_to_rate`. They were moved here verbatim from the trips-list
 /// query so that stored values are identical to what that query produced.
@@ -72,7 +77,7 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                       tp2.recorded_at AS t,
                       LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
                     FROM track_points tp2
-                    WHERE tp2.track_id = t.id
+                    WHERE tp2.track_id = t.id /*GATE*/
                   ) x
                   WHERE x.rate IS NOT NULL
                     AND x.lead_t IS NOT NULL
@@ -117,7 +122,7 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                       tp2.recorded_at AS t,
                       LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
                     FROM track_points tp2
-                    WHERE tp2.track_id = t.id
+                    WHERE tp2.track_id = t.id /*GATE*/
                   ) x
                   WHERE x.rate IS NOT NULL
                     AND x.spd >= 1
@@ -152,14 +157,18 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
 /// A `LEFT JOIN LATERAL` running [`TRACK_POINT_AGGREGATE`] for the current `t`,
 /// exposed as `alias`.
 ///
-/// `gate` is an extra predicate appended to the subquery's `WHERE`. Read paths pass
-/// something like `AND s.track_id IS NULL` so the scan is skipped entirely when a
-/// usable stored row already exists: because the predicate references no column of
-/// `track_points`, the planner lifts it into a one-time filter above the scan.
+/// `gate` is an extra predicate applied to every `track_points` scan in the body — the
+/// outer aggregate and both correlated fuel sub-queries. Read paths pass something
+/// like `AND s.track_id IS NULL` so all three are skipped when a usable stored row
+/// already exists: because the predicate references no column of `track_points`, the
+/// planner lifts it into a one-time filter above each scan. Gating only the outer
+/// aggregate is not enough — the sub-queries sit in its target list and still run
+/// once even when it aggregates over no rows.
 pub fn lateral(alias: &str, gate: &str) -> String {
+    let body = TRACK_POINT_AGGREGATE.replace("/*GATE*/", gate);
     format!(
         "LEFT JOIN LATERAL (
-{TRACK_POINT_AGGREGATE}
+{body}
             FROM track_points tp
             WHERE tp.track_id = t.id
               {gate}
@@ -174,6 +183,30 @@ pub fn stats_join(alias: &str) -> String {
                 ON {alias}.track_id = t.id
                AND NOT {alias}.stale
                AND {alias}.schema_version = {SCHEMA_VERSION}"
+    )
+}
+
+/// Inner `JOIN` form of [`stats_join`], for sources that only want trips which
+/// already have a usable stored row.
+pub fn stats_join_required(alias: &str) -> String {
+    format!(
+        "JOIN track_stats {alias}
+                ON {alias}.track_id = t.id
+               AND NOT {alias}.stale
+               AND {alias}.schema_version = {SCHEMA_VERSION}"
+    )
+}
+
+/// Predicate selecting tracks with no usable stored row — the complement of
+/// [`stats_join_required`], for the live arm of a union over both.
+pub fn no_usable_stats() -> String {
+    format!(
+        "NOT EXISTS (
+                      SELECT 1 FROM track_stats s2
+                      WHERE s2.track_id = t.id
+                        AND NOT s2.stale
+                        AND s2.schema_version = {SCHEMA_VERSION}
+                  )"
     )
 }
 
