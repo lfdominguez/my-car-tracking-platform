@@ -1,4 +1,5 @@
 pub mod cars;
+pub mod chat;
 pub mod dashboard;
 pub mod landing;
 pub mod login;

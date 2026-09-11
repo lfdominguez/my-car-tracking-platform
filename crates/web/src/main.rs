@@ -12,6 +12,7 @@ use leptos_router::path;
 use crate::components::layout::AppLayout;
 use crate::components::provide_theme;
 use crate::pages::cars::{CarDetailPage, CarsPage};
+use crate::pages::chat::{ChatConversationPage, ChatPage};
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::settings::SettingsPage;
 use crate::pages::landing::LandingPage;
@@ -37,6 +38,8 @@ fn main() {
                         <Route path=path!("") view=DashboardPage/>
                         <Route path=path!("cars") view=CarsPage/>
                         <Route path=path!("cars/:id") view=CarDetailPage/>
+                        <Route path=path!("chat") view=ChatPage/>
+                        <Route path=path!("chat/:id") view=ChatConversationPage/>
                         <Route path=path!("trips") view=TripsPage/>
                         <Route path=path!("trips/:id") view=TripDetailPage/>
                         <Route path=path!("routes") view=RoutesPage/>

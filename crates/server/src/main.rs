@@ -35,6 +35,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => tracing::error!(error = %e, "failed to sweep interrupted AI jobs"),
     }
 
+    // A chat generation cannot survive a restart either, and a row left 'running'
+    // would block its conversation's one-at-a-time guard forever.
+    match server::chat::fail_interrupted_messages(&pool).await {
+        Ok(n) if n > 0 => {
+            tracing::warn!(count = n, "marked interrupted chat generations as failed")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::error!(error = %e, "failed to sweep interrupted chat generations"),
+    }
+
     let listen_addr = config.listen_addr;
     let upload_dir = config.upload_dir.clone();
     let state = AppState::new(pool, config);

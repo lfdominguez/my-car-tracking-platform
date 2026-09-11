@@ -120,6 +120,10 @@ pub fn AppLayout() -> impl IntoView {
                         <Icon name="chart-line-up" color=IconColor::Accent />
                         "Dashboard"
                     </A>
+                    <A href="/app/chat" on:click=move |_| nav_open.set(false)>
+                        <Icon name="chat-circle-dots" color=IconColor::Accent />
+                        "Ask your data"
+                    </A>
                     <span class="nav-group-label">"Fleet"</span>
                     <A href="/app/cars" on:click=move |_| nav_open.set(false)>
                         <Icon name="car" color=IconColor::Accent />
