@@ -300,7 +300,12 @@ mod tests {
         // Set explicit values (not remove) so dotenvy cannot re-apply developer `.env`.
         unsafe {
             env::set_var("LISTEN_ADDR", "0.0.0.0:8080");
-            env::remove_var("PUBLIC_BASE_URL");
+            // Must be set, not removed: removing it lets dotenvy re-apply a
+            // developer `.env`, and with no `.env` at all it defaults to
+            // http://0.0.0.0:8080, which is not local dev — so the same test
+            // passes on a workstation and fails in CI. Tests that want a
+            // non-local URL override this immediately after.
+            env::set_var("PUBLIC_BASE_URL", "http://localhost:8080");
             env::remove_var("SESSION_SECRET");
             env::remove_var("SECRETS_KEY");
             env::remove_var("DEVICE_TOKEN_PEPPER");
