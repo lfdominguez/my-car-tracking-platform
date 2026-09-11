@@ -4,6 +4,10 @@ use chrono::{DateTime, Utc};
 
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 
+/// Dwell durations within this many seconds of each other count as a tie, and
+/// distance from the start decides instead. See `best_split_dwell`.
+const TIE_SECS: f64 = 30.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatLon {
     pub lat: f64,
@@ -277,12 +281,8 @@ pub fn interior_dwells(
 
 /// Pick split dwell: longest, preferring farther from home when close.
 ///
-/// The tie-break below is written as explicit tiers -- clearly longer, near-tie
-/// but farther out, marginally longer -- which read as the policy they encode.
-/// The first tier is subsumed by the third (anything more than 30s longer is
-/// also longer), so clippy sees identical arms; the redundancy is deliberate and
-/// changing the shape here would change route selection, so it stays as is.
-#[allow(clippy::if_same_then_else)]
+/// Prefer the longer dwell; when the two are within `TIE_SECS` of each other,
+/// prefer whichever is farther from the start instead.
 pub fn best_split_dwell(
     start: LatLon,
     dwells: &[DwellSegment],
@@ -297,13 +297,9 @@ pub fn best_split_dwell(
         best = Some(match best {
             None => d,
             Some(b) => {
-                if d.duration_secs > b.duration_secs + 30.0 {
-                    d
-                } else if (d.duration_secs - b.duration_secs).abs() <= 30.0
-                    && away > haversine_m(start, b.centroid)
-                {
-                    d
-                } else if d.duration_secs > b.duration_secs {
+                let longer = d.duration_secs > b.duration_secs;
+                let near_tie = (d.duration_secs - b.duration_secs).abs() <= TIE_SECS;
+                if longer || (near_tie && away > haversine_m(start, b.centroid)) {
                     d
                 } else {
                     b
@@ -426,6 +422,42 @@ pub fn plan_legs(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn dwell(duration_secs: f64, lat: f64) -> DwellSegment {
+        DwellSegment {
+            start_idx: 0,
+            end_idx: 1,
+            centroid: LatLon { lat, lon: 0.0 },
+            duration_secs,
+        }
+    }
+
+    #[test]
+    fn split_dwell_prefers_longer_then_farther_on_a_tie() {
+        let start = LatLon { lat: 0.0, lon: 0.0 };
+
+        // Clearly longer wins even though it is nearer.
+        let candidates = [dwell(100.0, 0.5), dwell(300.0, 0.05)];
+        let picked = best_split_dwell(start, &candidates, 0.0).unwrap();
+        assert_eq!(picked.duration_secs, 300.0);
+
+        // Within TIE_SECS, the farther one wins despite being marginally shorter.
+        let candidates = [dwell(120.0, 0.05), dwell(100.0, 0.5)];
+        let picked = best_split_dwell(start, &candidates, 0.0).unwrap();
+        assert_eq!(picked.centroid.lat, 0.5);
+
+        // Past TIE_SECS the extra distance no longer compensates.
+        let candidates = [dwell(131.0, 0.05), dwell(100.0, 0.5)];
+        let picked = best_split_dwell(start, &candidates, 0.0).unwrap();
+        assert_eq!(picked.centroid.lat, 0.05);
+
+        // Candidates closer than min_away_m are ignored entirely.
+        let candidates = [dwell(9_999.0, 0.000_01), dwell(10.0, 0.5)];
+        let picked = best_split_dwell(start, &candidates, 1_000.0).unwrap();
+        assert_eq!(picked.duration_secs, 10.0);
+
+        assert!(best_split_dwell(start, &[], 0.0).is_none());
+    }
 
     #[test]
     fn haversine_known_distance() {
