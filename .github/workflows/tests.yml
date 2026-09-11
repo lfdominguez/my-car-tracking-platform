@@ -1,0 +1,100 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      # crates/web is a WASM-only Leptos crate and is not built here.
+      - name: Run tests that need no database
+        run: |
+          cargo test -p shared
+          cargo test -p vault_crypto
+          cargo test -p ai --lib
+          cargo test -p server --lib
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      db:
+        # Same image as docker-compose.yml — bundles timescaledb + postgis on PG16.
+        image: timescale/timescaledb-ha:pg16
+        env:
+          POSTGRES_USER: ctp
+          POSTGRES_PASSWORD: ctp
+          POSTGRES_DB: car_tracking_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ctp -d car_tracking_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgres://ctp:ctp@localhost:5432/car_tracking_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      # The tests apply migrations themselves; this only proves the service is up,
+      # so an unreachable database fails here rather than further down.
+      - name: Wait for PostgreSQL
+        run: |
+          for _ in $(seq 1 60); do
+            if command -v pg_isready >/dev/null 2>&1; then
+              pg_isready -h localhost -p 5432 -U ctp -d car_tracking_test && exit 0
+            elif (exec 3<>/dev/tcp/localhost/5432) 2>/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::PostgreSQL did not become ready in time"
+          exit 1
+
+      - name: Run server tests against PostGIS
+        run: |
+          set -o pipefail
+          cargo test -p server --tests -- --nocapture 2>&1 | tee test-output.log
+
+      # Every integration test in crates/server/tests returns early and PASSES when
+      # DATABASE_URL is unset or the database is unreachable. Without this check a
+      # broken service container would produce a green job that ran nothing.
+      - name: Fail if integration tests skipped themselves
+        run: |
+          if grep -q "skipping: DATABASE_URL not set or DB unavailable" test-output.log; then
+            echo "::error::Integration tests skipped themselves — the database was not reachable."
+            exit 1
+          fi
+          echo "No skipped integration tests."
