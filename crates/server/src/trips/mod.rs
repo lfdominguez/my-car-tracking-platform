@@ -665,9 +665,25 @@ async fn list_trips(
 ) -> AppResult<Json<Vec<TripSummary>>> {
     let limit = trip_list_limit(q.limit);
 
-    // Build dynamically with optional filters
+    // The stats LATERAL is expensive per track, so resolve the page of track ids
+    // first. Without this the LATERAL runs for every accessible track and only then
+    // gets truncated by LIMIT, so the cost scales with total trips rather than page
+    // size.
     let rows = sqlx::query_as::<_, TripSummaryRow>(
         r#"
+        WITH page AS (
+            SELECT t.id
+            FROM tracks t
+            WHERE (
+                t.car_id IN (SELECT id FROM cars WHERE owner_user_id = $1)
+                OR t.car_id IN (SELECT car_id FROM car_shares WHERE user_id = $1)
+            )
+            AND ($2::uuid IS NULL OR t.car_id = $2)
+            AND ($3::timestamptz IS NULL OR t.started_at >= $3)
+            AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+            ORDER BY t.started_at DESC
+            LIMIT $5
+        )
         SELECT
             t.id,
             t.car_id,
@@ -699,7 +715,8 @@ async fn list_trips(
             t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed,
             stats.last_at AS last_point_at
-        FROM tracks t
+        FROM page
+        JOIN tracks t ON t.id = page.id
         JOIN cars c ON c.id = t.car_id
         JOIN users ou ON ou.id = c.owner_user_id
         LEFT JOIN LATERAL (
@@ -813,15 +830,7 @@ async fn list_trips(
             FROM track_points tp
             WHERE tp.track_id = t.id
         ) stats ON true
-        WHERE (
-            c.owner_user_id = $1
-            OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = t.car_id AND cs.user_id = $1)
-        )
-        AND ($2::uuid IS NULL OR t.car_id = $2)
-        AND ($3::timestamptz IS NULL OR t.started_at >= $3)
-        AND ($4::timestamptz IS NULL OR t.started_at <= $4)
         ORDER BY t.started_at DESC
-        LIMIT $5
         "#,
     )
     .bind(user.id)
