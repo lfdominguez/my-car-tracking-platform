@@ -520,7 +520,10 @@ async fn upload_photo(
         }
     }
 
-    let abs: PathBuf = state.config.upload_dir.join(&rel);
+    let abs: PathBuf = base_dir.join(&rel);
+    if !abs.starts_with(base_dir) {
+        return Err(AppError::BadRequest("invalid upload path".into()));
+    }
     tokio::fs::write(&abs, &bytes)
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
