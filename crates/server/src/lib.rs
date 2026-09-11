@@ -3,6 +3,7 @@ pub mod analytics;
 pub mod audit;
 pub mod auth;
 pub mod cars;
+pub mod chat;
 pub mod config;
 pub mod crypto;
 pub mod db;
@@ -63,6 +64,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(trips::router())
         .merge(analytics::router())
         .merge(analysis::router())
+        .merge(chat::router())
         .merge(route_opt::router())
         .merge(vault::router())
         .merge(web::spa_router())

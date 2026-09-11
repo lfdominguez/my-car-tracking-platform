@@ -1,6 +1,7 @@
 pub mod charts;
 pub mod icon;
 pub mod layout;
+pub mod markdown;
 pub mod map;
 pub mod qr;
 pub mod theme;

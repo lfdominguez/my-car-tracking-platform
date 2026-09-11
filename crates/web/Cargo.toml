@@ -39,9 +39,13 @@ web-sys = { version = "0.3", features = [
     "RequestCredentials",
     "Storage",
     "HtmlTextAreaElement",
+    "EventSource",
+    "MessageEvent",
+    "History",
 ] }
 shared = { workspace = true }
 vault_crypto = { workspace = true }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 base64 = "0.23"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 thiserror = { workspace = true }

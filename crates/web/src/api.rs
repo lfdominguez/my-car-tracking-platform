@@ -1024,3 +1024,120 @@ pub async fn vault_create_job(kind: &str, bundle: serde_json::Value) -> Result<V
 pub async fn vault_get_job(id: &str) -> Result<VaultJob, ApiError> {
     send_json(Request::get(&format!("/api/vault/jobs/{id}"))).await
 }
+
+// --- chat with my car data -------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChatConversation {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub car_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChatMessage {
+    pub id: String,
+    pub seq: i64,
+    pub role: String,
+    pub content: String,
+    pub status: String,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub tool_trace: Option<serde_json::Value>,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub created_at: String,
+}
+
+impl ChatMessage {
+    pub fn is_generating(&self) -> bool {
+        self.status == "pending" || self.status == "running"
+    }
+
+    /// Tool names from `tool_trace`, for the "consulted" line under an answer.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tool_trace
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|t| t.get("name")?.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChatConversationDetail {
+    #[serde(flatten)]
+    pub conversation: ChatConversation,
+    pub messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub can_chat: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChatMessageAccepted {
+    pub user_message_id: String,
+    pub assistant_message_id: String,
+}
+
+pub async fn list_chat_conversations() -> Result<Vec<ChatConversation>, ApiError> {
+    send_json(Request::get("/api/chat/conversations")).await
+}
+
+pub async fn create_chat_conversation(
+    car_id: Option<&str>,
+) -> Result<ChatConversation, ApiError> {
+    let body = serde_json::json!({ "car_id": car_id });
+    let req = with_creds(Request::post("/api/chat/conversations"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
+}
+
+pub async fn get_chat_conversation(id: &str) -> Result<ChatConversationDetail, ApiError> {
+    send_json(Request::get(&format!("/api/chat/conversations/{id}"))).await
+}
+
+pub async fn delete_chat_conversation(id: &str) -> Result<(), ApiError> {
+    let resp = with_creds(Request::delete(&format!("/api/chat/conversations/{id}")))
+        .send()
+        .await
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    if resp.status() == 401 {
+        return Err(ApiError::Unauthorized);
+    }
+    if !resp.ok() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+    }
+    Ok(())
+}
+
+pub async fn post_chat_message(
+    conversation_id: &str,
+    content: &str,
+) -> Result<ChatMessageAccepted, ApiError> {
+    let body = serde_json::json!({ "content": content });
+    let req = with_creds(Request::post(&format!(
+        "/api/chat/conversations/{conversation_id}/messages"
+    )))
+    .header("Content-Type", "application/json")
+    .json(&body)
+    .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
+}
+
+/// SSE endpoint for one assistant message. Same-origin, so `EventSource` sends the
+/// session cookie without extra configuration.
+pub fn chat_stream_url(message_id: &str) -> String {
+    format!("/api/chat/messages/{message_id}/stream")
+}

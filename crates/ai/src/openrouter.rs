@@ -11,9 +11,11 @@
 //! `"error decoding response body"` while the real cause (timeout, reset, incomplete
 //! chunk) lives in the source chain — we surface the full chain and retry transients.
 
+use std::collections::BTreeMap;
 use std::error::Error as StdError;
 use std::time::Duration;
 
+use futures::StreamExt;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
@@ -168,6 +170,351 @@ impl OpenRouterClient {
                 || status.is_server_error()
                 || status == StatusCode::REQUEST_TIMEOUT
                 || status == StatusCode::GATEWAY_TIMEOUT,
+        })
+    }
+}
+
+/// A fragment emitted while an assistant turn streams in.
+#[derive(Debug, Clone)]
+pub enum StreamDelta {
+    /// Assistant text fragment, in order.
+    Text(String),
+    /// A tool call's name became known (arguments may still be streaming).
+    ToolCallNamed(String),
+}
+
+impl OpenRouterClient {
+    /// Streaming counterpart of [`chat_completion`]. `on_delta` is called for each
+    /// fragment as it arrives; the fully accumulated turn is returned at the end.
+    ///
+    /// Retry policy is deliberately narrower than the non-streaming path: once any
+    /// fragment has been handed to `on_delta` the caller has already shown it to a
+    /// user, so replaying the turn would duplicate visible text. Transient failures
+    /// are therefore only retried while nothing has been emitted.
+    pub async fn chat_completion_stream<F>(
+        &self,
+        model: &str,
+        messages: &[Value],
+        tools: &[Value],
+        max_tokens: u32,
+        mut on_delta: F,
+    ) -> Result<AssistantTurn, AiError>
+    where
+        F: FnMut(StreamDelta) + Send,
+    {
+        let mut body = json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": true,
+        });
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(tools.to_vec());
+            body["tool_choice"] = json!("auto");
+        }
+
+        let attempts = 1 + MAX_TRANSIENT_RETRIES;
+        let mut last_err: Option<String> = None;
+
+        for attempt in 1..=attempts {
+            let mut emitted = false;
+            match self
+                .chat_completion_stream_once(&body, &mut on_delta, &mut emitted)
+                .await
+            {
+                Ok(turn) => return Ok(turn),
+                Err(err) => {
+                    // Anything already on screen makes a replay worse than an error.
+                    let retryable = err.transient && !emitted;
+                    let msg = err.message;
+                    if retryable && attempt < attempts {
+                        let delay = RETRY_BASE_DELAY.saturating_mul(attempt);
+                        warn!(
+                            attempt,
+                            attempts,
+                            delay_ms = delay.as_millis() as u64,
+                            error = %msg,
+                            "openrouter transient stream failure; retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                        last_err = Some(msg);
+                        continue;
+                    }
+                    return Err(AiError::Agent(msg));
+                }
+            }
+        }
+
+        Err(AiError::Agent(last_err.unwrap_or_else(|| {
+            "openrouter stream failed after retries".into()
+        })))
+    }
+
+    async fn chat_completion_stream_once<F>(
+        &self,
+        body: &Value,
+        on_delta: &mut F,
+        emitted: &mut bool,
+    ) -> Result<AssistantTurn, TransportErr>
+    where
+        F: FnMut(StreamDelta) + Send,
+    {
+        let response = self
+            .http
+            .post(OPENROUTER_URL)
+            .bearer_auth(&self.api_key)
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .header(
+                "HTTP-Referer",
+                "https://github.com/lfdominguez/my-car-tracking-platform",
+            )
+            .header("X-Title", "Car Tracking Platform")
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| TransportErr::from_reqwest("openrouter stream request failed", e))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            // Errors come back as a normal JSON body even when streaming was requested.
+            let text = response
+                .text()
+                .await
+                .map_err(|e| TransportErr::from_reqwest("openrouter read error body", e))?;
+            let message = parse_chat_response(status, &text)
+                .err()
+                .map(|e| e.to_string().replacen("openrouter/agent error: ", "", 1))
+                .unwrap_or_else(|| format!("openrouter HTTP {status}"));
+            return Err(TransportErr {
+                message,
+                transient: status.as_u16() == 429
+                    || status.is_server_error()
+                    || status == StatusCode::REQUEST_TIMEOUT
+                    || status == StatusCode::GATEWAY_TIMEOUT,
+            });
+        }
+
+        let mut acc = StreamAccumulator::default();
+        let mut buf = String::new();
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk
+                .map_err(|e| TransportErr::from_reqwest("openrouter stream chunk", e))?;
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+
+            // SSE frames are newline-delimited; keep any trailing partial line.
+            while let Some(nl) = buf.find('\n') {
+                let line: String = buf.drain(..=nl).collect();
+                match acc.push_line(line.trim_end_matches(['\r', '\n'])) {
+                    Ok(deltas) => {
+                        for d in deltas {
+                            *emitted = true;
+                            on_delta(d);
+                        }
+                    }
+                    Err(msg) => {
+                        return Err(TransportErr {
+                            message: msg,
+                            transient: false,
+                        });
+                    }
+                }
+                if acc.done {
+                    break;
+                }
+            }
+            if acc.done {
+                break;
+            }
+        }
+
+        acc.finish().map_err(|e| TransportErr {
+            message: e.to_string().replacen("openrouter/agent error: ", "", 1),
+            transient: false,
+        })
+    }
+}
+
+/// Reassembles an OpenRouter SSE stream into a single [`AssistantTurn`].
+///
+/// Tool calls arrive fragmented: `id` and `function.name` usually land in the first
+/// chunk for a given `index`, while `function.arguments` accumulates across many
+/// later chunks. Keying by `index` (not by position) is what keeps parallel tool
+/// calls from being spliced into each other.
+#[derive(Default)]
+pub(crate) struct StreamAccumulator {
+    content: String,
+    tool_calls: BTreeMap<u64, PartialToolCall>,
+    model: Option<String>,
+    finish_reason: Option<String>,
+    error: Option<String>,
+    pub(crate) done: bool,
+}
+
+#[derive(Default, Clone)]
+struct PartialToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+    announced: bool,
+}
+
+impl StreamAccumulator {
+    /// Feed one raw SSE line. Returns any fragments that should reach the caller.
+    pub(crate) fn push_line(&mut self, line: &str) -> Result<Vec<StreamDelta>, String> {
+        let line = line.trim();
+        // `: OPENROUTER PROCESSING` keepalives and blank frame separators.
+        if line.is_empty() || line.starts_with(':') {
+            return Ok(Vec::new());
+        }
+        let Some(data) = line.strip_prefix("data:") else {
+            // Unknown SSE field (event:, id:, retry:) — nothing to accumulate.
+            return Ok(Vec::new());
+        };
+        let data = data.trim();
+        if data == "[DONE]" {
+            self.done = true;
+            return Ok(Vec::new());
+        }
+
+        let value: Value = match serde_json::from_str(data) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, chunk = %truncate(data, 200), "skipping unparseable stream chunk");
+                return Ok(Vec::new());
+            }
+        };
+
+        if let Some(msg) = extract_error_message(&value) {
+            self.error = Some(msg);
+            self.done = true;
+            return Ok(Vec::new());
+        }
+
+        if self.model.is_none() {
+            self.model = value.get("model").and_then(|m| m.as_str()).map(String::from);
+        }
+
+        let Some(choice) = value
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+        else {
+            return Ok(Vec::new());
+        };
+
+        if let Some(reason) = choice.get("finish_reason").and_then(|f| f.as_str()) {
+            self.finish_reason = Some(reason.to_string());
+        }
+
+        // Non-streaming providers occasionally answer a stream request with a full
+        // `message` instead of `delta`; treat both alike.
+        let delta = choice.get("delta").or_else(|| choice.get("message"));
+        let Some(delta) = delta else {
+            return Ok(Vec::new());
+        };
+
+        let mut out = Vec::new();
+
+        if let Some(text) = extract_text_content(delta.get("content")) {
+            self.content.push_str(&text);
+            out.push(StreamDelta::Text(text));
+        }
+
+        if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+            for (pos, call) in calls.iter().enumerate() {
+                let index = call
+                    .get("index")
+                    .and_then(|i| i.as_u64())
+                    .unwrap_or(pos as u64);
+                let slot = self.tool_calls.entry(index).or_default();
+
+                if let Some(id) = call.get("id").and_then(|v| v.as_str())
+                    && !id.is_empty()
+                {
+                    slot.id = Some(id.to_string());
+                }
+                let func = call.get("function").unwrap_or(call);
+                if let Some(name) = func.get("name").and_then(|v| v.as_str())
+                    && !name.is_empty()
+                {
+                    // Providers may stream a name in fragments too.
+                    match slot.name.as_mut() {
+                        Some(existing) => existing.push_str(name),
+                        None => slot.name = Some(name.to_string()),
+                    }
+                }
+                match func.get("arguments") {
+                    Some(Value::String(s)) => slot.arguments.push_str(s),
+                    Some(Value::Null) | None => {}
+                    Some(other) => slot.arguments.push_str(&other.to_string()),
+                }
+
+                if !slot.announced
+                    && let Some(name) = slot.name.clone()
+                {
+                    slot.announced = true;
+                    out.push(StreamDelta::ToolCallNamed(name));
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
+    pub(crate) fn finish(self) -> Result<AssistantTurn, AiError> {
+        if let Some(msg) = self.error {
+            return Err(AiError::Agent(format!("openrouter stream error: {msg}")));
+        }
+
+        let tool_calls: Vec<ToolCall> = self
+            .tool_calls
+            .into_iter()
+            .filter_map(|(index, partial)| {
+                let name = partial.name?;
+                let arguments = if partial.arguments.trim().is_empty() {
+                    "{}".to_string()
+                } else {
+                    partial.arguments
+                };
+                Some(ToolCall {
+                    id: partial.id.unwrap_or_else(|| format!("call_{index}")),
+                    name,
+                    arguments,
+                })
+            })
+            .collect();
+
+        let content = {
+            let trimmed = self.content.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(self.content.clone())
+            }
+        };
+
+        if content.is_none() && tool_calls.is_empty() {
+            return Err(AiError::Agent(
+                "openrouter stream ended with no content or tool calls".into(),
+            ));
+        }
+
+        debug!(
+            model = self.model.as_deref().unwrap_or("?"),
+            finish = self.finish_reason.as_deref().unwrap_or("?"),
+            tools = tool_calls.len(),
+            has_content = content.is_some(),
+            "openrouter streamed assistant turn"
+        );
+
+        Ok(AssistantTurn {
+            content,
+            tool_calls,
+            model: self.model,
+            finish_reason: self.finish_reason,
         })
     }
 }
@@ -542,6 +889,157 @@ mod tests {
         assert!(REQUEST_TIMEOUT.as_secs() >= 180);
         assert!(MAX_TRANSIENT_RETRIES >= 2);
         assert_eq!(1 + MAX_TRANSIENT_RETRIES, 3);
+    }
+
+    fn feed(acc: &mut StreamAccumulator, lines: &[&str]) -> Vec<StreamDelta> {
+        let mut out = Vec::new();
+        for line in lines {
+            out.extend(acc.push_line(line).expect("line accepted"));
+        }
+        out
+    }
+
+    #[test]
+    fn stream_accumulates_text_fragments_in_order() {
+        let mut acc = StreamAccumulator::default();
+        let deltas = feed(
+            &mut acc,
+            &[
+                r#"data: {"model":"x","choices":[{"delta":{"content":"Your least "}}]}"#,
+                r#"data: {"choices":[{"delta":{"content":"efficient trip"}}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+                "data: [DONE]",
+            ],
+        );
+        assert_eq!(deltas.len(), 2);
+        assert!(acc.done);
+        let turn = acc.finish().unwrap();
+        assert_eq!(turn.content.as_deref(), Some("Your least efficient trip"));
+        assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(turn.model.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn stream_skips_keepalives_and_blank_frames() {
+        let mut acc = StreamAccumulator::default();
+        let deltas = feed(
+            &mut acc,
+            &[
+                ": OPENROUTER PROCESSING",
+                "",
+                "event: message",
+                r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#,
+            ],
+        );
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(acc.finish().unwrap().content.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn stream_reassembles_fragmented_tool_call_arguments() {
+        let mut acc = StreamAccumulator::default();
+        let deltas = feed(
+            &mut acc,
+            &[
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"list_trips","arguments":""}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"car_id\""}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"abc\"}"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+            ],
+        );
+        // The name is announced exactly once, as soon as it is known.
+        assert_eq!(
+            deltas
+                .iter()
+                .filter(|d| matches!(d, StreamDelta::ToolCallNamed(_)))
+                .count(),
+            1
+        );
+        let turn = acc.finish().unwrap();
+        assert_eq!(turn.tool_calls.len(), 1);
+        assert_eq!(turn.tool_calls[0].name, "list_trips");
+        assert_eq!(turn.tool_calls[0].id, "call_a");
+        assert_eq!(turn.tool_calls[0].arguments, r#"{"car_id":"abc"}"#);
+        assert_eq!(turn.finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn stream_keys_parallel_tool_calls_by_index() {
+        // Fragments for two calls interleave; keying by position would splice them.
+        let mut acc = StreamAccumulator::default();
+        feed(
+            &mut acc,
+            &[
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"get_trip","arguments":"{\"trip_id\":"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"get_car","arguments":"{\"car_id\":"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"c2\"}"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"t1\"}"}}]}}]}"#,
+            ],
+        );
+        let turn = acc.finish().unwrap();
+        assert_eq!(turn.tool_calls.len(), 2);
+        assert_eq!(turn.tool_calls[0].name, "get_trip");
+        assert_eq!(turn.tool_calls[0].arguments, r#"{"trip_id":"t1"}"#);
+        assert_eq!(turn.tool_calls[1].name, "get_car");
+        assert_eq!(turn.tool_calls[1].arguments, r#"{"car_id":"c2"}"#);
+    }
+
+    #[test]
+    fn stream_missing_index_falls_back_to_position() {
+        let mut acc = StreamAccumulator::default();
+        feed(
+            &mut acc,
+            &[
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"list_cars","arguments":"{}"}}]}}]}"#,
+            ],
+        );
+        let turn = acc.finish().unwrap();
+        assert_eq!(turn.tool_calls.len(), 1);
+        assert_eq!(turn.tool_calls[0].name, "list_cars");
+    }
+
+    #[test]
+    fn stream_surfaces_mid_stream_error_payload() {
+        let mut acc = StreamAccumulator::default();
+        feed(
+            &mut acc,
+            &[r#"data: {"error":{"message":"Rate limited","code":429}}"#],
+        );
+        assert!(acc.done);
+        let err = acc.finish().unwrap_err().to_string();
+        assert!(err.contains("Rate limited"), "{err}");
+        assert!(err.contains("429"), "{err}");
+    }
+
+    #[test]
+    fn stream_ignores_unparseable_chunks() {
+        let mut acc = StreamAccumulator::default();
+        let deltas = feed(
+            &mut acc,
+            &[
+                "data: {not json",
+                r#"data: {"choices":[{"delta":{"content":"ok"}}]}"#,
+            ],
+        );
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(acc.finish().unwrap().content.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn stream_with_nothing_at_all_is_an_error() {
+        let acc = StreamAccumulator::default();
+        assert!(acc.finish().is_err());
+    }
+
+    #[test]
+    fn stream_accepts_message_shaped_chunks() {
+        // Some providers answer a stream request with a full `message` object.
+        let mut acc = StreamAccumulator::default();
+        feed(
+            &mut acc,
+            &[r#"data: {"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#],
+        );
+        assert_eq!(acc.finish().unwrap().content.as_deref(), Some("done"));
     }
 
     #[test]

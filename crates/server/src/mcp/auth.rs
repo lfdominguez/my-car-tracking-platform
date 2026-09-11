@@ -12,7 +12,11 @@ use crate::units::UnitSystem;
 
 use super::token::hash_token;
 
-/// Authenticated MCP caller (inserted into request extensions).
+/// Identity of a read-only tool caller.
+///
+/// Named for its original MCP use, but it carries nothing MCP-specific: the in-app
+/// chat builds one from the session [`crate::auth::AuthUser`] so both paths share the
+/// same tool loaders and therefore the same ownership and vault scoping.
 #[derive(Debug, Clone)]
 pub struct McpUser {
     pub id: Uuid,
