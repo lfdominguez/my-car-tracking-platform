@@ -382,6 +382,13 @@ async fn update_car(
     .bind(body.notes.or(current.notes))
     .fetch_one(&state.pool)
     .await?;
+    // A track whose powertrain snapshot is NULL falls back to the car's live values
+    // when its fuel figures are computed, so editing the car changes historical trip
+    // numbers. Invalidate the cached statistics to keep that behaviour.
+    if let Err(e) = crate::trips::stats::mark_stale_for_car(&state.pool, id).await {
+        tracing::warn!(car_id = %id, error = %e, "marking car track stats stale failed");
+    }
+
     let mut row = row;
     row.vault_sealed = current.vault_sealed;
     Ok(Json(seal_car_if_vault(row)))

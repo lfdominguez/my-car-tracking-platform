@@ -6,7 +6,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::devices::authenticate_device_token;
@@ -263,9 +263,12 @@ async fn track_sample(
             "vault car requires encrypted chunk upload (/api/track/vault/chunk); plaintext samples rejected".into(),
         ));
     }
-    insert_sample(&state, device.car_id, &body)
+    let track = insert_sample(&state, device.car_id, &body)
         .await
         .map_err(map_sample_error)?;
+    if track.finished {
+        mark_stats_stale(&state, &[track.track_id]).await;
+    }
     Ok(StatusCode::OK)
 }
 
@@ -287,6 +290,8 @@ async fn track_samples(
     }
     let mut accepted: i64 = 0;
     let mut rejected = Vec::new();
+    // Finished trips that took new points in this batch; see `mark_stats_stale`.
+    let mut stale_stats: HashSet<Uuid> = HashSet::new();
     // A 1 Hz batch is ~200 rows that all target the same trip, so resolve the
     // `tracks` row once per distinct tracking_id instead of once per sample.
     // `None` caches a tracking_id already known to be unresolvable; transient DB
@@ -311,7 +316,16 @@ async fn track_samples(
             },
         };
         match outcome {
-            Ok(()) => accepted += 1,
+            Ok(()) => {
+                accepted += 1;
+                // The entry is present by now: the resolving arm inserts before it
+                // returns, so this is a lookup rather than a second resolve.
+                if let Some(Some(track)) = tracks.get(&sample.tracking_id) {
+                    if track.finished {
+                        stale_stats.insert(track.track_id);
+                    }
+                }
+            }
             Err(SampleError::Duplicate) => rejected.push(RejectedSample {
                 recorded_at: sample.recorded_at,
                 reason: "duplicate".into(),
@@ -336,6 +350,11 @@ async fn track_samples(
                 });
             }
         }
+    }
+
+    if !stale_stats.is_empty() {
+        let ids: Vec<Uuid> = stale_stats.into_iter().collect();
+        mark_stats_stale(&state, &ids).await;
     }
 
     Ok(Json(TrackSamplesBatchResponse { accepted, rejected }))
@@ -406,13 +425,28 @@ async fn resolve_track(
     })
 }
 
+/// Inserts one sample, returning the track it landed on so the caller can invalidate
+/// that track's cached statistics when it was already finished.
 async fn insert_sample(
     state: &AppState,
     car_id: Uuid,
     sample: &TrackSampleRequest,
-) -> Result<(), SampleError> {
+) -> Result<TrackRef, SampleError> {
     let track = resolve_track(state, car_id, &sample.tracking_id).await?;
-    insert_sample_for_track(state, &track, sample).await
+    insert_sample_for_track(state, &track, sample).await?;
+    Ok(track)
+}
+
+/// A finished trip just took new points, so its stored statistics no longer match.
+///
+/// The client may drain a queued batch up to `LATE_SAMPLE_GRACE` after the stop (see
+/// `finished_track_accepts_sample`), and a device that restarts within that window
+/// reuses the same tracking_id. Failure is logged and swallowed: a stale row is only
+/// ever a missed optimisation, since the read paths fall back to aggregating live.
+async fn mark_stats_stale(state: &AppState, track_ids: &[Uuid]) {
+    if let Err(e) = crate::trips::stats::mark_stale(&state.pool, track_ids).await {
+        tracing::warn!(error = %e, "marking track stats stale failed");
+    }
 }
 
 async fn insert_sample_for_track(

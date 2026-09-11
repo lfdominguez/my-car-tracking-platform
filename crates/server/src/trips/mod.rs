@@ -1,6 +1,7 @@
 //! Trip list/detail/points/map APIs.
 
 mod fuel_stats;
+pub mod stats;
 
 pub use shared::telemetry_sanitize::{energy_from_soc_kwh, sanitize_speed_rpm, SpeedRpmPoint};
 
@@ -41,6 +42,8 @@ pub fn router() -> Router<AppState> {
 pub const DEFAULT_STALE_FINISH_AFTER_SECS: u64 = 2 * 60 * 60;
 const STALE_SWEEP_INTERVAL_SECS: u64 = 5 * 60;
 const STALE_SWEEP_BATCH: i64 = 50;
+/// Larger batch for the startup catch-up pass, which has no other work competing.
+const STATS_BACKFILL_BATCH: i64 = 200;
 
 /// Result of closing a track (device stop, web finish, or stale sweeper).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +124,13 @@ pub async fn finish_track(
         });
     }
 
+    // The trip's points are now immutable in the common case, so fold them into
+    // track_stats once here rather than re-aggregating on every list/dashboard read.
+    // Best-effort by design: an absent row just means those queries compute live.
+    if let Err(e) = stats::recompute(pool, track_id).await {
+        tracing::warn!(%track_id, error = %e, "track stats precompute failed");
+    }
+
     match is_empty_trip_for_auto_remove(pool, track_id).await {
         Ok(true) => {
             if let Err(e) = purge_track(pool, track_id).await {
@@ -173,10 +183,26 @@ fn spawn_post_finish_jobs(pool: &PgPool, keyring: &KeyRing, overpass_url: &str, 
     });
 }
 
-/// Background loop: finish open tracks with no samples for `stale_after_secs`.
+/// Background loop: finish open tracks with no samples for `stale_after_secs`, and
+/// keep `track_stats` filled in.
 pub fn spawn_stale_finish_loop(state: AppState) {
     let stale_secs = state.config.trip_stale_finish_after_secs.max(60);
     tokio::spawn(async move {
+        // Catch up before the first tick. Migration 018 ships the table empty on
+        // purpose — backfilling inside the migration would hold its transaction open
+        // across every historical point — so this pass is what makes the first
+        // dashboard load after a deploy fast rather than the one 5 minutes later.
+        loop {
+            match sweep_track_stats(&state, STATS_BACKFILL_BATCH).await {
+                Ok(0) => break,
+                Ok(n) => tracing::info!(count = n, "backfilled track stats"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "track stats backfill failed");
+                    break;
+                }
+            }
+        }
+
         let mut ticker =
             tokio::time::interval(std::time::Duration::from_secs(STALE_SWEEP_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -185,8 +211,51 @@ pub fn spawn_stale_finish_loop(state: AppState) {
             if let Err(e) = sweep_stale_open_trips(&state, stale_secs).await {
                 tracing::warn!(error = %e, "stale trip sweep failed");
             }
+            if let Err(e) = sweep_track_stats(&state, STALE_SWEEP_BATCH).await {
+                tracing::warn!(error = %e, "track stats sweep failed");
+            }
         }
     });
+}
+
+/// Recompute up to `limit` finished trips whose stored statistics are missing, stale
+/// or written by an older [`stats::SCHEMA_VERSION`]. Returns how many were written.
+///
+/// This is the one mechanism behind three jobs: the initial backfill, catching up
+/// after late samples land on a finished trip, and re-deriving everything when the
+/// fuel or distance math changes. Newest trips go first because those are the ones
+/// users actually open.
+async fn sweep_track_stats(state: &AppState, limit: i64) -> AppResult<usize> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT t.id
+        FROM tracks t
+        JOIN cars c ON c.id = t.car_id
+        JOIN users ou ON ou.id = c.owner_user_id
+        LEFT JOIN track_stats s ON s.track_id = t.id
+        WHERE t.finished = true
+          AND ou.vault_status <> 'active'
+          AND (s.track_id IS NULL OR s.stale OR s.schema_version <> $1)
+        ORDER BY t.started_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(stats::SCHEMA_VERSION)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut written = 0usize;
+    for id in ids {
+        match stats::recompute(&state.pool, id).await {
+            Ok(true) => written += 1,
+            // Vault-active or deleted between the select and the write; either way
+            // there is deliberately nothing to store.
+            Ok(false) => {}
+            Err(e) => tracing::warn!(%id, error = %e, "track stats recompute failed"),
+        }
+    }
+    Ok(written)
 }
 
 async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<()> {
