@@ -497,23 +497,16 @@ async fn upload_photo(
     })?;
 
     let rel = format!("cars/{id}.{}", kind.extension());
-    tokio::fs::create_dir_all(&state.config.upload_dir)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    let base_dir = tokio::fs::canonicalize(&state.config.upload_dir)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-
+    // config.upload_dir was created and canonicalized at startup; keep every path
+    // derived from it provably inside it.
+    let base_dir = &state.config.upload_dir;
     let dir = base_dir.join("cars");
+    if !dir.starts_with(base_dir) {
+        return Err(AppError::BadRequest("invalid upload directory".into()));
+    }
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
-    let dir = tokio::fs::canonicalize(&dir)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    if !dir.starts_with(&base_dir) {
-        return Err(AppError::BadRequest("invalid upload directory".into()));
-    }
 
     // Remove prior photo with a different extension if present.
     if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {

@@ -125,8 +125,17 @@ impl Config {
                 public_base_url.trim_end_matches('/')
             )
         });
+        // Resolve the upload root once, here: handlers only ever see a canonical
+        // absolute path, so every path they derive from it can be proven to stay
+        // inside it, and a misconfigured UPLOAD_DIR fails at boot rather than on
+        // the first photo upload.
         let upload_dir =
             PathBuf::from(env::var("UPLOAD_DIR").unwrap_or_else(|_| "data/uploads".into()));
+        std::fs::create_dir_all(&upload_dir)
+            .map_err(|e| ConfigError::Invalid("UPLOAD_DIR", e.to_string()))?;
+        let upload_dir = upload_dir
+            .canonicalize()
+            .map_err(|e| ConfigError::Invalid("UPLOAD_DIR", e.to_string()))?;
 
         let session_idle_hours = env::var("SESSION_IDLE_HOURS")
             .ok()
