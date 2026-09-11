@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::trips::stats;
 use crate::error::AppResult;
 use crate::units::{convert_distance_m, convert_fuel_l, convert_odometer_km, convert_speed_kph};
 
@@ -61,7 +62,7 @@ pub async fn get_dashboard_summary(
     to: Option<DateTime<Utc>>,
 ) -> AppResult<DashboardDto> {
     let system = ctx.user.unit_system;
-    let global = sqlx::query_as::<_, GlobalRow>(
+    let global_sql = format!(
         r#"
         WITH accessible AS (
             SELECT c.id
@@ -82,52 +83,34 @@ pub async fn get_dashboard_summary(
               AND ($2::uuid IS NULL OR t.car_id = $2)
               AND ($3::timestamptz IS NULL OR t.started_at >= $3)
               AND ($4::timestamptz IS NULL OR t.started_at <= $4)
-        ),
-        trip_stats AS (
-            SELECT
-                t.id,
-                COALESCE(
-                  CASE WHEN COUNT(tp.gps) >= 2
-                    THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)
-                    ELSE 0 END, 0
-                ) AS distance_m,
-                COALESCE(
-                  EXTRACT(EPOCH FROM (
-                    COALESCE(t.finished_at, MAX(tp.recorded_at), t.started_at) - t.started_at
-                  )), 0
-                ) AS duration_s,
-                COALESCE(
-                  CASE
-                    WHEN COUNT(tp.fuel_consumption_rate) > 0
-                      AND MAX(tp.recorded_at) > MIN(tp.recorded_at)
-                    THEN AVG(tp.fuel_consumption_rate)
-                         * EXTRACT(EPOCH FROM (MAX(tp.recorded_at) - MIN(tp.recorded_at))) / 3600.0
-                    ELSE 0
-                  END, 0
-                ) AS fuel_l,
-                AVG(COALESCE(tp.vehicle_speed_kph, tp.engine_vel)) AS avg_speed_kph
-            FROM filtered_tracks t
-            LEFT JOIN track_points tp ON tp.track_id = t.id
-            GROUP BY t.id, t.started_at, t.finished_at
         )
         SELECT
-            (SELECT COUNT(*)::bigint FROM trip_stats) AS trip_count,
-            COALESCE((SELECT SUM(distance_m) FROM trip_stats), 0)::float8 AS total_distance_m,
-            COALESCE((SELECT SUM(duration_s) FROM trip_stats), 0)::float8 AS total_duration_s,
-            COALESCE((SELECT SUM(fuel_l) FROM trip_stats), 0)::float8 AS total_fuel_l,
-            (SELECT AVG(avg_speed_kph) FROM trip_stats WHERE avg_speed_kph IS NOT NULL) AS avg_speed_kph,
+            (SELECT COUNT(*)::bigint FROM filtered_tracks) AS trip_count,
+            COALESCE(SUM(COALESCE(s.distance_m, live.distance_m, 0)), 0)::float8 AS total_distance_m,
+            COALESCE(SUM(EXTRACT(EPOCH FROM (
+                COALESCE(t.finished_at, s.last_point_at, live.last_at, t.started_at) - t.started_at
+            ))), 0)::float8 AS total_duration_s,
+            COALESCE(SUM(COALESCE(s.fuel_used_l, live.fuel_used_l, 0)), 0)::float8 AS total_fuel_l,
+            AVG(COALESCE(s.avg_speed_kph, live.avg_speed_kph)) AS avg_speed_kph,
             (SELECT COUNT(*)::bigint FROM accessible
               WHERE $2::uuid IS NULL OR id = $2) AS car_count
+        FROM filtered_tracks t
+        JOIN cars c ON c.id = t.car_id
+        {stats_join}
+        {lateral}
         "#,
-    )
-    .bind(ctx.user.id)
+        stats_join = stats::stats_join("s"),
+        lateral = stats::lateral("live", "AND s.track_id IS NULL"),
+    );
+    let global = sqlx::query_as::<_, GlobalRow>(sqlx::AssertSqlSafe(global_sql.as_str()))
+        .bind(ctx.user.id)
     .bind(car_id)
     .bind(from)
     .bind(to)
     .fetch_one(&ctx.state.pool)
     .await?;
 
-    let car_rows = sqlx::query_as::<_, CarDashRow>(
+    let car_sql = format!(
         r#"
         WITH accessible AS (
             SELECT c.id, c.name, c.make_model, (u.vault_status = 'active') AS vault_sealed
@@ -140,64 +123,97 @@ pub async fn get_dashboard_summary(
             JOIN car_shares cs ON cs.car_id = c.id
             JOIN users u ON u.id = c.owner_user_id
             WHERE cs.user_id = $1
+        ),
+        filtered AS (
+            SELECT * FROM accessible
+            WHERE $2::uuid IS NULL OR id = $2
+        ),
+        -- Trips with no usable stored row; see the same CTE in analytics::summary.
+        unstatted AS MATERIALIZED (
+            SELECT t.id, t.car_id
+            FROM tracks t
+            WHERE t.car_id IN (SELECT id FROM filtered)
+              AND {no_usable_stats}
+        ),
+        latest_odo AS (
+            SELECT DISTINCT ON (car_id) car_id, odometer, odometer_at
+            FROM (
+                SELECT t.car_id, s.odo_end_km AS odometer, s.odo_end_at AS odometer_at
+                FROM tracks t
+                {stats_join_inner}
+                WHERE t.car_id IN (SELECT id FROM filtered)
+                  AND s.odo_end_km IS NOT NULL
+                UNION ALL
+                SELECT u.car_id, p.odometer_value_km::float8, p.recorded_at
+                FROM unstatted u
+                JOIN LATERAL (
+                    SELECT tp.odometer_value_km, tp.recorded_at
+                    FROM track_points tp
+                    WHERE tp.track_id = u.id AND tp.odometer_value_km IS NOT NULL
+                    ORDER BY tp.recorded_at DESC
+                    LIMIT 1
+                ) p ON true
+            ) x
+            ORDER BY car_id, odometer_at DESC
+        ),
+        latest_fuel AS (
+            SELECT DISTINCT ON (car_id) car_id, fuel_level_pct
+            FROM (
+                SELECT t.car_id, s.fuel_level_end_pct AS fuel_level_pct, s.fuel_level_end_at AS at
+                FROM tracks t
+                {stats_join_inner}
+                WHERE t.car_id IN (SELECT id FROM filtered)
+                  AND s.fuel_level_end_pct IS NOT NULL
+                UNION ALL
+                SELECT u.car_id, p.fuel_level_pct::float8, p.recorded_at
+                FROM unstatted u
+                JOIN LATERAL (
+                    SELECT tp.fuel_level_pct, tp.recorded_at
+                    FROM track_points tp
+                    WHERE tp.track_id = u.id AND tp.fuel_level_pct IS NOT NULL
+                    ORDER BY tp.recorded_at DESC
+                    LIMIT 1
+                ) p ON true
+            ) x
+            ORDER BY car_id, at DESC
+        ),
+        car_trip AS (
+            SELECT
+                t.car_id,
+                COUNT(*)::bigint AS trip_count,
+                COALESCE(SUM(COALESCE(s.distance_m, live.distance_m, 0)), 0)::float8 AS tracked_distance_m
+            FROM tracks t
+            JOIN cars c ON c.id = t.car_id
+            {stats_join}
+            {lateral}
+            WHERE t.car_id IN (SELECT id FROM filtered)
+              AND ($3::timestamptz IS NULL OR t.started_at >= $3)
+              AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+            GROUP BY t.car_id
         )
         SELECT
-            a.id AS car_id,
-            a.name,
-            a.make_model,
-            (
-              SELECT tp.odometer_value_km
-              FROM tracks t
-              JOIN track_points tp ON tp.track_id = t.id
-              WHERE t.car_id = a.id AND tp.odometer_value_km IS NOT NULL
-              ORDER BY tp.recorded_at DESC
-              LIMIT 1
-            ) AS odometer,
-            (
-              SELECT tp.recorded_at
-              FROM tracks t
-              JOIN track_points tp ON tp.track_id = t.id
-              WHERE t.car_id = a.id AND tp.odometer_value_km IS NOT NULL
-              ORDER BY tp.recorded_at DESC
-              LIMIT 1
-            ) AS odometer_at,
-            (
-              SELECT tp.fuel_level_pct
-              FROM tracks t
-              JOIN track_points tp ON tp.track_id = t.id
-              WHERE t.car_id = a.id AND tp.fuel_level_pct IS NOT NULL
-              ORDER BY tp.recorded_at DESC
-              LIMIT 1
-            ) AS fuel_level_pct,
-            COALESCE((
-              SELECT SUM(
-                CASE WHEN cnt >= 2 THEN dist ELSE 0 END
-              )
-              FROM (
-                SELECT
-                  COUNT(tp.gps)::int AS cnt,
-                  ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography) AS dist
-                FROM tracks t
-                LEFT JOIN track_points tp ON tp.track_id = t.id
-                WHERE t.car_id = a.id
-                  AND ($3::timestamptz IS NULL OR t.started_at >= $3)
-                  AND ($4::timestamptz IS NULL OR t.started_at <= $4)
-                GROUP BY t.id
-              ) s
-            ), 0)::float8 AS tracked_distance_m,
-            (
-              SELECT COUNT(*)::bigint FROM tracks t
-              WHERE t.car_id = a.id
-                AND ($3::timestamptz IS NULL OR t.started_at >= $3)
-                AND ($4::timestamptz IS NULL OR t.started_at <= $4)
-            ) AS trip_count,
-            a.vault_sealed
-        FROM accessible a
-        WHERE ($2::uuid IS NULL OR a.id = $2)
-        ORDER BY a.name
+            f.id AS car_id,
+            f.name,
+            f.make_model,
+            o.odometer,
+            o.odometer_at,
+            lf.fuel_level_pct,
+            COALESCE(ct.tracked_distance_m, 0)::float8 AS tracked_distance_m,
+            COALESCE(ct.trip_count, 0)::bigint AS trip_count,
+            f.vault_sealed
+        FROM filtered f
+        LEFT JOIN car_trip ct ON ct.car_id = f.id
+        LEFT JOIN latest_odo o ON o.car_id = f.id
+        LEFT JOIN latest_fuel lf ON lf.car_id = f.id
+        ORDER BY f.name
         "#,
-    )
-    .bind(ctx.user.id)
+        stats_join = stats::stats_join("s"),
+        stats_join_inner = stats::stats_join_required("s"),
+        no_usable_stats = stats::no_usable_stats(),
+        lateral = stats::lateral("live", "AND s.track_id IS NULL"),
+    );
+    let car_rows = sqlx::query_as::<_, CarDashRow>(sqlx::AssertSqlSafe(car_sql.as_str()))
+        .bind(ctx.user.id)
     .bind(car_id)
     .bind(from)
     .bind(to)

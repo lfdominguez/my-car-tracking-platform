@@ -1,6 +1,7 @@
 //! Trip list/detail/points/map APIs.
 
 mod fuel_stats;
+pub mod stats;
 
 pub use shared::telemetry_sanitize::{energy_from_soc_kwh, sanitize_speed_rpm, SpeedRpmPoint};
 
@@ -41,6 +42,8 @@ pub fn router() -> Router<AppState> {
 pub const DEFAULT_STALE_FINISH_AFTER_SECS: u64 = 2 * 60 * 60;
 const STALE_SWEEP_INTERVAL_SECS: u64 = 5 * 60;
 const STALE_SWEEP_BATCH: i64 = 50;
+/// Larger batch for the startup catch-up pass, which has no other work competing.
+const STATS_BACKFILL_BATCH: i64 = 200;
 
 /// Result of closing a track (device stop, web finish, or stale sweeper).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +124,13 @@ pub async fn finish_track(
         });
     }
 
+    // The trip's points are now immutable in the common case, so fold them into
+    // track_stats once here rather than re-aggregating on every list/dashboard read.
+    // Best-effort by design: an absent row just means those queries compute live.
+    if let Err(e) = stats::recompute(pool, track_id).await {
+        tracing::warn!(%track_id, error = %e, "track stats precompute failed");
+    }
+
     match is_empty_trip_for_auto_remove(pool, track_id).await {
         Ok(true) => {
             if let Err(e) = purge_track(pool, track_id).await {
@@ -173,10 +183,26 @@ fn spawn_post_finish_jobs(pool: &PgPool, keyring: &KeyRing, overpass_url: &str, 
     });
 }
 
-/// Background loop: finish open tracks with no samples for `stale_after_secs`.
+/// Background loop: finish open tracks with no samples for `stale_after_secs`, and
+/// keep `track_stats` filled in.
 pub fn spawn_stale_finish_loop(state: AppState) {
     let stale_secs = state.config.trip_stale_finish_after_secs.max(60);
     tokio::spawn(async move {
+        // Catch up before the first tick. Migration 018 ships the table empty on
+        // purpose — backfilling inside the migration would hold its transaction open
+        // across every historical point — so this pass is what makes the first
+        // dashboard load after a deploy fast rather than the one 5 minutes later.
+        loop {
+            match sweep_track_stats(&state, STATS_BACKFILL_BATCH).await {
+                Ok(0) => break,
+                Ok(n) => tracing::info!(count = n, "backfilled track stats"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "track stats backfill failed");
+                    break;
+                }
+            }
+        }
+
         let mut ticker =
             tokio::time::interval(std::time::Duration::from_secs(STALE_SWEEP_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -185,8 +211,51 @@ pub fn spawn_stale_finish_loop(state: AppState) {
             if let Err(e) = sweep_stale_open_trips(&state, stale_secs).await {
                 tracing::warn!(error = %e, "stale trip sweep failed");
             }
+            if let Err(e) = sweep_track_stats(&state, STALE_SWEEP_BATCH).await {
+                tracing::warn!(error = %e, "track stats sweep failed");
+            }
         }
     });
+}
+
+/// Recompute up to `limit` finished trips whose stored statistics are missing, stale
+/// or written by an older [`stats::SCHEMA_VERSION`]. Returns how many were written.
+///
+/// This is the one mechanism behind three jobs: the initial backfill, catching up
+/// after late samples land on a finished trip, and re-deriving everything when the
+/// fuel or distance math changes. Newest trips go first because those are the ones
+/// users actually open.
+async fn sweep_track_stats(state: &AppState, limit: i64) -> AppResult<usize> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT t.id
+        FROM tracks t
+        JOIN cars c ON c.id = t.car_id
+        JOIN users ou ON ou.id = c.owner_user_id
+        LEFT JOIN track_stats s ON s.track_id = t.id
+        WHERE t.finished = true
+          AND ou.vault_status <> 'active'
+          AND (s.track_id IS NULL OR s.stale OR s.schema_version <> $1)
+        ORDER BY t.started_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(stats::SCHEMA_VERSION)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut written = 0usize;
+    for id in ids {
+        match stats::recompute(&state.pool, id).await {
+            Ok(true) => written += 1,
+            // Vault-active or deleted between the select and the write; either way
+            // there is deliberately nothing to store.
+            Ok(false) => {}
+            Err(e) => tracing::warn!(%id, error = %e, "track stats recompute failed"),
+        }
+    }
+    Ok(written)
 }
 
 async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<()> {
@@ -665,9 +734,25 @@ async fn list_trips(
 ) -> AppResult<Json<Vec<TripSummary>>> {
     let limit = trip_list_limit(q.limit);
 
-    // Build dynamically with optional filters
-    let rows = sqlx::query_as::<_, TripSummaryRow>(
+    // Two things keep this cheap. The `page` CTE resolves the page of track ids up
+    // front, so the per-trip aggregate cannot run for tracks that LIMIT will discard.
+    // The `s.track_id IS NULL` gate then skips that aggregate entirely for trips that
+    // already have stored statistics, which in steady state is all but the open one.
+    let sql = format!(
         r#"
+        WITH page AS (
+            SELECT t.id
+            FROM tracks t
+            WHERE (
+                t.car_id IN (SELECT id FROM cars WHERE owner_user_id = $1)
+                OR t.car_id IN (SELECT car_id FROM car_shares WHERE user_id = $1)
+            )
+            AND ($2::uuid IS NULL OR t.car_id = $2)
+            AND ($3::timestamptz IS NULL OR t.started_at >= $3)
+            AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+            ORDER BY t.started_at DESC
+            LIMIT $5
+        )
         SELECT
             t.id,
             t.car_id,
@@ -677,154 +762,42 @@ async fn list_trips(
             t.finished,
             t.fuel_type_snapshot,
             COALESCE(NULLIF(t.fuel_class_snapshot, ''), 'GASOLINE') AS fuel_class_snapshot,
-            COALESCE(stats.point_count, 0) AS point_count,
-            stats.distance_m,
+            COALESCE(s.point_count, live.point_count, 0) AS point_count,
+            COALESCE(s.distance_m, live.distance_m) AS distance_m,
             CASE
               WHEN t.finished_at IS NOT NULL THEN EXTRACT(EPOCH FROM (t.finished_at - t.started_at))::float8
-              WHEN stats.last_at IS NOT NULL THEN EXTRACT(EPOCH FROM (stats.last_at - t.started_at))::float8
+              WHEN COALESCE(s.last_point_at, live.last_at) IS NOT NULL
+                THEN EXTRACT(EPOCH FROM (COALESCE(s.last_point_at, live.last_at) - t.started_at))::float8
               ELSE NULL
             END AS duration_s,
-            stats.avg_speed_kph,
-            stats.max_speed_kph,
-            stats.fuel_used_l,
-            stats.fuel_used_moving_l,
-            stats.odo_start_km,
-            stats.odo_end_km,
-            stats.fuel_level_start_pct,
-            stats.fuel_level_end_pct,
+            COALESCE(s.avg_speed_kph, live.avg_speed_kph) AS avg_speed_kph,
+            COALESCE(s.max_speed_kph, live.max_speed_kph) AS max_speed_kph,
+            COALESCE(s.fuel_used_l, live.fuel_used_l) AS fuel_used_l,
+            COALESCE(s.fuel_used_moving_l, live.fuel_used_moving_l) AS fuel_used_moving_l,
+            COALESCE(s.odo_start_km, live.odo_start_km) AS odo_start_km,
+            COALESCE(s.odo_end_km, live.odo_end_km) AS odo_end_km,
+            COALESCE(s.fuel_level_start_pct, live.fuel_level_start_pct) AS fuel_level_start_pct,
+            COALESCE(s.fuel_level_end_pct, live.fuel_level_end_pct) AS fuel_level_end_pct,
             COALESCE(t.tank_capacity_l_snapshot, c.tank_capacity_l) AS tank_capacity_l,
             t.analysis_status,
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
             t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed,
-            stats.last_at AS last_point_at
-        FROM tracks t
+            COALESCE(s.last_point_at, live.last_at) AS last_point_at
+        FROM page
+        JOIN tracks t ON t.id = page.id
         JOIN cars c ON c.id = t.car_id
         JOIN users ou ON ou.id = c.owner_user_id
-        LEFT JOIN LATERAL (
-            SELECT
-                COUNT(*)::bigint AS point_count,
-                MAX(tp.recorded_at) AS last_at,
-                AVG(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS avg_speed_kph,
-                MAX(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS max_speed_kph,
-                (
-                  SELECT SUM(
-                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
-                  )::float8
-                  FROM (
-                    SELECT
-                      -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
-                      CASE
-                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
-                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
-                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
-                         AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
-                         AND COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
-                         AND COALESCE(t.density_gl_snapshot, c.density_gl, 740) > 0
-                         AND tp2.fuel_consumption_rate >= 0.7 * (
-                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            )
-                        THEN (
-                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            ) * COALESCE(t.ve_snapshot, c.ve, 0.85) * 0.14
-                        ELSE tp2.fuel_consumption_rate
-                      END AS rate,
-                      tp2.recorded_at AS t,
-                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
-                    FROM track_points tp2
-                    WHERE tp2.track_id = t.id
-                  ) x
-                  WHERE x.rate IS NOT NULL
-                    AND x.lead_t IS NOT NULL
-                    AND x.lead_t > x.t
-                    AND x.lead_t <= x.t + interval '5 minutes'
-                ) AS fuel_used_l,
-                (
-                  SELECT SUM(
-                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
-                  )::float8
-                  FROM (
-                    SELECT
-                      -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
-                      CASE
-                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
-                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
-                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
-                         AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
-                         AND COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
-                         AND COALESCE(t.density_gl_snapshot, c.density_gl, 740) > 0
-                         AND tp2.fuel_consumption_rate >= 0.7 * (
-                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            )
-                        THEN (
-                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            ) * COALESCE(t.ve_snapshot, c.ve, 0.85) * 0.14
-                        ELSE tp2.fuel_consumption_rate
-                      END AS rate,
-                      COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0)::float8 AS spd,
-                      tp2.recorded_at AS t,
-                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
-                    FROM track_points tp2
-                    WHERE tp2.track_id = t.id
-                  ) x
-                  WHERE x.rate IS NOT NULL
-                    AND x.spd >= 1
-                    AND x.lead_t IS NOT NULL
-                    AND x.lead_t > x.t
-                    AND x.lead_t <= x.t + interval '5 minutes'
-                ) AS fuel_used_moving_l,
-                (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at ASC)
-                  FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_start_km,
-                (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at DESC)
-                  FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_end_km,
-                (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at ASC)
-                  FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_start_pct,
-                (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at DESC)
-                  FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_end_pct,
-                CASE
-                  WHEN COUNT(tp.gps) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
-                  ELSE 0::float8
-                END AS distance_m
-            FROM track_points tp
-            WHERE tp.track_id = t.id
-        ) stats ON true
-        WHERE (
-            c.owner_user_id = $1
-            OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = t.car_id AND cs.user_id = $1)
-        )
-        AND ($2::uuid IS NULL OR t.car_id = $2)
-        AND ($3::timestamptz IS NULL OR t.started_at >= $3)
-        AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+        {stats_join}
+        {lateral}
         ORDER BY t.started_at DESC
-        LIMIT $5
         "#,
-    )
-    .bind(user.id)
+        stats_join = stats::stats_join("s"),
+        lateral = stats::lateral("live", "AND s.track_id IS NULL"),
+    );
+    let rows = sqlx::query_as::<_, TripSummaryRow>(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(user.id)
     .bind(q.car_id)
     .bind(q.from)
     .bind(q.to)
@@ -854,147 +827,47 @@ async fn get_trip(
         .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
 
-    let row = sqlx::query_as::<_, TripSummaryRow>(
+    let sql = format!(
         r#"
         SELECT
             t.id, t.car_id, c.name AS car_name, t.started_at, t.finished_at, t.finished,
             t.fuel_type_snapshot,
             COALESCE(NULLIF(t.fuel_class_snapshot, ''), 'GASOLINE') AS fuel_class_snapshot,
-            COALESCE(stats.point_count, 0) AS point_count,
-            stats.distance_m,
+            COALESCE(s.point_count, live.point_count, 0) AS point_count,
+            COALESCE(s.distance_m, live.distance_m) AS distance_m,
             CASE
               WHEN t.finished_at IS NOT NULL THEN EXTRACT(EPOCH FROM (t.finished_at - t.started_at))::float8
-              WHEN stats.last_at IS NOT NULL THEN EXTRACT(EPOCH FROM (stats.last_at - t.started_at))::float8
+              WHEN COALESCE(s.last_point_at, live.last_at) IS NOT NULL
+                THEN EXTRACT(EPOCH FROM (COALESCE(s.last_point_at, live.last_at) - t.started_at))::float8
               ELSE NULL
             END AS duration_s,
-            stats.avg_speed_kph, stats.max_speed_kph, stats.fuel_used_l,
-            stats.fuel_used_moving_l,
-            stats.odo_start_km, stats.odo_end_km,
-            stats.fuel_level_start_pct, stats.fuel_level_end_pct,
+            COALESCE(s.avg_speed_kph, live.avg_speed_kph) AS avg_speed_kph,
+            COALESCE(s.max_speed_kph, live.max_speed_kph) AS max_speed_kph,
+            COALESCE(s.fuel_used_l, live.fuel_used_l) AS fuel_used_l,
+            COALESCE(s.fuel_used_moving_l, live.fuel_used_moving_l) AS fuel_used_moving_l,
+            COALESCE(s.odo_start_km, live.odo_start_km) AS odo_start_km,
+            COALESCE(s.odo_end_km, live.odo_end_km) AS odo_end_km,
+            COALESCE(s.fuel_level_start_pct, live.fuel_level_start_pct) AS fuel_level_start_pct,
+            COALESCE(s.fuel_level_end_pct, live.fuel_level_end_pct) AS fuel_level_end_pct,
             COALESCE(t.tank_capacity_l_snapshot, c.tank_capacity_l) AS tank_capacity_l,
             t.analysis_status,
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
             t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed,
-            stats.last_at AS last_point_at
+            COALESCE(s.last_point_at, live.last_at) AS last_point_at
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
         JOIN users ou ON ou.id = c.owner_user_id
-        LEFT JOIN LATERAL (
-            SELECT
-                COUNT(*)::bigint AS point_count,
-                MAX(tp.recorded_at) AS last_at,
-                AVG(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS avg_speed_kph,
-                MAX(COALESCE(tp.vehicle_speed_kph, tp.engine_vel))::float8 AS max_speed_kph,
-                (
-                  SELECT SUM(
-                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
-                  )::float8
-                  FROM (
-                    SELECT
-                      -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
-                      CASE
-                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
-                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
-                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
-                         AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
-                         AND COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
-                         AND COALESCE(t.density_gl_snapshot, c.density_gl, 740) > 0
-                         AND tp2.fuel_consumption_rate >= 0.7 * (
-                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            )
-                        THEN (
-                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            ) * COALESCE(t.ve_snapshot, c.ve, 0.85) * 0.14
-                        ELSE tp2.fuel_consumption_rate
-                      END AS rate,
-                      tp2.recorded_at AS t,
-                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
-                    FROM track_points tp2
-                    WHERE tp2.track_id = t.id
-                  ) x
-                  WHERE x.rate IS NOT NULL
-                    AND x.lead_t IS NOT NULL
-                    AND x.lead_t > x.t
-                    AND x.lead_t <= x.t + interval '5 minutes'
-                ) AS fuel_used_l,
-                (
-                  SELECT SUM(
-                    x.rate * EXTRACT(EPOCH FROM (x.lead_t - x.t)) / 3600.0
-                  )::float8
-                  FROM (
-                    SELECT
-                      -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
-                      CASE
-                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
-                        WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
-                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
-                         AND COALESCE(t.displacement_l_snapshot, c.displacement_l, 0) > 0
-                         AND COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
-                         AND COALESCE(t.density_gl_snapshot, c.density_gl, 740) > 0
-                         AND tp2.fuel_consumption_rate >= 0.7 * (
-                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            )
-                        THEN (
-                              COALESCE(t.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(t.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(t.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            ) * COALESCE(t.ve_snapshot, c.ve, 0.85) * 0.14
-                        ELSE tp2.fuel_consumption_rate
-                      END AS rate,
-                      COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0)::float8 AS spd,
-                      tp2.recorded_at AS t,
-                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
-                    FROM track_points tp2
-                    WHERE tp2.track_id = t.id
-                  ) x
-                  WHERE x.rate IS NOT NULL
-                    AND x.spd >= 1
-                    AND x.lead_t IS NOT NULL
-                    AND x.lead_t > x.t
-                    AND x.lead_t <= x.t + interval '5 minutes'
-                ) AS fuel_used_moving_l,
-                (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at ASC)
-                  FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_start_km,
-                (array_agg(tp.odometer_value_km ORDER BY tp.recorded_at DESC)
-                  FILTER (WHERE tp.odometer_value_km IS NOT NULL))[1]::float8 AS odo_end_km,
-                (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at ASC)
-                  FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_start_pct,
-                (array_agg(tp.fuel_level_pct ORDER BY tp.recorded_at DESC)
-                  FILTER (WHERE tp.fuel_level_pct IS NOT NULL))[1]::float8 AS fuel_level_end_pct,
-                CASE
-                  WHEN COUNT(tp.gps) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
-                  ELSE 0::float8
-                END AS distance_m
-            FROM track_points tp WHERE tp.track_id = t.id
-        ) stats ON true
+        {stats_join}
+        {lateral}
         WHERE t.id = $1
         "#,
-    )
-    .bind(id)
+        stats_join = stats::stats_join("s"),
+        lateral = stats::lateral("live", "AND s.track_id IS NULL"),
+    );
+    let row = sqlx::query_as::<_, TripSummaryRow>(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(id)
     .fetch_one(&state.pool)
     .await?;
     let row = row.into_summary();

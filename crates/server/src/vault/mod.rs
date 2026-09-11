@@ -676,6 +676,12 @@ async fn migration_clear_car(
     .execute(&state.pool)
     .await?;
 
+    // Drop the derived statistics too. The `tracks` rows survive this migration, so
+    // nothing cascades, and distance/speed/fuel/odometer computed from the points
+    // just deleted would otherwise stay readable in plaintext — exactly the at-rest
+    // exposure the vault exists to remove.
+    crate::trips::stats::purge_for_car(&state.pool, car_id).await?;
+
     // Clear plaintext analysis reports if column exists (analysis migration).
     let _ = sqlx::query(
         r#"
