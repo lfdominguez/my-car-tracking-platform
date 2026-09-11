@@ -243,6 +243,13 @@ pub struct TripPoint {
     pub atmospheric_pressure: Option<f64>,
     pub intake_air_temperature: Option<f64>,
     pub mass_air_flow: Option<f64>,
+    /// Phone motion aggregates for this sample's second; absent on older clients.
+    #[serde(default)]
+    pub accel_peak_mps2: Option<f64>,
+    #[serde(default)]
+    pub accel_rms_mps2: Option<f64>,
+    #[serde(default)]
+    pub device_tilt_delta_deg: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

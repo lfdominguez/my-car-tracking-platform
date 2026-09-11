@@ -92,12 +92,26 @@ pub struct SpeedProfile {
     /// What "hard" meant for this trip, so a report can state the bar it used.
     #[serde(default)]
     pub event_thresholds: SpeedEventThresholds,
+    /// Which signals produced the counts: `speed`, `fused`, `motion_only`, or `none`.
+    #[serde(default)]
+    pub event_source: EventSource,
+    /// Harsh events the phone's accelerometer found when no OBD speed series existed.
+    /// Direction is unknown, so these are not split into braking and acceleration.
+    #[serde(default)]
+    pub undirected_harsh_events: Option<u32>,
+    /// Largest trustworthy horizontal acceleration on the trip, m/s².
+    #[serde(default)]
+    pub peak_horizontal_mps2: Option<f64>,
+    /// Motion windows discarded as phone handling or a one-off jolt.
+    #[serde(default)]
+    pub motion_rejected_windows: u32,
     pub moving_share: Option<f64>,
 }
 
-/// Thresholds behind [`SpeedProfile`]'s event counts. Re-exported from `shared`
-/// so the server and the client-side vault path cannot drift apart.
-pub use shared::speed_events::SpeedEventThresholds;
+/// Thresholds behind [`SpeedProfile`]'s event counts, and the provenance of those
+/// counts. Re-exported from `shared` so the server and the client-side vault path
+/// cannot drift apart.
+pub use shared::speed_events::{EventSource, SpeedEventThresholds};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EngineStats {

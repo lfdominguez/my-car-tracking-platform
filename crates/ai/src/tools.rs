@@ -95,8 +95,10 @@ impl Tool for GetSpeedProfile {
 
     fn description(&self) -> String {
         "Speed percentiles, moving share, and harsh accel/brake events: grouped counts, severe \
-         subsets, peak rates, per-100km rates, and the thresholds used. A null count means no \
-         usable speed series (unknown), not zero."
+         subsets, peak rates, per-100km rates, and the thresholds used. `event_source` says what \
+         produced them (fused = speed + phone accelerometer, speed = OBD only, motion_only = \
+         accelerometer only with unknown direction, none = nothing measurable). A null count \
+         means unknown, not zero."
             .into()
     }
 
@@ -821,6 +823,10 @@ mod tests {
                 hard_accel_per_100km: Some(0.0),
                 hard_brake_per_100km: Some(0.0),
                 event_thresholds: Default::default(),
+                event_source: Default::default(),
+                undirected_harsh_events: None,
+                peak_horizontal_mps2: None,
+                motion_rejected_windows: 0,
                 moving_share: Some(0.9),
             },
             engine: EngineStats::default(),

@@ -87,6 +87,14 @@ pub struct TrackSampleRequest {
     pub battery_soc_pct: Option<f64>,
     #[serde(default)]
     pub battery_power_kw: Option<f64>,
+    /// Phone motion aggregates for the sample's second. Optional for the same reason
+    /// GPS is: an older client, or a phone without the sensors, must keep ingesting.
+    #[serde(default)]
+    pub accel_peak_mps2: Option<f64>,
+    #[serde(default)]
+    pub accel_rms_mps2: Option<f64>,
+    #[serde(default)]
+    pub device_tilt_delta_deg: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -435,7 +443,8 @@ async fn insert_sample_for_track(
             manifold_absolute_pressure_kpa, control_module_voltage,
             engine_on_time, lambda_cmd, atmospheric_pressure, intake_air_temperature,
             vehicle_speed_kph, vehicle_engine_rpm, mass_air_flow,
-            battery_soc_pct, battery_power_kw
+            battery_soc_pct, battery_power_kw,
+            accel_peak_mps2, accel_rms_mps2, device_tilt_delta_deg
         ) VALUES (
             $1, $2,
             CASE
@@ -451,7 +460,8 @@ async fn insert_sample_for_track(
             $18, $19,
             $20, $21, $22, $23,
             $24, $25, $26,
-            $27, $28
+            $27, $28,
+            $29, $30, $31
         )
         "#,
     )
@@ -483,6 +493,9 @@ async fn insert_sample_for_track(
     .bind(sample.mass_air_flow)
     .bind(sample.battery_soc_pct)
     .bind(sample.battery_power_kw)
+    .bind(sample.accel_peak_mps2)
+    .bind(sample.accel_rms_mps2)
+    .bind(sample.device_tilt_delta_deg)
     .execute(&state.pool)
     .await;
 
@@ -667,6 +680,46 @@ fn finished_track_accepts_sample(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    /// An app that predates the motion fields must keep ingesting. A batch is
+    /// all-or-nothing on the client (it treats a 4xx as permanent and drops every
+    /// sample in it), so a missing optional field may never fail deserialization.
+    #[test]
+    fn a_sample_without_motion_fields_still_parses() {
+        let json = r#"{"tracking_id":"t","recorded_at":1704164645000,
+            "vehicle_speed_kph":42.0,"vehicle_engine_rpm":1800.0,
+            "fuel_consumption_rate":null,"engine_load_pct":null,
+            "absolute_engine_load_pct":null,"short_term_fuel_trim_pct":null,
+            "long_term_fuel_trim_pct":null,"fuel_level_pct":null,
+            "accelerator_pedal_pct":null,"ambient_air_temp_c":null,
+            "odometer_value_km":null,"engine_coolant_temp_c":null,
+            "manifold_absolute_pressure_kpa":null,"control_module_voltage":null,
+            "engine_on_time":null,"lambda_cmd":null,"atmospheric_pressure":null,
+            "intake_air_temperature":null,"mass_air_flow":null}"#;
+        let s: TrackSampleRequest = serde_json::from_str(json).expect("parses");
+        assert_eq!(s.accel_peak_mps2, None);
+        assert_eq!(s.accel_rms_mps2, None);
+        assert_eq!(s.device_tilt_delta_deg, None);
+    }
+
+    #[test]
+    fn a_sample_with_motion_fields_parses() {
+        let json = r#"{"tracking_id":"t","recorded_at":1704164645000,
+            "vehicle_speed_kph":42.0,"vehicle_engine_rpm":1800.0,
+            "fuel_consumption_rate":null,"engine_load_pct":null,
+            "absolute_engine_load_pct":null,"short_term_fuel_trim_pct":null,
+            "long_term_fuel_trim_pct":null,"fuel_level_pct":null,
+            "accelerator_pedal_pct":null,"ambient_air_temp_c":null,
+            "odometer_value_km":null,"engine_coolant_temp_c":null,
+            "manifold_absolute_pressure_kpa":null,"control_module_voltage":null,
+            "engine_on_time":null,"lambda_cmd":null,"atmospheric_pressure":null,
+            "intake_air_temperature":null,"mass_air_flow":null,
+            "accel_peak_mps2":3.4,"accel_rms_mps2":2.8,"device_tilt_delta_deg":1.5}"#;
+        let s: TrackSampleRequest = serde_json::from_str(json).expect("parses");
+        assert_eq!(s.accel_peak_mps2, Some(3.4));
+        assert_eq!(s.accel_rms_mps2, Some(2.8));
+        assert_eq!(s.device_tilt_delta_deg, Some(1.5));
+    }
 
     #[test]
     fn parse_rfc3339_legacy_key() {

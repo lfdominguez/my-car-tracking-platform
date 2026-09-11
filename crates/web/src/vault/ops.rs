@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use shared::speed_events::{self, SpeedEventThresholds, SpeedSample};
+use shared::speed_events::{self, MotionSample, SpeedEventThresholds, SpeedSample};
 use uuid::Uuid;
 use vault_crypto::{
     aad_v1, decrypt_object, encrypt_object, generate_dek, unwrap_dek, wrap_dek, Dek, IdentityPublic,
@@ -305,6 +305,13 @@ pub fn build_analysis_context_json(
             Some(SpeedSample {
                 t,
                 speed_kph: p.vehicle_speed_kph.or(p.engine_vel),
+                motion: p.accel_peak_mps2.zip(p.accel_rms_mps2).map(
+                    |(peak_mps2, rms_mps2)| MotionSample {
+                        peak_mps2,
+                        rms_mps2,
+                        tilt_delta_deg: p.device_tilt_delta_deg,
+                    },
+                ),
             })
         })
         .collect();
@@ -362,6 +369,10 @@ pub fn build_analysis_context_json(
             "hard_accel_per_100km": events.hard_accel_per_100km,
             "hard_brake_per_100km": events.hard_brake_per_100km,
             "event_thresholds": thresholds,
+            "event_source": events.source,
+            "undirected_harsh_events": events.undirected_harsh_events,
+            "peak_horizontal_mps2": events.peak_horizontal_mps2,
+            "motion_rejected_windows": events.motion_rejected_windows,
             "moving_share": null,
         },
         "engine": {},
