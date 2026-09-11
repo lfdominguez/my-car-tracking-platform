@@ -24,11 +24,27 @@ pub struct SpeedRpmPoint {
 }
 
 /// Hold-last-good + isolated-spike pass for a chronological series.
+///
+/// Use this for anything a human reads as a curve (trip graphs, percentiles).
+/// Do **not** use it to feed harsh-event detection: `hold_last_good_pass` rejects
+/// any step beyond [`MAX_SPEED_DELTA_KPH_S`] (~0.99 g) and substitutes the previous
+/// value, which flattens a genuine near-limit stop into a plateau — exactly the
+/// event the detector exists to find. Use [`despike_speed_rpm`] there.
 pub fn sanitize_speed_rpm(points: &mut [SpeedRpmPoint]) {
     if points.is_empty() {
         return;
     }
     hold_last_good_pass(points);
+    isolated_spike_pass(points);
+}
+
+/// Isolated-spike pass only — drops cheap-adapter glitches without clipping the
+/// rate of change. This is the pre-processing harsh accel/brake detection wants:
+/// a one-sample spike is removed, but a real hard deceleration is left intact.
+pub fn despike_speed_rpm(points: &mut [SpeedRpmPoint]) {
+    if points.is_empty() {
+        return;
+    }
     isolated_spike_pass(points);
 }
 

@@ -1,9 +1,8 @@
 //! Trip list/detail/points/map APIs.
 
 mod fuel_stats;
-mod telemetry_sanitize;
 
-pub use telemetry_sanitize::{energy_from_soc_kwh, sanitize_speed_rpm, SpeedRpmPoint};
+pub use shared::telemetry_sanitize::{energy_from_soc_kwh, sanitize_speed_rpm, SpeedRpmPoint};
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};

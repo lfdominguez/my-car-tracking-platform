@@ -6,6 +6,7 @@ license.workspace = true
 description = "Rig-based OpenRouter trip analysis (mechanic + financial coach)"
 
 [dependencies]
+shared = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
