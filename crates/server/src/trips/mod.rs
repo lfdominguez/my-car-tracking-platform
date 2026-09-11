@@ -512,6 +512,12 @@ pub struct TripPoint {
     pub battery_soc_pct: Option<f64>,
     #[serde(default)]
     pub battery_power_kw: Option<f64>,
+    #[serde(default)]
+    pub accel_peak_mps2: Option<f64>,
+    #[serde(default)]
+    pub accel_rms_mps2: Option<f64>,
+    #[serde(default)]
+    pub device_tilt_delta_deg: Option<f64>,
 }
 
 fn seal_trip_if_vault(mut t: TripSummary) -> TripSummary {
@@ -1214,7 +1220,10 @@ async fn trip_points(
             intake_air_temperature,
             mass_air_flow,
             battery_soc_pct,
-            battery_power_kw
+            battery_power_kw,
+            accel_peak_mps2,
+            accel_rms_mps2,
+            device_tilt_delta_deg
         FROM track_points
         WHERE track_id = $1
         ORDER BY recorded_at

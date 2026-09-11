@@ -9,7 +9,7 @@ use ai::{
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use shared::speed_events::{self, SpeedSample};
+use shared::speed_events::{self, MotionSample, SpeedSample};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -69,6 +69,9 @@ struct PointRow {
     odometer_value_km: Option<f64>,
     engine_on_time: Option<f64>,
     battery_soc_pct: Option<f64>,
+    accel_peak_mps2: Option<f64>,
+    accel_rms_mps2: Option<f64>,
+    device_tilt_delta_deg: Option<f64>,
 }
 
 impl PointRow {
@@ -77,6 +80,14 @@ impl PointRow {
     }
     fn rpm(&self) -> Option<f64> {
         self.vehicle_engine_rpm.or(self.engine_rpm)
+    }
+    /// Motion aggregates for this sample's second, when the client sent them.
+    fn motion(&self) -> Option<MotionSample> {
+        Some(MotionSample {
+            peak_mps2: self.accel_peak_mps2?,
+            rms_mps2: self.accel_rms_mps2?,
+            tilt_delta_deg: self.device_tilt_delta_deg,
+        })
     }
 }
 
@@ -92,6 +103,7 @@ fn sanitize_analysis_points(points: &mut [PointRow]) -> Vec<SpeedSample> {
         .map(|p| SpeedSample {
             t: p.recorded_at,
             speed_kph: p.speed(),
+            motion: p.motion(),
         })
         .collect();
     let mut series: Vec<crate::trips::SpeedRpmPoint> = points
@@ -175,7 +187,10 @@ pub async fn build_trip_analysis_context(
             atmospheric_pressure,
             odometer_value_km,
             engine_on_time,
-            battery_soc_pct
+            battery_soc_pct,
+            accel_peak_mps2,
+            accel_rms_mps2,
+            device_tilt_delta_deg
         FROM track_points
         WHERE track_id = $1
         ORDER BY recorded_at ASC
@@ -456,6 +471,10 @@ fn compute_speed_profile(
         hard_accel_per_100km: events.hard_accel_per_100km,
         hard_brake_per_100km: events.hard_brake_per_100km,
         event_thresholds: SpeedEventThresholds::default(),
+        event_source: events.source,
+        undirected_harsh_events: events.undirected_harsh_events,
+        peak_horizontal_mps2: events.peak_horizontal_mps2,
+        motion_rejected_windows: events.motion_rejected_windows,
         moving_share,
     }
 }
@@ -837,6 +856,9 @@ mod tests {
             odometer_value_km: None,
             engine_on_time: None,
             battery_soc_pct: None,
+            accel_peak_mps2: None,
+            accel_rms_mps2: None,
+            device_tilt_delta_deg: None,
         }
     }
 
