@@ -42,3 +42,47 @@ async fn trips_are_bucketed_per_month() {
         .unwrap();
     assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn trip_and_weekly_driving_scores() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let user = login(&base).await;
+    let car_id = create_car(&base, &user).await;
+    let trip = seed_trip(&common::pool().await, &car_id).await;
+
+    let score: Value = user
+        .client
+        .get(format!("{base}/api/trips/{trip}/score"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(score["score"].as_f64().unwrap() > 90.0, "{score}");
+
+    let speeding: Value = user
+        .client
+        .get(format!("{base}/api/trips/{trip}/speeding"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(speeding["analyzed"], false, "no traffic frames yet");
+
+    let weeks: Value = user
+        .client
+        .get(format!("{base}/api/cars/{car_id}/score?weeks=4"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(weeks[0]["trips"], 1, "{weeks}");
+}

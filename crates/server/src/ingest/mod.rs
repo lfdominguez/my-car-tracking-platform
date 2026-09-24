@@ -95,6 +95,13 @@ pub struct TrackSampleRequest {
     pub accel_rms_mps2: Option<f64>,
     #[serde(default)]
     pub device_tilt_delta_deg: Option<f64>,
+    /// Stored diagnostic trouble codes (Mode 03), e.g. `["P0420"]`. Absent means
+    /// "not read"; an empty list is a report that no codes are stored.
+    #[serde(default)]
+    pub dtc_codes: Option<Vec<String>>,
+    /// Pending codes (Mode 07), not yet confirmed by the ECU.
+    #[serde(default)]
+    pub pending_dtc_codes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +268,7 @@ async fn track_sample(
     let track = insert_sample(&state, device.car_id, &body)
         .await
         .map_err(map_sample_error)?;
+    record_dtc_report(&state, device.car_id, std::slice::from_ref(&body));
     after_points_landed(&state, &[track.track_id]).await;
     Ok(StatusCode::OK)
 }
@@ -326,12 +334,16 @@ async fn track_samples(
 
     // Pass 2: one write for every valid sample.
     let results = insert_points(&state, &points).await;
+    let mut stored = Vec::new();
     for ((i, point), result) in indices.into_iter().zip(&points).zip(results) {
         if result.is_ok() {
             touched.insert(point.track_id);
+            stored.push(point.for_alerts());
         }
         outcomes[i] = Some(result);
     }
+    crate::alerts::on_points(&state, device.car_id, stored);
+    record_dtc_report(&state, device.car_id, &body.samples);
 
     for (sample, outcome) in body.samples.iter().zip(outcomes) {
         let outcome = outcome.unwrap_or(Ok(()));
@@ -450,7 +462,7 @@ async fn insert_sample(
     sample: &TrackSampleRequest,
 ) -> Result<TrackRef, SampleError> {
     let track = resolve_track(state, car_id, &sample.tracking_id).await?;
-    insert_sample_for_track(state, &track, sample).await?;
+    insert_sample_for_track(state, &track, sample, car_id).await?;
     Ok(track)
 }
 
@@ -507,6 +519,46 @@ struct PreparedPoint<'a> {
     sample: &'a TrackSampleRequest,
 }
 
+impl PreparedPoint<'_> {
+    fn for_alerts(&self) -> crate::alerts::IngestedPoint {
+        let s = self.sample;
+        crate::alerts::IngestedPoint {
+            track_id: self.track_id,
+            recorded_at: self.recorded_at,
+            lat: self.coords.map(|(lat, _)| lat),
+            lon: self.coords.map(|(_, lon)| lon),
+            speed_kph: s.vehicle_speed_kph,
+            rpm: s.vehicle_engine_rpm,
+            voltage: s.control_module_voltage,
+            coolant_c: s.engine_coolant_temp_c,
+            fuel_level_pct: s.fuel_level_pct,
+        }
+    }
+}
+
+/// Hand the newest DTC report in these samples to `health::record_dtcs`, in the
+/// background. Samples without the fields did not read codes and are skipped.
+fn record_dtc_report(state: &AppState, car_id: Uuid, samples: &[TrackSampleRequest]) {
+    let Some(latest) = samples
+        .iter()
+        .filter(|s| s.dtc_codes.is_some() || s.pending_dtc_codes.is_some())
+        .max_by_key(|s| s.recorded_at)
+    else {
+        return;
+    };
+    let Some(at) = millis_to_datetime(latest.recorded_at) else {
+        return;
+    };
+    let stored = latest.dtc_codes.clone().unwrap_or_default();
+    let pending = latest.pending_dtc_codes.clone().unwrap_or_default();
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::health::record_dtcs(&pool, car_id, at, &stored, &pending).await {
+            tracing::warn!(%car_id, error = %e, "recording DTCs failed");
+        }
+    });
+}
+
 /// Validate one sample against the track it targets.
 fn prepare_sample<'a>(
     track: &TrackRef,
@@ -533,10 +585,15 @@ async fn insert_sample_for_track(
     state: &AppState,
     track: &TrackRef,
     sample: &TrackSampleRequest,
+    car_id: Uuid,
 ) -> Result<(), SampleError> {
     let point = prepare_sample(track, sample)?;
     let mut outcomes = insert_points(state, std::slice::from_ref(&point)).await;
-    outcomes.pop().unwrap_or(Ok(()))
+    let outcome = outcomes.pop().unwrap_or(Ok(()));
+    if outcome.is_ok() {
+        crate::alerts::on_points(state, car_id, vec![point.for_alerts()]);
+    }
+    outcome
 }
 
 /// Write `points` and return one outcome per point, in order.

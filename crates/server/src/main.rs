@@ -10,8 +10,13 @@ use server::{build_router, db};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `server healthcheck` is the container HEALTHCHECK, so the runtime image needs
     // no curl.
-    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
-        std::process::exit(if healthcheck() { 0 } else { 1 });
+    match std::env::args().nth(1).as_deref() {
+        Some("healthcheck") => std::process::exit(if healthcheck() { 0 } else { 1 }),
+        Some("vapid-keygen") => {
+            server::notifications::print_vapid_keygen();
+            return Ok(());
+        }
+        _ => {}
     }
 
     tracing_subscriber::fmt()
@@ -56,8 +61,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_pool = pool.clone();
     let state = AppState::new(pool, config);
     server::trips::spawn_stale_finish_loop(state.clone());
+    server::analysis::spawn_ai_job_reaper(state.clone());
     server::middleware::spawn_rate_limit_pruner(state.rate_limits.clone());
     server::maintenance::spawn(state.pool.clone());
+    server::alerts::spawn_periodic(state.pool.clone());
     server::jobs::spawn_worker(server::jobs::JobCtx::new(
         &state.pool,
         &state.keyring,

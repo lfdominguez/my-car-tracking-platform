@@ -153,6 +153,7 @@ async fn google_callback_inner(
         user_agent,
     };
 
+    crate::notifications::notify_if_new_sign_in(&state.pool, user_id, &ip_str, user_agent).await;
     let (jar, session_id) = create_session(&state, jar, user_id, meta).await?;
     audit::record(
         &state.pool,

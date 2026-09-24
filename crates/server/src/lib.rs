@@ -1,4 +1,5 @@
 pub mod account;
+pub mod alerts;
 pub mod analysis;
 pub mod analytics;
 pub mod audit;
@@ -9,8 +10,11 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod devices;
+pub mod driving;
 pub mod error;
 pub mod garage;
+pub mod geofences;
+pub mod health;
 pub mod http_client;
 pub mod ingest;
 pub mod jobs;
@@ -18,6 +22,7 @@ pub mod live;
 pub mod maintenance;
 pub mod mcp;
 pub mod middleware;
+pub mod notifications;
 pub mod route_opt;
 pub mod shares;
 pub mod state;
@@ -69,8 +74,13 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(mcp::settings_router())
         .merge(mcp::router(state.clone()))
         .merge(live::router())
+        .merge(notifications::router())
         .merge(cars::router())
         .merge(garage::router())
+        .merge(alerts::router())
+        .merge(geofences::router())
+        .merge(driving::router())
+        .merge(health::router())
         .merge(photo_routes)
         .merge(devices::router())
         .merge(shares::router())

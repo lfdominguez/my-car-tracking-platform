@@ -125,7 +125,7 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
     let row = sqlx::query_as::<_, MeOpenRouterRow>(
         r#"
         SELECT
-            COALESCE(openrouter_model, 'anthropic/claude-3.7-sonnet') AS openrouter_model,
+            COALESCE(openrouter_model, $2) AS openrouter_model,
             (openrouter_api_key_enc IS NOT NULL) AS openrouter_api_key_set,
             openrouter_key_hint,
             (ors_api_key_enc IS NOT NULL) AS ors_api_key_set,
@@ -140,6 +140,7 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
         "#,
     )
     .bind(user.id)
+    .bind(ai::DEFAULT_MODEL)
     .fetch_one(&state.pool)
     .await?;
 

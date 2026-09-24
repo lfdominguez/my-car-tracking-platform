@@ -56,6 +56,11 @@ pub const MAX_TILT_DELTA_DEG: f64 = 20.0;
 /// the window held a single jolt — a pothole, a speed bump, a dropped phone — rather
 /// than a manoeuvre, so its peak must not size an event.
 pub const MIN_RMS_PEAK_RATIO: f64 = 0.35;
+/// Motion-only bar: sustained (RMS) horizontal acceleration, m/s². Without a speed
+/// series nothing gates the sensor, so the bar sits well above the speed path's
+/// hard-brake equivalent (2.5 m/s²) — ~0.35 g held for the whole second. Road
+/// texture, cornering and a phone rattling in a holder stay far below it.
+pub const MOTION_ONLY_MIN_RMS_MPS2: f64 = 3.5;
 
 /// One point of the chronological series fed to the detector.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -95,8 +100,14 @@ impl MotionSample {
         self.rms_mps2 >= self.peak_mps2 * MIN_RMS_PEAK_RATIO
     }
 
-    fn peak_kph_s(&self) -> f64 {
-        self.peak_mps2 * KPH_S_PER_MPS2
+    /// Sustained magnitude over the second, as a speed rate.
+    ///
+    /// The *peak* is the wrong size for an event: the horizontal magnitude also
+    /// carries cornering, road vibration and holder rattle, so an ordinary 0.17 g
+    /// stop on a rough road peaked at a "hard" 3 m/s². RMS averages the second, which
+    /// a braking manoeuvre sustains and a vibration does not.
+    fn sustained_kph_s(&self) -> f64 {
+        self.rms_mps2 * KPH_S_PER_MPS2
     }
 }
 
@@ -209,7 +220,7 @@ pub fn compute_speed_events(samples: &[SpeedSample], distance_m: Option<f64>) ->
         let magnitude = match b.motion {
             Some(m) if m.is_trustworthy() => {
                 motion_sized += 1;
-                speed_magnitude.max(m.peak_kph_s())
+                speed_magnitude.max(m.sustained_kph_s())
             }
             Some(_) => {
                 if candidate {
@@ -291,11 +302,12 @@ fn trip_peak_horizontal(samples: &[SpeedSample]) -> Option<f64> {
 
 /// Undirected harsh events from motion alone, for trips with no speed series.
 ///
-/// Uses the *braking* bar, the higher of the two, because without a direction the
-/// conservative choice is the one that produces fewer claims. `None` when the trip
-/// carried no trustworthy motion window at all — unknown, not zero.
+/// Uses a sustained (RMS) bar above even the braking threshold, because without a
+/// speed series to gate it the sensor is the only witness and vibration must not be
+/// able to clear it. `None` when the trip carried no trustworthy motion window at
+/// all — unknown, not zero.
 fn motion_only_events(samples: &[SpeedSample]) -> Option<u32> {
-    let hard = HARD_BRAKE_KPH_S.abs() / KPH_S_PER_MPS2;
+    let hard = MOTION_ONLY_MIN_RMS_MPS2;
     let mut any = false;
     let mut count = 0u32;
     let mut in_event = false;
@@ -304,7 +316,7 @@ fn motion_only_events(samples: &[SpeedSample]) -> Option<u32> {
         match s.motion.filter(|m| m.is_trustworthy()) {
             Some(m) => {
                 any = true;
-                if m.peak_mps2 >= hard {
+                if m.rms_mps2 >= hard {
                     if !in_event {
                         count += 1;
                         in_event = true;
@@ -579,20 +591,65 @@ mod tests {
             .collect()
     }
 
+    /// A window with an explicit peak and a sustained (RMS) level.
+    fn motion_rms(peak_mps2: f64, rms_mps2: f64) -> Option<MotionSample> {
+        Some(MotionSample {
+            peak_mps2,
+            rms_mps2,
+            tilt_delta_deg: Some(2.0),
+        })
+    }
+
     #[test]
     fn the_accelerometer_sizes_what_speed_already_saw() {
-        // Speed says -10 km/h/s, already a hard brake. The sensor saw 3.9 m/s²
-        // (-14 km/h/s) inside that second, so it is a *severe* brake, not a hard one.
+        // Speed says -10 km/h/s, already a hard brake. The sensor held 3.9 m/s²
+        // (-14 km/h/s) across that second, so it is a *severe* brake, not a hard one.
         let s = with_motion(
             &[80.0, 70.0, 60.0, 60.0],
-            &[None, motion(3.9), motion(3.9), None],
+            &[None, motion_rms(4.6, 3.9), motion_rms(4.6, 3.9), None],
         );
         let ev = compute_speed_events(&s, Some(10_000.0));
         assert_eq!(ev.hard_brake_events, Some(1));
         assert_eq!(ev.severe_brake_events, Some(1));
         assert_eq!(ev.source, EventSource::Fused);
         assert!(ev.peak_decel_kph_s.unwrap() <= -14.0);
-        assert_eq!(ev.peak_horizontal_mps2, Some(3.9));
+        // The trip-wide peak still reports the true measured peak.
+        assert_eq!(ev.peak_horizontal_mps2, Some(4.6));
+    }
+
+    #[test]
+    fn ordinary_braking_on_a_rough_road_is_not_an_event() {
+        // A calm stop at ~-6 km/h/s (0.17 g) — above the candidate floor, below the
+        // hard bar — on a rough road: vibration spikes the horizontal peak to
+        // 3-5 m/s² every second, but the sustained level stays ~1.8 m/s². Sizing by
+        // peak called this a string of hard (even severe) brakes.
+        let speeds = [
+            60.0, 54.0, 48.0, 42.0, 36.0, 30.0, 24.0, 18.0, 12.0, 6.0, 0.0,
+        ];
+        let noise = [3.4, 4.1, 5.0, 3.8, 4.6, 3.2, 4.9, 3.6, 4.4, 3.9, 3.1];
+        let motions: Vec<Option<MotionSample>> =
+            noise.iter().map(|peak| motion_rms(*peak, 1.8)).collect();
+        let s = with_motion(&speeds, &motions);
+        let ev = compute_speed_events(&s, Some(10_000.0));
+        assert_eq!(ev.source, EventSource::Fused);
+        assert_eq!(ev.hard_brake_events, Some(0));
+        assert_eq!(ev.severe_brake_events, Some(0));
+        assert_eq!(ev.hard_accel_events, Some(0));
+    }
+
+    #[test]
+    fn road_noise_alone_is_not_a_motion_only_event() {
+        // No speed series; the phone only feels the road.
+        let s: Vec<SpeedSample> = (0..30)
+            .map(|i| SpeedSample {
+                t: t0() + chrono::Duration::seconds(i),
+                speed_kph: None,
+                motion: motion_rms(4.5, 1.9),
+            })
+            .collect();
+        let ev = compute_speed_events(&s, Some(10_000.0));
+        assert_eq!(ev.source, EventSource::MotionOnly);
+        assert_eq!(ev.undirected_harsh_events, Some(0));
     }
 
     #[test]
@@ -641,18 +698,18 @@ mod tests {
     #[test]
     fn motion_only_reports_undirected_events_at_low_confidence() {
         // No OBD speed at all — the case that used to report nothing.
-        let s: Vec<SpeedSample> = [1.0, 3.0, 3.2, 0.5, 0.4]
+        let s: Vec<SpeedSample> = [1.0, 3.8, 4.0, 0.5, 0.4]
             .iter()
             .enumerate()
-            .map(|(i, peak)| SpeedSample {
+            .map(|(i, rms)| SpeedSample {
                 t: t0() + chrono::Duration::seconds(i as i64),
                 speed_kph: None,
-                motion: motion(*peak),
+                motion: motion_rms(rms * 1.2, *rms),
             })
             .collect();
         let ev = compute_speed_events(&s, Some(10_000.0));
         assert_eq!(ev.source, EventSource::MotionOnly);
-        assert_eq!(ev.undirected_harsh_events, Some(1)); // the 3.0/3.2 run, as one event
+        assert_eq!(ev.undirected_harsh_events, Some(1)); // the 3.8/4.0 run, as one event
         // Direction is unknowable without speed, so nothing is claimed about it.
         assert_eq!(ev.hard_brake_events, None);
         assert_eq!(ev.hard_accel_events, None);

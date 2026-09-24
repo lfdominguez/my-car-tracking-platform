@@ -230,3 +230,42 @@ self.addEventListener('fetch', (event) => {
     );
   }
 });
+
+// Web Push: the server (crates/server/src/notifications.rs) sends
+// {id, kind, title, body, url}. Show it, and open `url` when clicked.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (_) {
+    data = { title: event.data ? event.data.text() : '' };
+  }
+  const title = data.title || 'Car Tracking';
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: data.body || '',
+      icon: '/icons/icon-192.png',
+      badge: '/icons/favicon-48.png',
+      tag: data.kind || undefined,
+      data: { url: data.url || '/app', id: data.id || null },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || '/app';
+  // Only in-app paths; a payload must not be able to open another origin.
+  const target = url.startsWith('/') && !url.startsWith('//') ? url : '/app';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
+      for (const w of wins) {
+        if (new URL(w.url).origin === self.location.origin && 'focus' in w) {
+          w.navigate(target);
+          return w.focus();
+        }
+      }
+      return self.clients.openWindow(target);
+    })
+  );
+});

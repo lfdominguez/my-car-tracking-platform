@@ -3,6 +3,7 @@
 mod edit;
 pub mod export;
 mod fuel_stats;
+pub(crate) use fuel_stats::economy_distance_m;
 pub mod stats;
 
 pub use shared::telemetry_sanitize::{SpeedRpmPoint, energy_from_soc_kwh, sanitize_speed_rpm};
@@ -435,6 +436,9 @@ pub struct TripSummary {
     pub purpose: Option<String>,
     pub notes: Option<String>,
     pub tags: Vec<String>,
+    /// Geofence the trip starts / ends in, e.g. "Home" → "Office".
+    pub start_place: Option<String>,
+    pub end_place: Option<String>,
 }
 
 /// Row shape from list/detail SQL before fuel cross-check enrichment.
@@ -469,6 +473,8 @@ struct TripSummaryRow {
     purpose: Option<String>,
     notes: Option<String>,
     tags: Vec<String>,
+    start_place: Option<String>,
+    end_place: Option<String>,
 }
 
 impl TripSummaryRow {
@@ -507,6 +513,8 @@ impl TripSummaryRow {
             purpose: self.purpose,
             notes: self.notes,
             tags: self.tags,
+            start_place: self.start_place,
+            end_place: self.end_place,
         }
     }
 }
@@ -751,7 +759,9 @@ async fn list_trips(
             COALESCE(s.last_point_at, live.last_at) AS last_point_at,
             t.purpose,
             t.notes,
-            t.tags
+            t.tags,
+            (SELECT name FROM geofences WHERE id = t.start_geofence_id) AS start_place,
+            (SELECT name FROM geofences WHERE id = t.end_geofence_id) AS end_place
         FROM page
         JOIN tracks t ON t.id = page.id
         JOIN cars c ON c.id = t.car_id
@@ -828,7 +838,9 @@ async fn get_trip(
             COALESCE(s.last_point_at, live.last_at) AS last_point_at,
             t.purpose,
             t.notes,
-            t.tags
+            t.tags,
+            (SELECT name FROM geofences WHERE id = t.start_geofence_id) AS start_place,
+            (SELECT name FROM geofences WHERE id = t.end_geofence_id) AS end_place
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
         JOIN users ou ON ou.id = c.owner_user_id

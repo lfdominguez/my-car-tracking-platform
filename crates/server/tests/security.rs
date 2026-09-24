@@ -258,3 +258,51 @@ async fn car_lifecycle_is_audited_with_the_client_address() {
         assert_eq!(ev["ip"], "127.0.0.1", "{ev}");
     }
 }
+
+#[tokio::test]
+async fn owners_hear_about_devices_added_by_others_and_sharees_about_shares() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let owner = login(&base).await;
+    let editor = login(&base).await;
+    let car_id = create_car(&base, &owner).await;
+    owner
+        .client
+        .post(format!("{base}/api/cars/{car_id}/shares"))
+        .json(&json!({ "email": editor.email, "role": "editor" }))
+        .send()
+        .await
+        .unwrap();
+    editor
+        .client
+        .post(format!("{base}/api/cars/{car_id}/devices"))
+        .json(&json!({ "name": "sneaky phone" }))
+        .send()
+        .await
+        .unwrap();
+
+    let titles = |u: &User| {
+        let url = format!("{base}/api/notifications");
+        let c = u.client.clone();
+        async move {
+            let v: Value = c.get(url).send().await.unwrap().json().await.unwrap();
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["title"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    let owner_titles = titles(&owner).await;
+    assert!(
+        owner_titles.iter().any(|t| t.starts_with("Tracker added")),
+        "{owner_titles:?}"
+    );
+    let editor_titles = titles(&editor).await;
+    assert!(
+        editor_titles.iter().any(|t| t.contains("shared")),
+        "{editor_titles:?}"
+    );
+}

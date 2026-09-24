@@ -174,6 +174,30 @@ async fn create_share(
     )
     .await;
 
+    let car_name: String = sqlx::query_scalar("SELECT name FROM cars WHERE id = $1")
+        .bind(car_id)
+        .fetch_one(&state.pool)
+        .await?;
+    crate::notifications::notify(
+        &state.pool,
+        row.user_id,
+        crate::notifications::Notification {
+            kind: crate::notifications::kinds::SECURITY,
+            title: format!("{} shared {car_name} with you", user.email),
+            body: format!(
+                "You can now {} this car.",
+                if row.role == "editor" {
+                    "view and edit"
+                } else {
+                    "view"
+                }
+            ),
+            url: Some(format!("/app/cars/{car_id}")),
+            dedup_key: None,
+        },
+    )
+    .await;
+
     Ok(Json(CreateShareResponse {
         ok: true,
         share: Some(row),

@@ -178,6 +178,11 @@ pub async fn run_due(ctx: &JobCtx, limit: i64) -> AppResult<usize> {
     claim_and_run(ctx, limit, None).await
 }
 
+/// [`run_due`] limited to these tracks' jobs.
+pub async fn run_due_for(ctx: &JobCtx, track_ids: &[Uuid]) -> AppResult<usize> {
+    claim_and_run(ctx, CLAIM_BATCH, Some(track_ids)).await
+}
+
 async fn claim_and_run(ctx: &JobCtx, limit: i64, only: Option<&[Uuid]>) -> AppResult<usize> {
     if SHUTTING_DOWN.load(Ordering::SeqCst) {
         return Ok(0);
@@ -314,6 +319,9 @@ async fn finalize(ctx: &JobCtx, track_id: Uuid) -> AppResult<Outcome> {
         return Ok(Outcome::RecheckAt((now + EMPTY_RECHECK).min(purge_at)));
     }
 
+    if let Err(e) = crate::geofences::label_trip(&ctx.pool, track_id).await {
+        tracing::warn!(%track_id, error = %e, "labelling trip places failed");
+    }
     enqueue(
         &ctx.pool,
         &[track_id],

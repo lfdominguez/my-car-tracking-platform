@@ -138,6 +138,8 @@ async fn create_device(
     )
     .await;
 
+    notify_owner_of_device_change(&state.pool, car_id, user.id, &user.email, &name, "added").await;
+
     Ok(Json(CreateDeviceResponse {
         device,
         token: plaintext,
@@ -206,6 +208,19 @@ async fn revoke_device(
                 user_agent,
                 meta: serde_json::json!({ "car_id": car_id_str }),
             },
+        )
+        .await;
+        let device_name: String = sqlx::query_scalar("SELECT name FROM devices WHERE id = $1")
+            .bind(device_id)
+            .fetch_one(&state.pool)
+            .await?;
+        notify_owner_of_device_change(
+            &state.pool,
+            car_id,
+            user.id,
+            &user.email,
+            &device_name,
+            "revoked",
         )
         .await;
         return Ok(Json(
@@ -398,6 +413,36 @@ fn parse_basic_token(header: &str) -> Option<String> {
         return Some(rest.to_string());
     }
     None
+}
+
+/// A device token lets its holder write trips into the car, so the owner hears
+/// about any added or revoked by someone else.
+async fn notify_owner_of_device_change(
+    pool: &sqlx::PgPool,
+    car_id: Uuid,
+    actor_id: Uuid,
+    actor_email: &str,
+    device_name: &str,
+    verb: &str,
+) {
+    let owner: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT owner_user_id, name FROM cars WHERE id = $1")
+            .bind(car_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    if let Some((owner, car)) = owner
+        && owner != actor_id
+    {
+        crate::notifications::security_notice(
+            pool,
+            owner,
+            format!("Tracker {verb} on {car}"),
+            format!("{actor_email} {verb} the device \"{device_name}\"."),
+        )
+        .await;
+    }
 }
 
 /// Revoke every live device token `user_id` created on `car_id`. Called when their

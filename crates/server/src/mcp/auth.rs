@@ -1,7 +1,7 @@
 //! Bearer token authentication for MCP HTTP requests.
 
 use axum::extract::State;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use sqlx::PgPool;
@@ -27,6 +27,10 @@ pub struct McpUser {
 pub enum McpAuthError {
     Missing,
     Invalid,
+    /// The token could not be checked (database down). Not the client's fault, so
+    /// never reported as 401 — that would tell a well-behaved client to discard a
+    /// perfectly good token.
+    Unavailable,
 }
 
 pub fn parse_bearer(authorization: Option<&str>) -> Result<&str, McpAuthError> {
@@ -56,7 +60,10 @@ pub async fn resolve_mcp_user(
     .bind(&hash)
     .fetch_optional(pool)
     .await
-    .map_err(|_| McpAuthError::Invalid)?;
+    .map_err(|e| {
+        tracing::error!(error = %e, "mcp token lookup failed");
+        McpAuthError::Unavailable
+    })?;
 
     let Some((id, unit_system)) = row else {
         return Err(McpAuthError::Invalid);
@@ -79,21 +86,50 @@ pub async fn mcp_bearer_middleware(
         .and_then(|v| v.to_str().ok());
     let token = match parse_bearer(auth) {
         Ok(t) => t.to_string(),
-        Err(_) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "missing or invalid Authorization Bearer token",
-            )
-                .into_response();
-        }
+        Err(e) => return auth_error_response(e),
     };
     match resolve_mcp_user(&state.pool, &state.config.device_token_pepper, &token).await {
         Ok(user) => {
             req.extensions_mut().insert(user);
             next.run(req).await
         }
-        Err(_) => (StatusCode::UNAUTHORIZED, "invalid MCP token").into_response(),
+        Err(e) => auth_error_response(e),
     }
+}
+
+/// RFC 6750 responses: a 401 names the scheme in `WWW-Authenticate` so clients
+/// know to (re)authenticate; an outage is a 503 the client should simply retry.
+pub fn auth_error_response(err: McpAuthError) -> Response {
+    let (status, challenge, body) = match err {
+        McpAuthError::Missing => (
+            StatusCode::UNAUTHORIZED,
+            Some(r#"Bearer realm="mcp""#),
+            "missing or invalid Authorization Bearer token",
+        ),
+        McpAuthError::Invalid => (
+            StatusCode::UNAUTHORIZED,
+            Some(r#"Bearer realm="mcp", error="invalid_token""#),
+            "invalid MCP token",
+        ),
+        McpAuthError::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            None,
+            "authentication temporarily unavailable",
+        ),
+    };
+    let mut response = (status, body).into_response();
+    if let Some(challenge) = challenge {
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static(challenge),
+        );
+    }
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+    }
+    response
 }
 
 #[cfg(test)]
@@ -104,6 +140,23 @@ mod tests {
     fn parse_bearer_ok() {
         assert_eq!(parse_bearer(Some("Bearer abc123")).unwrap(), "abc123");
         assert_eq!(parse_bearer(Some("bearer xyz")).unwrap(), "xyz");
+    }
+
+    #[test]
+    fn unauthorized_responses_carry_a_bearer_challenge() {
+        for err in [McpAuthError::Missing, McpAuthError::Invalid] {
+            let r = auth_error_response(err);
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+            let challenge = r.headers()[header::WWW_AUTHENTICATE].to_str().unwrap();
+            assert!(challenge.starts_with("Bearer"), "{challenge}");
+        }
+    }
+
+    #[test]
+    fn an_auth_outage_is_not_a_401() {
+        let r = auth_error_response(McpAuthError::Unavailable);
+        assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(r.headers().get(header::WWW_AUTHENTICATE).is_none());
     }
 
     #[test]

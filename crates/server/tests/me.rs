@@ -54,3 +54,59 @@ async fn timezone_and_locale_are_validated_and_stored() {
         .unwrap();
     assert!(me["locale"].is_null());
 }
+
+#[tokio::test]
+async fn notification_inbox_counts_and_marks_read() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let user = login(&base).await;
+    let get = |path: &'static str| user.client.get(format!("{base}{path}")).send();
+
+    let cfg: Value = get("/api/push/config").await.unwrap().json().await.unwrap();
+    assert!(cfg.get("vapid_public_key").is_some());
+
+    user.client
+        .post(format!("{base}/api/push/test"))
+        .send()
+        .await
+        .unwrap();
+    let count: Value = get("/api/notifications/unread-count")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(count["unread"], 1);
+    let list: Value = get("/api/notifications")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list[0]["kind"], "test");
+
+    user.client
+        .post(format!("{base}/api/notifications/read-all"))
+        .send()
+        .await
+        .unwrap();
+    let count: Value = get("/api/notifications/unread-count")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(count["unread"], 0);
+
+    // A subscription for a host that is not a push service is refused.
+    let resp = user
+        .client
+        .post(format!("{base}/api/push/subscriptions"))
+        .json(&json!({ "endpoint": "https://169.254.169.254/x", "keys": { "p256dh": "x", "auth": "y" } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}

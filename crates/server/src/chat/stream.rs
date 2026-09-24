@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
 use uuid::Uuid;
 
+use crate::analysis::jobs::CancelFlag;
+
 /// Buffered events per in-flight message. Deltas are small and consumers are fast;
 /// this only needs to absorb a slow reader's scheduling jitter.
 const CHANNEL_CAPACITY: usize = 256;
@@ -17,7 +19,12 @@ const CHANNEL_CAPACITY: usize = 256;
 /// Registry of in-flight generations, keyed by assistant message id.
 #[derive(Default)]
 pub struct ChatHub {
-    channels: RwLock<HashMap<Uuid, broadcast::Sender<ai::ChatEvent>>>,
+    channels: RwLock<HashMap<Uuid, Generation>>,
+}
+
+struct Generation {
+    tx: broadcast::Sender<ai::ChatEvent>,
+    cancel: CancelFlag,
 }
 
 impl ChatHub {
@@ -25,11 +32,33 @@ impl ChatHub {
         Self::default()
     }
 
-    /// Open a channel for a generation that is about to start.
-    pub async fn register(&self, message_id: Uuid) -> broadcast::Sender<ai::ChatEvent> {
+    /// Open a channel for a generation that is about to start, plus the flag that
+    /// stops it.
+    pub async fn register(
+        &self,
+        message_id: Uuid,
+    ) -> (broadcast::Sender<ai::ChatEvent>, CancelFlag) {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
-        self.channels.write().await.insert(message_id, tx.clone());
-        tx
+        let cancel = CancelFlag::new();
+        self.channels.write().await.insert(
+            message_id,
+            Generation {
+                tx: tx.clone(),
+                cancel: cancel.clone(),
+            },
+        );
+        (tx, cancel)
+    }
+
+    /// Ask a running generation to stop. `false` when none is running here.
+    pub async fn cancel(&self, message_id: Uuid) -> bool {
+        match self.channels.read().await.get(&message_id) {
+            Some(generation) => {
+                generation.cancel.cancel();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Subscribe to a generation, if it is still running.
@@ -38,7 +67,7 @@ impl ChatHub {
             .read()
             .await
             .get(&message_id)
-            .map(|tx| tx.subscribe())
+            .map(|generation| generation.tx.subscribe())
     }
 
     /// Close a channel once its generation has ended. Must run on every exit path,
@@ -119,7 +148,7 @@ mod tests {
         let id = Uuid::new_v4();
         assert_eq!(hub.len().await, 0);
 
-        let tx = hub.register(id).await;
+        let (tx, _cancel) = hub.register(id).await;
         assert_eq!(hub.len().await, 1);
         assert!(hub.subscribe(id).await.is_some());
 
@@ -127,6 +156,18 @@ mod tests {
         assert_eq!(hub.len().await, 0);
         assert!(hub.subscribe(id).await.is_none());
         drop(tx);
+    }
+
+    #[tokio::test]
+    async fn cancel_reaches_only_a_registered_generation() {
+        let hub = ChatHub::new();
+        let id = Uuid::new_v4();
+        assert!(!hub.cancel(id).await);
+        let (_tx, flag) = hub.register(id).await;
+        assert!(hub.cancel(id).await);
+        assert!(flag.is_cancelled());
+        hub.unregister(id).await;
+        assert!(!hub.cancel(id).await);
     }
 
     #[tokio::test]
@@ -139,7 +180,7 @@ mod tests {
     async fn broadcast_sink_does_not_fail_without_listeners() {
         let hub = ChatHub::new();
         let id = Uuid::new_v4();
-        let tx = hub.register(id).await;
+        let (tx, _cancel) = hub.register(id).await;
         let sink = BroadcastSink::new(tx);
         // No receiver: emitting must still be a no-op rather than a panic.
         sink.emit(ai::ChatEvent::ToolStarted {
@@ -150,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn tee_sink_accumulates_delta_text_in_order() {
         let hub = ChatHub::new();
-        let tx = hub.register(Uuid::new_v4()).await;
+        let (tx, _cancel) = hub.register(Uuid::new_v4()).await;
         let sink = TeeSink::new(tx);
         let handle = sink.content_handle();
 
@@ -173,7 +214,7 @@ mod tests {
     async fn subscribers_receive_events_emitted_after_they_subscribe() {
         let hub = ChatHub::new();
         let id = Uuid::new_v4();
-        let tx = hub.register(id).await;
+        let (tx, _cancel) = hub.register(id).await;
         let mut rx = hub.subscribe(id).await.unwrap();
         BroadcastSink::new(tx).emit(ai::ChatEvent::Done {
             content: "done".into(),
