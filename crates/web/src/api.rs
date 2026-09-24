@@ -2044,3 +2044,48 @@ pub async fn car_health(car_id: &str) -> Result<CarHealth, ApiError> {
 pub async fn car_battery(car_id: &str) -> Result<BatteryReport, ApiError> {
     send_json(Request::get(&format!("/api/cars/{car_id}/battery"))).await
 }
+
+// --- MCP tokens (many per user) ------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpTokenRow {
+    pub id: String,
+    pub name: String,
+    pub hint: String,
+    /// Cars the token is limited to; `None` = every readable car.
+    pub car_ids: Option<Vec<String>>,
+    pub expires_at: Option<String>,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+    pub revoked_at: Option<String>,
+}
+
+/// A newly issued token; `token` is the only time the plaintext is shown.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpTokenIssued {
+    pub id: String,
+    pub token: String,
+    pub hint: String,
+    pub mcp_url: String,
+}
+
+pub async fn list_mcp_tokens() -> Result<Vec<McpTokenRow>, ApiError> {
+    send_json(Request::get("/api/me/mcp-tokens")).await
+}
+
+pub async fn create_mcp_token(
+    name: &str,
+    car_ids: Option<Vec<String>>,
+    expires_in_days: Option<i64>,
+) -> Result<McpTokenIssued, ApiError> {
+    let body = serde_json::json!({
+        "name": name,
+        "car_ids": car_ids,
+        "expires_in_days": expires_in_days,
+    });
+    send_json_body(Request::post("/api/me/mcp-tokens"), &body).await
+}
+
+pub async fn revoke_mcp_token_by_id(id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!("/api/me/mcp-tokens/{id}"))).await
+}

@@ -9,6 +9,7 @@ pub mod health;
 pub mod landing;
 pub mod live;
 pub mod login;
+pub mod mcp_tokens;
 pub mod not_found;
 pub mod notifications;
 pub mod places;
