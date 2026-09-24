@@ -9,6 +9,7 @@ use crate::api::{
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
 use crate::pages::alerts::AlertsSection;
+use crate::pages::driving::CarScoreChart;
 use crate::pages::garage::GarageSection;
 use crate::pages::sharing::SharingCard;
 use crate::vault::{
@@ -735,6 +736,8 @@ pub fn CarDetailPage() -> impl IntoView {
             car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
             error=error
         />
+
+        <CarScoreChart car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default())) />
 
         <AlertsSection car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default())) />
 

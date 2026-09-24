@@ -14,6 +14,7 @@ use crate::api::{
 use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::pages::driving::TripDrivingCard;
 use crate::pages::trip_export::TripExportMenu;
 use crate::pages::trip_replay::TripReplay;
 use crate::pages::trips_views::{TripsCalendar, TripsOverlayMap};
@@ -1663,6 +1664,8 @@ pub fn TripDetailPage() -> impl IntoView {
             </Show>
 
             <TripMetaEditor trip=trip can_edit=can_edit />
+
+            <TripDrivingCard trip=trip />
 
     <Show when=move || {
                 let pts = points.get();

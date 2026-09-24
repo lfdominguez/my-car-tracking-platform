@@ -3,6 +3,7 @@ pub mod cars;
 pub mod chat;
 pub mod compare;
 pub mod dashboard;
+pub mod driving;
 pub mod garage;
 pub mod landing;
 pub mod live;

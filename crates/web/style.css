@@ -4692,3 +4692,35 @@ button.cal-day:hover { box-shadow: inset 0 0 0 1px var(--text); }
   font-size: var(--text-sm);
   font-weight: var(--font-weight-body-medium);
 }
+
+/* ---- Driving score & speeding (#124 #125) ---------------------------------- */
+.driving-card, .driving-score-card { margin-top: 1.25rem; }
+.driving-grid {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) minmax(0, 1.6fr);
+  gap: 1rem 1.5rem;
+  margin-top: 0.75rem;
+}
+@media (max-width: 800px) { .driving-grid { grid-template-columns: minmax(0, 1fr); } }
+.driving-speeding { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.driving-speeding-head { display: flex; flex-direction: column; gap: 0.15rem; }
+.driving-speeding-head strong { color: var(--text); }
+.speeding-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; max-height: 16rem; overflow-y: auto; }
+.speeding-item {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--body);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-family: var(--font-family-mono);
+  text-align: left;
+  cursor: pointer;
+}
+.speeding-item:hover { border-color: color-mix(in srgb, var(--color-danger) 40%, transparent); color: var(--text); }

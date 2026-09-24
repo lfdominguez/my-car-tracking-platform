@@ -1142,7 +1142,58 @@ function nearestPointIndexByTime(points, iso) {
   return best;
 }
 
+/** Extra point highlights per map (speeding spots), kept across map rebuilds. */
+const __tripHighlights = new Map();
+
+function applyTripHighlights(entry) {
+  const map = entry && entry.map;
+  if (!map || !map.isStyleLoaded()) return;
+  const fc = __tripHighlights.get(entry._elId) || emptyFc();
+  const src = map.getSource('trip-highlights');
+  if (src) {
+    src.setData(fc);
+    return;
+  }
+  map.addSource('trip-highlights', { type: 'geojson', data: fc });
+  map.addLayer({
+    id: 'trip-highlights',
+    type: 'circle',
+    source: 'trip-highlights',
+    paint: {
+      'circle-radius': 8,
+      'circle-color': '#e5484d',
+      'circle-opacity': 0.9,
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2,
+    },
+  });
+  map.addLayer({
+    id: 'trip-highlights-label',
+    type: 'symbol',
+    source: 'trip-highlights',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-size': 11,
+      'text-offset': [0, 1.5],
+      'text-anchor': 'top',
+    },
+    paint: { 'text-color': '#b42318', 'text-halo-color': '#ffffff', 'text-halo-width': 1.6 },
+  });
+}
+
+/** Replace the highlight points (a GeoJSON FeatureCollection string; empty hides). */
+export function setTripMapHighlights(elId, json) {
+  let fc;
+  try { fc = JSON.parse(json); } catch (_) { fc = emptyFc(); }
+  __tripHighlights.set(elId, fc || emptyFc());
+  const entry = __tripMaps.get(elId);
+  if (entry) {
+    try { applyTripHighlights(entry); } catch (_) {}
+  }
+}
+
 function restoreSelectionMarker(entry) {
+  try { applyTripHighlights(entry); } catch (_) {}
   if (!entry.selection) {
     setSelectionClearVisible(false);
     if (entry.map.getSource('trip-selection')) {
@@ -1418,6 +1469,7 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
 extern "C" {
     fn renderTripMap(el_id: &str, geojson: &JsValue, points_json: &str, traffic_json: &str);
     fn setTripMapSpeedUnit(unit: &str);
+    fn setTripMapHighlights(el_id: &str, json: &str);
     fn disposeTripMap(el_id: &str);
     fn clearTripMap(el_id: &str);
 }
@@ -1470,6 +1522,20 @@ pub fn TripMap(
         renderTripMap(id, &js, &pts_json, &traffic_json);
     });
     view! { <div id=id class="map"></div> }
+}
+
+/// Mark points on the trip map (speeding spots, #125): `(lon, lat, label)`.
+/// An empty list clears them.
+pub fn set_trip_map_highlights(points: &[(f64, f64, String)]) {
+    let fc = serde_json::json!({
+        "type": "FeatureCollection",
+        "features": points.iter().map(|(lon, lat, label)| serde_json::json!({
+            "type": "Feature",
+            "properties": { "label": label },
+            "geometry": { "type": "Point", "coordinates": [lon, lat] },
+        })).collect::<Vec<_>>(),
+    });
+    setTripMapHighlights("trip-map", &fc.to_string());
 }
 
 fn serde_wasm_bindgen_compat(v: &serde_json::Value) -> Result<JsValue, String> {

@@ -50,7 +50,7 @@ fn fmt_clock(secs: f64) -> String {
 }
 
 /// Move the chart cursor (and, through its event, the map pin) to `iso`.
-fn select_time(iso: &str) {
+pub(crate) fn select_time(iso: &str) {
     let Some(win) = web_sys::window() else {
         return;
     };

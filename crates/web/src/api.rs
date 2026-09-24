@@ -1889,3 +1889,71 @@ pub async fn delete_geofence(id: &str) -> Result<(), ApiError> {
 pub async fn geofence_events(id: &str) -> Result<Vec<GeofenceEvent>, ApiError> {
     send_json(Request::get(&format!("/api/geofences/{id}/events"))).await
 }
+
+// --- driving score & speeding (#124, #125) ---------------------------------------------
+
+/// Smoothness / economy score of one trip (SI).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TripScore {
+    /// 0–100, higher is smoother.
+    pub score: f64,
+    pub distance_m: f64,
+    pub harsh_accel: i32,
+    pub harsh_brake: i32,
+    /// Share of engine-on time stationary.
+    pub idle_share: f64,
+    /// Share of engine-on time at high RPM.
+    pub high_rpm_share: f64,
+    /// Share of limit-known distance over the limit; `None` without limits.
+    pub speeding_share: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WeekScore {
+    /// Monday of the week (`YYYY-MM-DD`).
+    pub week: String,
+    pub trips: usize,
+    pub score: f64,
+    pub harsh_events_per_100km: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpeedingSegment {
+    pub t_start: String,
+    pub t_end: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub peak_kph: f64,
+    pub limit_kph: f64,
+    pub distance_m: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpeedingReport {
+    /// False until traffic analysis has matched the trip to speed limits.
+    pub analyzed: bool,
+    pub time_with_limit_s: f64,
+    pub distance_with_limit_m: f64,
+    pub time_over_s: f64,
+    pub distance_over_m: f64,
+    #[serde(default)]
+    pub segments: Vec<SpeedingSegment>,
+}
+
+pub async fn trip_score(id: &str) -> Result<TripScore, ApiError> {
+    send_json(Request::get(&format!("/api/trips/{id}/score"))).await
+}
+
+pub async fn car_weekly_scores(car_id: &str, weeks: u32) -> Result<Vec<WeekScore>, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/cars/{car_id}/score?weeks={weeks}"
+    )))
+    .await
+}
+
+pub async fn trip_speeding(id: &str, tolerance_pct: u32) -> Result<SpeedingReport, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/trips/{id}/speeding?tolerance_pct={tolerance_pct}"
+    )))
+    .await
+}
