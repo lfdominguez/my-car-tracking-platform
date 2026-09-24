@@ -1073,6 +1073,8 @@ struct GeometriesQuery {
     car_id: Option<Uuid>,
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
+    purpose: Option<String>,
+    tag: Option<String>,
     limit: Option<i64>,
 }
 
@@ -1087,7 +1089,7 @@ struct TripGeometry {
 
 /// Simplified route lines of many trips at once, for overlay and heatmap views.
 /// Only fixes are used (fixless samples have no position) and vault cars are
-/// skipped.
+/// skipped. Trips whose points were pruned by retention use their kept line.
 async fn trip_geometries(
     State(state): State<AppState>,
     user: AuthUser,
@@ -1097,7 +1099,10 @@ async fn trip_geometries(
     let rows = sqlx::query_as::<_, TripGeometry>(
         r#"
         SELECT t.id, t.car_id, t.started_at,
-               ST_AsGeoJSON(ST_Simplify(line.geom, 0.0001), 6)::jsonb AS geometry
+               CASE WHEN line.n >= 2
+                    THEN ST_AsGeoJSON(ST_Simplify(line.geom, 0.0001), 6)::jsonb
+                    ELSE t.archived_route
+               END AS geometry
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
         JOIN users ou ON ou.id = c.owner_user_id
@@ -1107,13 +1112,15 @@ async fn trip_geometries(
             FROM track_points tp
             WHERE tp.track_id = t.id AND tp.gps IS NOT NULL
         ) line
-        WHERE line.n >= 2
+        WHERE (line.n >= 2 OR t.archived_route IS NOT NULL)
           AND ou.vault_status <> 'active'
           AND (c.owner_user_id = $1
                OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = c.id AND cs.user_id = $1))
           AND ($2::uuid IS NULL OR t.car_id = $2)
           AND ($3::timestamptz IS NULL OR t.started_at >= $3)
           AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+          AND ($6::text IS NULL OR t.purpose = $6)
+          AND ($7::text IS NULL OR $7 = ANY(t.tags))
         ORDER BY t.started_at DESC
         LIMIT $5
         "#,
@@ -1123,6 +1130,8 @@ async fn trip_geometries(
     .bind(q.from)
     .bind(q.to)
     .bind(limit)
+    .bind(q.purpose.as_deref().filter(|p| !p.is_empty()))
+    .bind(q.tag.as_deref().filter(|t| !t.is_empty()))
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))

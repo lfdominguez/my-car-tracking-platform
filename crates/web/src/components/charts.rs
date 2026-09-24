@@ -1003,6 +1003,10 @@ fn mixture_bucket_size(n: usize) -> usize {
 /// the rest of the app — and follows the light/dark switch instead of staying
 /// permanently dark. Falls back to the dark value if the property is unreadable.
 fn css_var(name: &str, fallback: &str) -> String {
+    // Host-side unit tests have no DOM, and touching `window` there panics.
+    if !cfg!(target_arch = "wasm32") {
+        return fallback.to_string();
+    }
     web_sys::window()
         .and_then(|w| {
             let doc = w.document()?;

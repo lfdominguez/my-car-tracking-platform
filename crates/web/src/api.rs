@@ -1656,14 +1656,23 @@ pub struct TripGeometry {
     pub geometry: serde_json::Value,
 }
 
-/// `GET /api/trips/geometries`: newest first, vault cars skipped. Bounds are RFC3339.
+/// `GET /api/trips/geometries`: newest first, vault cars skipped. Bounds are RFC3339;
+/// purpose and tag filter like the trips list.
 pub async fn trip_geometries(
     car_id: Option<&str>,
     from: Option<&str>,
     to: Option<&str>,
+    purpose: Option<&str>,
+    tag: Option<&str>,
     limit: i64,
 ) -> Result<Vec<TripGeometry>, ApiError> {
     let mut url = format!("/api/trips/geometries?limit={limit}");
+    if let Some(p) = purpose.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&purpose={}", urlencoding_trip_query(p)));
+    }
+    if let Some(t) = tag.map(str::trim).filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&tag={}", urlencoding_trip_query(t)));
+    }
     if let Some(c) = car_id.filter(|s| !s.is_empty()) {
         url.push_str(&format!("&car_id={}", urlencoding_trip_query(c)));
     }

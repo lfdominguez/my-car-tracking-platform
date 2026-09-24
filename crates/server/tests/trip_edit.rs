@@ -143,6 +143,33 @@ async fn geometries_return_simplified_lines_for_readable_trips() {
         .unwrap();
     assert_eq!(rows[0]["id"], trip.to_string());
     assert_eq!(rows[0]["geometry"]["type"], "LineString");
+
+    // Purpose and tag filters match the trips list.
+    sqlx::query("UPDATE tracks SET purpose = 'business', tags = ARRAY['client-a'] WHERE id = $1")
+        .bind(trip)
+        .execute(&common::pool().await)
+        .await
+        .unwrap();
+    for (query, expected) in [
+        ("purpose=business", 1),
+        ("purpose=personal", 0),
+        ("tag=client-a", 1),
+        ("tag=other", 0),
+    ] {
+        let rows: Value = user
+            .client
+            .get(format!(
+                "{base}/api/trips/geometries?car_id={car_id}&{query}"
+            ))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), expected, "{query}");
+    }
+
     let other = login(&base).await;
     let rows: Value = other
         .client

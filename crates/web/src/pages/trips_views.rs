@@ -24,9 +24,8 @@ pub fn TripsOverlayMap(
     #[prop(into)] car_id: Signal<Option<String>>,
     #[prop(into)] from: Signal<Option<String>>,
     #[prop(into)] to: Signal<Option<String>>,
-    /// When purpose or tag filters are on, only these trip ids (the loaded list).
-    #[prop(into)]
-    restrict_ids: Signal<Option<Vec<String>>>,
+    #[prop(into)] purpose: Signal<Option<String>>,
+    #[prop(into)] tag: Signal<Option<String>>,
 ) -> impl IntoView {
     let navigate = StoredValue::new(use_navigate());
     let geoms = RwSignal::new(Vec::<TripGeometry>::new());
@@ -37,12 +36,20 @@ pub fn TripsOverlayMap(
 
     Effect::new(move |_| {
         let (c, f, t) = (car_id.get(), from.get(), to.get());
+        let (p, g) = (purpose.get(), tag.get());
         let req = fetch_gen.get_untracked().wrapping_add(1);
         fetch_gen.set(req);
         loading.set(true);
         leptos::task::spawn_local(async move {
-            let res =
-                trip_geometries(c.as_deref(), f.as_deref(), t.as_deref(), OVERLAY_LIMIT).await;
+            let res = trip_geometries(
+                c.as_deref(),
+                f.as_deref(),
+                t.as_deref(),
+                p.as_deref(),
+                g.as_deref(),
+                OVERLAY_LIMIT,
+            )
+            .await;
             if fetch_gen.try_get_untracked() != Some(req) {
                 return;
             }
@@ -77,15 +84,7 @@ pub fn TripsOverlayMap(
         on_cleanup(move || handle.remove());
     });
 
-    let visible = Memo::new(move |_| {
-        let only = restrict_ids.get();
-        geoms.with(|g| {
-            g.iter()
-                .filter(|t| only.as_ref().is_none_or(|ids| ids.contains(&t.id)))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-    });
+    let visible = Memo::new(move |_| geoms.get());
 
     let data = Signal::derive(move || {
         let palette = chart_theme().series;

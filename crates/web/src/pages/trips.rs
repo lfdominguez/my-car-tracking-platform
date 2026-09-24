@@ -786,16 +786,13 @@ pub fn TripsPage() -> impl IntoView {
             when=move || view_mode.get() == TripsView::List
             fallback=move || move || {
                 if view_mode.get() == TripsView::Map {
-                    let narrowed = Signal::derive(move || {
-                        let on = !purpose_filter.get().is_empty() || !tag_filter.get().trim().is_empty();
-                        on.then(|| trips.with(|t| t.iter().map(|t| t.id.clone()).collect::<Vec<_>>()))
-                    });
                     view! {
                         <TripsOverlayMap
                             car_id=Signal::derive(move || car_filter_id.get())
                             from=Signal::derive(move || base_opts().from)
                             to=Signal::derive(move || base_opts().to)
-                            restrict_ids=narrowed
+                            purpose=Signal::derive(move || base_opts().purpose)
+                            tag=Signal::derive(move || base_opts().tag)
                         />
                     }
                     .into_any()
