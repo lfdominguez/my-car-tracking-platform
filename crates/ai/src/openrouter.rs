@@ -296,18 +296,15 @@ impl OpenRouterClient {
         }
 
         let mut acc = StreamAccumulator::default();
-        let mut buf = String::new();
+        let mut lines = SseLineBuffer::default();
         let mut stream = response.bytes_stream();
 
         while let Some(chunk) = stream.next().await {
             let chunk =
                 chunk.map_err(|e| TransportErr::from_reqwest("openrouter stream chunk", e))?;
-            buf.push_str(&String::from_utf8_lossy(&chunk));
 
-            // SSE frames are newline-delimited; keep any trailing partial line.
-            while let Some(nl) = buf.find('\n') {
-                let line: String = buf.drain(..=nl).collect();
-                match acc.push_line(line.trim_end_matches(['\r', '\n'])) {
+            for line in lines.push(&chunk) {
+                match acc.push_line(&line) {
                     Ok(deltas) => {
                         for d in deltas {
                             *emitted = true;
@@ -329,11 +326,59 @@ impl OpenRouterClient {
                 break;
             }
         }
+        if !acc.done
+            && let Some(line) = lines.take_rest()
+            && let Ok(deltas) = acc.push_line(&line)
+        {
+            for d in deltas {
+                *emitted = true;
+                on_delta(d);
+            }
+        }
 
         acc.finish().map_err(|e| TransportErr {
             message: e.to_string().replacen("openrouter/agent error: ", "", 1),
             transient: false,
         })
+    }
+}
+
+/// Splits a byte stream into SSE lines, decoding only **complete** lines.
+///
+/// Network chunks cut wherever they like, including through the middle of a
+/// multi-byte UTF-8 character. Decoding each chunk on its own turned both halves of
+/// such a character into U+FFFD, corrupting e.g. every `ñ` or `é` that happened to
+/// straddle a chunk boundary. A newline byte never occurs inside a multi-byte
+/// sequence, so splitting the raw bytes on `\n` first is always safe.
+#[derive(Default)]
+pub(crate) struct SseLineBuffer {
+    pending: Vec<u8>,
+}
+
+impl SseLineBuffer {
+    /// Append a chunk and return every line it completed, without terminators.
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.pending.extend_from_slice(chunk);
+        let mut out = Vec::new();
+        let mut start = 0;
+        while let Some(pos) = self.pending[start..].iter().position(|b| *b == b'\n') {
+            let end = start + pos;
+            let mut line = &self.pending[start..end];
+            if let Some(stripped) = line.strip_suffix(b"\r") {
+                line = stripped;
+            }
+            out.push(String::from_utf8_lossy(line).into_owned());
+            start = end + 1;
+        }
+        self.pending.drain(..start);
+        out
+    }
+
+    /// The unterminated last line, if the stream ended without a final newline.
+    pub(crate) fn take_rest(&mut self) -> Option<String> {
+        let rest = std::mem::take(&mut self.pending);
+        let rest = rest.strip_suffix(b"\r").unwrap_or(&rest);
+        (!rest.is_empty()).then(|| String::from_utf8_lossy(rest).into_owned())
     }
 }
 
@@ -1047,6 +1092,44 @@ mod tests {
             ],
         );
         assert_eq!(acc.finish().unwrap().content.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn sse_lines_survive_a_multibyte_char_split_across_chunks() {
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"año\"}}]}\n";
+        let bytes = frame.as_bytes();
+        // Cut inside the two-byte `ñ` (0xC3 0xB1).
+        let cut = frame.find('ñ').unwrap() + 1;
+        let mut buf = SseLineBuffer::default();
+        assert!(buf.push(&bytes[..cut]).is_empty());
+        let lines = buf.push(&bytes[cut..]);
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].contains('\u{FFFD}'), "{}", lines[0]);
+
+        let mut acc = StreamAccumulator::default();
+        acc.push_line(&lines[0]).unwrap();
+        assert_eq!(acc.finish().unwrap().content.as_deref(), Some("año"));
+    }
+
+    #[test]
+    fn sse_lines_split_byte_by_byte_and_strip_crlf() {
+        let text = "data: 1\r\n: keepalive\n\ndata: é\n";
+        let mut buf = SseLineBuffer::default();
+        let mut lines = Vec::new();
+        for b in text.as_bytes() {
+            lines.extend(buf.push(std::slice::from_ref(b)));
+        }
+        assert_eq!(lines, vec!["data: 1", ": keepalive", "", "data: é"]);
+    }
+
+    #[test]
+    fn sse_keeps_an_unterminated_tail_for_the_next_chunk() {
+        let mut buf = SseLineBuffer::default();
+        assert_eq!(buf.push(b"data: a\ndata: b"), vec!["data: a"]);
+        assert_eq!(buf.push(b"c\n"), vec!["data: bc"]);
+        assert_eq!(buf.push(b"data: [DONE]"), Vec::<String>::new());
+        assert_eq!(buf.take_rest().as_deref(), Some("data: [DONE]"));
+        assert_eq!(buf.take_rest(), None);
     }
 
     #[test]
