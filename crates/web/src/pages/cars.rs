@@ -60,6 +60,8 @@ pub fn CarsPage() -> impl IntoView {
     Effect::new({
         let vault = vault.clone();
         move |_| {
+            // Reload when the vault is unlocked elsewhere so sealed names decrypt.
+            vault.unlocked().track();
             let sess = vault.clone();
             leptos::task::spawn_local(async move {
                 match list_cars().await {
@@ -288,6 +290,8 @@ pub fn CarDetailPage() -> impl IntoView {
             if id.is_empty() {
                 return;
             }
+            // Unlocking through the gate below must load the decrypted profile.
+            vault.unlocked().track();
             let id2 = id.clone();
             let sess = vault.clone();
             leptos::task::spawn_local(async move {
@@ -370,7 +374,7 @@ pub fn CarDetailPage() -> impl IntoView {
         <Show when=move || error.get().is_some()>
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
-        <Show when=move || car.get().map(|c| c.vault_sealed).unwrap_or(false) && !use_vault_session().is_unlocked()>
+        <Show when=move || car.get().map(|c| c.vault_sealed).unwrap_or(false) && !use_vault_session().unlocked().get()>
             <VaultUnlockGate message="Unlock the vault to view or edit this sealed car profile.".to_string()/>
         </Show>
 

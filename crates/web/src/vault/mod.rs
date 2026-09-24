@@ -22,9 +22,14 @@ use zeroize::Zeroize;
 const LS_DEVICE_IDENTITY: &str = "ctp_vault_identity_sk_b64";
 
 /// In-memory unlocked vault keys for the tab session (Send+Sync for Leptos context).
+///
+/// The keys live behind a `Mutex`, which nothing can subscribe to, so the lock state
+/// is mirrored into `unlocked`: views gate on [`VaultSession::unlocked`] and re-render
+/// when any component unlocks or locks the vault.
 #[derive(Clone)]
 pub struct VaultSession {
     inner: Arc<Mutex<Option<UnlockedVault>>>,
+    unlocked: RwSignal<bool>,
 }
 
 pub struct UnlockedVault {
@@ -40,11 +45,26 @@ impl VaultSession {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
+            unlocked: RwSignal::new(false),
         }
     }
 
+    /// Untracked check for async code and event handlers.
     pub fn is_unlocked(&self) -> bool {
         self.inner.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    /// Reactive lock state: read it inside a view or effect to re-run on unlock/lock.
+    pub fn unlocked(&self) -> Signal<bool> {
+        self.unlocked.into()
+    }
+
+    fn set_keys(&self, keys: Option<UnlockedVault>) {
+        let unlocked = keys.is_some();
+        if let Ok(mut g) = self.inner.lock() {
+            *g = keys;
+        }
+        self.unlocked.set(unlocked);
     }
 
     pub fn with_secret<R>(
@@ -68,9 +88,7 @@ impl VaultSession {
                 let _ = storage.set_item(LS_DEVICE_IDENTITY, &b64);
             }
         }
-        if let Ok(mut g) = self.inner.lock() {
-            *g = Some(UnlockedVault { secret, public });
-        }
+        self.set_keys(Some(UnlockedVault { secret, public }));
         Ok(())
     }
 
@@ -95,16 +113,12 @@ impl VaultSession {
         let secret = IdentitySecret::from_bytes(arr);
         arr.zeroize();
         let public = public_identity(&secret);
-        if let Ok(mut g) = self.inner.lock() {
-            *g = Some(UnlockedVault { secret, public });
-        }
+        self.set_keys(Some(UnlockedVault { secret, public }));
         true
     }
 
     pub fn lock(&self) {
-        if let Ok(mut g) = self.inner.lock() {
-            *g = None;
-        }
+        self.set_keys(None);
     }
 
     pub fn public_b64(&self) -> Option<String> {
@@ -169,7 +183,7 @@ pub fn VaultSettingsCard() -> impl IntoView {
     let busy = RwSignal::new(false);
     let msg = RwSignal::new(Option::<String>::None);
     let err = RwSignal::new(Option::<String>::None);
-    let unlocked = RwSignal::new(use_vault_session().is_unlocked());
+    let unlocked = use_vault_session().unlocked();
     let unlock_input = RwSignal::new(String::new());
 
     Effect::new(move |_| {
@@ -267,7 +281,6 @@ pub fn VaultSettingsCard() -> impl IntoView {
                                     match vault_enable(&pk, 1).await {
                                         Ok(s) => {
                                             let _ = sess.unlock_from_recovery(&recovery);
-                                            unlocked.set(sess.is_unlocked());
                                             status.set(Some(s));
                                             msg.set(Some(
                                                 "Vault migrating. Encrypt data on this device, then Activate.".into(),
@@ -343,7 +356,6 @@ pub fn VaultSettingsCard() -> impl IntoView {
                                 let sess = use_vault_session();
                                 match sess.unlock_from_recovery(&unlock_input.get()) {
                                     Ok(()) => {
-                                        unlocked.set(true);
                                         msg.set(Some("Vault unlocked on this device.".into()));
                                     }
                                     Err(e) => err.set(Some(e)),
@@ -360,7 +372,6 @@ pub fn VaultSettingsCard() -> impl IntoView {
                             class="btn ghost"
                             on:click=move |_| {
                                 use_vault_session().lock();
-                                unlocked.set(false);
                                 msg.set(Some("Vault locked on this tab.".into()));
                             }
                         >
@@ -378,7 +389,7 @@ pub fn VaultSettingsCard() -> impl IntoView {
 pub fn VaultUnlockGate(#[prop(into)] message: String) -> impl IntoView {
     let recovery = RwSignal::new(String::new());
     let error = RwSignal::new(Option::<String>::None);
-    let unlocked = RwSignal::new(use_vault_session().is_unlocked());
+    let unlocked = use_vault_session().unlocked();
 
     view! {
         <div class="card" style="max-width: 32rem; margin: 2rem auto;">
@@ -401,9 +412,8 @@ pub fn VaultUnlockGate(#[prop(into)] message: String) -> impl IntoView {
                 style="margin-top:0.75rem"
                 on:click=move |_| {
                     error.set(None);
-                    match use_vault_session().unlock_from_recovery(&recovery.get()) {
-                        Ok(()) => unlocked.set(true),
-                        Err(e) => error.set(Some(e)),
+                    if let Err(e) = use_vault_session().unlock_from_recovery(&recovery.get()) {
+                        error.set(Some(e));
                     }
                 }
             >

@@ -307,6 +307,8 @@ pub fn TripsPage() -> impl IntoView {
 
     Effect::new(move |_| {
         let sess = vault.clone();
+        // Refetch on unlock/lock so sealed rows swap between "Locked" and "Vault trip".
+        sess.unlocked().track();
         let f = filter.get();
         let car_id = car_filter_id.get();
         save_trips_filter(f);
@@ -694,12 +696,15 @@ pub fn TripDetailPage() -> impl IntoView {
     let deleting = RwSignal::new(false);
     let finishing = RwSignal::new(false);
     let vault = use_vault_session();
+    let vault_unlocked = vault.unlocked();
 
     Effect::new(move |_| {
         let id = params.with(|p| p.get("id").map(|s| s.to_string()).unwrap_or_default());
         if id.is_empty() {
             return;
         }
+        // Unlocking through the gate on this page must decrypt the trip without a reload.
+        vault_unlocked.track();
 
         // Cancel in-flight fetches/polls when the trip id changes or the page unmounts.
         // Without this, async tasks call .set/.get_untracked on disposed signals and panic
@@ -1163,7 +1168,7 @@ pub fn TripDetailPage() -> impl IntoView {
             </Show>
 
 
-            <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !use_vault_session().is_unlocked()>
+            <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !vault_unlocked.get()>
                 <VaultUnlockGate message="Unlock the vault to decrypt trip points and AI reports.".to_string()/>
             </Show>
 
