@@ -183,6 +183,12 @@ pub fn public_error(status: &str, raw: Option<&str>) -> Option<String> {
         Some(e) if e.contains("api key") || e.contains("OpenRouter API key") => {
             Some("Add your OpenRouter API key in Settings to use chat.".into())
         }
+        Some(e) if e == crate::analysis::jobs::CANCELLED_ERROR => {
+            Some("Stopped before the answer was finished.".into())
+        }
+        Some("timed out") => {
+            Some("That answer took too long and was stopped. Try a narrower question.".into())
+        }
         _ => Some("That answer could not be generated. Try again in a moment.".into()),
     }
 }
@@ -519,9 +525,10 @@ pub async fn update_partial(pool: &PgPool, message_id: Uuid, content: &str) -> A
     Ok(())
 }
 
-pub async fn fail_message(pool: &PgPool, message_id: Uuid, error: &str) -> AppResult<()> {
+/// Mark a generating message failed. `false` when it was no longer generating.
+pub async fn fail_message(pool: &PgPool, message_id: Uuid, error: &str) -> AppResult<bool> {
     let error: String = error.chars().take(500).collect();
-    sqlx::query(
+    let res = sqlx::query(
         r#"
         UPDATE chat_messages
         SET status = 'failed', error = $2, updated_at = NOW()
@@ -532,7 +539,20 @@ pub async fn fail_message(pool: &PgPool, message_id: Uuid, error: &str) -> AppRe
     .bind(&error)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(res.rows_affected() > 0)
+}
+
+/// Assistant messages still generating in a conversation.
+pub async fn active_message_ids(pool: &PgPool, conversation_id: Uuid) -> AppResult<Vec<Uuid>> {
+    Ok(sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT id FROM chat_messages
+        WHERE conversation_id = $1 AND status IN ('pending', 'running')
+        "#,
+    )
+    .bind(conversation_id)
+    .fetch_all(pool)
+    .await?)
 }
 
 /// Everything a finished turn stores.

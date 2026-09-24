@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::analysis::jobs::{CANCELLED_ERROR, CHAT_TURN_TIMEOUT, supervise};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::mcp::auth::McpUser;
@@ -56,6 +57,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/chat/conversations/{id}/messages", post(post_message))
         .route("/api/chat/messages/{id}/stream", get(stream_message))
+        .route("/api/chat/messages/{id}/cancel", post(cancel_message))
 }
 
 // --- DTOs ------------------------------------------------------------------
@@ -132,8 +134,31 @@ async fn delete_conversation(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<StatusCode> {
+    // Stop anything still generating first: otherwise it keeps spending the user's
+    // OpenRouter credits on an answer nobody can read any more.
+    store::owned_conversation(&state.pool, user.id, id).await?;
+    for message_id in store::active_message_ids(&state.pool, id).await? {
+        state.chat_hub.cancel(message_id).await;
+    }
     store::delete_conversation(&state.pool, user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stop a generating answer. The partial text already streamed is kept.
+async fn cancel_message(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<StatusCode> {
+    let message = store::owned_message(&state.pool, user.id, id).await?;
+    if !matches!(message.status.as_str(), "pending" | "running") {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if !state.chat_hub.cancel(id).await {
+        // No task here owns it: release the row so the conversation is usable again.
+        store::fail_message(&state.pool, id, CANCELLED_ERROR).await?;
+    }
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn post_message(
@@ -163,7 +188,7 @@ async fn post_message(
     } = store::start_turn(&state.pool, user.id, id, &content).await?;
 
     // Register before spawning so a fast client cannot subscribe to a missing channel.
-    let tx = state.chat_hub.register(assistant_message_id).await;
+    let (tx, cancel) = state.chat_hub.register(assistant_message_id).await;
 
     let job = GenerationJob {
         state: state.clone(),
@@ -179,13 +204,16 @@ async fn post_message(
         let state = job.state.clone();
         let message_id = job.assistant_message_id;
         let events = tx.clone();
-        if let Err(e) = job.run(tx).await {
+        let end = supervise(job.run(tx), CHAT_TURN_TIMEOUT, cancel).await;
+        if let Some(e) = end.failure() {
             tracing::error!(%message_id, error = %e, "chat generation failed");
-            // Persist first: a client reacting to the event re-reads the row.
-            let _ = store::fail_message(&state.pool, message_id, &e).await;
-            let _ = events.send(ai::ChatEvent::Failed {
-                message: store::public_error("failed", Some(&e)).unwrap_or_default(),
-            });
+            // Persist first: a client reacting to the event re-reads the row. A row
+            // that already completed (a cancel that lost the race) is left alone.
+            if let Ok(true) = store::fail_message(&state.pool, message_id, &e).await {
+                let _ = events.send(ai::ChatEvent::Failed {
+                    message: store::public_error("failed", Some(&e)).unwrap_or_default(),
+                });
+            }
         }
         state.chat_hub.unregister(message_id).await;
     });
@@ -290,6 +318,15 @@ fn event_name(event: &ai::ChatEvent) -> &'static str {
 
 // --- generation ------------------------------------------------------------
 
+/// Aborts the wrapped task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Decrypted OpenRouter credentials for one user.
 struct Credentials {
     api_key: String,
@@ -330,7 +367,9 @@ impl GenerationJob {
         let partial = sink.content_handle();
 
         // Flush partial text on a timer so a reconnect resumes near the live edge.
-        let flusher = tokio::spawn({
+        // Held in an abort-on-drop guard: if this future is itself aborted (timeout,
+        // cancel) the flusher must not outlive it.
+        let _flusher = AbortOnDrop(tokio::spawn({
             let pool = pool.clone();
             let message_id = self.assistant_message_id;
             let partial = std::sync::Arc::clone(&partial);
@@ -350,7 +389,7 @@ impl GenerationJob {
                     }
                 }
             }
-        });
+        }));
 
         let result = ai::run_chat(
             &self.creds.api_key,
@@ -363,7 +402,7 @@ impl GenerationJob {
         )
         .await;
 
-        flusher.abort();
+        drop(_flusher);
 
         let outcome = match result {
             Ok(outcome) => outcome,
