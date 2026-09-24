@@ -4504,3 +4504,22 @@ button.cal-day:hover { box-shadow: inset 0 0 0 1px var(--text); }
 .compare-a { background: var(--color-chart-series-1); }
 .compare-b { background: var(--color-chart-series-2); }
 .compare-table th[scope="row"] { color: var(--muted); font-weight: var(--font-weight-body-medium); text-align: left; }
+
+/* ---- Share invitations ------------------------------------------------------ */
+.sharing-card { margin-top: 1rem; }
+.sharing-card .telemetry-section-head { margin-bottom: 0.5rem; }
+.invite-banner { margin-bottom: 1.25rem; border-color: var(--color-border-accent); }
+.invite-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.invite-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.invite-car { display: flex; align-items: center; gap: 0.4rem; color: var(--text); font-weight: var(--font-weight-body-bold); }
+.invite-meta { font-size: var(--text-sm); margin-top: 0.15rem; }

@@ -3,16 +3,15 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    Car, CreateDeviceResponse, Device, Share, create_car, create_device, create_share, get_car,
-    list_cars, list_devices, list_shares, provisioning, provisioning_payload_json, revoke_device,
-    set_live_sharing, update_car, upload_car_photo,
+    Car, CreateDeviceResponse, Device, create_car, create_device, get_car, list_cars, list_devices,
+    provisioning, provisioning_payload_json, revoke_device, update_car, upload_car_photo,
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
 use crate::pages::garage::GarageSection;
+use crate::pages::sharing::SharingCard;
 use crate::vault::{
-    CarProfileV1, VaultUnlockGate, decrypt_car_profile, load_car_dek, put_car_profile,
-    use_vault_session, wrap_and_upload_dek,
+    CarProfileV1, VaultUnlockGate, decrypt_car_profile, put_car_profile, use_vault_session,
 };
 
 fn placeholder_vault_names(sess: &crate::vault::VaultSession, mut c: Vec<Car>) -> Vec<Car> {
@@ -260,12 +259,9 @@ pub fn CarDetailPage() -> impl IntoView {
     let params = use_params_map();
     let car = RwSignal::new(Option::<Car>::None);
     let devices = RwSignal::new(Vec::<Device>::new());
-    let shares = RwSignal::new(Vec::<Share>::new());
     let error = RwSignal::new(Option::<String>::None);
     let qr_payload = RwSignal::new(Option::<String>::None);
     let last_token = RwSignal::new(Option::<CreateDeviceResponse>::None);
-    let share_email = RwSignal::new(String::new());
-    let share_role = RwSignal::new("viewer".to_string());
 
     let fuel_class = RwSignal::new("GASOLINE".into());
     let fuel_type = RwSignal::new("E10".into());
@@ -281,7 +277,6 @@ pub fn CarDetailPage() -> impl IntoView {
     // Cache-buster so the browser reloads the image after upload.
     let photo_rev = RwSignal::new(0u32);
     let is_default = RwSignal::new(false);
-    let live_busy = RwSignal::new(false);
 
     let vault = use_vault_session();
 
@@ -346,10 +341,6 @@ pub fn CarDetailPage() -> impl IntoView {
                 }
                 match list_devices(&id2).await {
                     Ok(d) => devices.set(d),
-                    Err(e) => error.set(Some(e.to_string())),
-                }
-                match list_shares(&id2).await {
-                    Ok(s) => shares.set(s),
                     Err(e) => error.set(Some(e.to_string())),
                 }
             });
@@ -738,175 +729,11 @@ pub fn CarDetailPage() -> impl IntoView {
             </div>
         </div>
 
-        <div class="card" style="margin-top:1rem">
-            <h2 class="section-title">
-                <Icon name="share-network" color=IconColor::Accent />
-                "Sharing"
-            </h2>
-            <Show when=move || car.with(|c| c.as_ref().is_some_and(|c| c.role == "owner" && !c.vault_sealed))>
-                <div class="live-sharing-row">
-                    <div>
-                        <div class="live-sharing-title">
-                            <Icon name="broadcast" size=IconSize::Sm color=IconColor::Accent />
-                            "Live position"
-                        </div>
-                        <div class="muted field-hint">
-                            {move || match car.with(|c| c.as_ref().and_then(|c| c.share_live_position)) {
-                                Some(true) => "People this car is shared with can see where it is now.",
-                                Some(false) => "Only you see where this car is now.",
-                                None => "Choose whether people this car is shared with can see where it is now.",
-                            }}
-                        </div>
-                    </div>
-                    <div class="seg-control" role="group" aria-label="Share live position">
-                        {[(true, "Shared"), (false, "Private")]
-                            .into_iter()
-                            .map(|(value, label)| view! {
-                                <button
-                                    type="button"
-                                    class=move || {
-                                        if car.with(|c| c.as_ref().and_then(|c| c.share_live_position)) == Some(value) {
-                                            "seg-btn is-active"
-                                        } else {
-                                            "seg-btn"
-                                        }
-                                    }
-                                    aria-pressed=move || {
-                                        (car.with(|c| c.as_ref().and_then(|c| c.share_live_position)) == Some(value)).to_string()
-                                    }
-                                    prop:disabled=move || live_busy.get()
-                                    on:click=move |_| {
-                                        let id = params.with_untracked(|p| p.get("id").unwrap_or_default());
-                                        live_busy.set(true);
-                                        leptos::task::spawn_local(async move {
-                                            match set_live_sharing(&id, value).await {
-                                                Ok(on) => {
-                                                    let _ = car.try_update(|c| {
-                                                        if let Some(c) = c.as_mut() {
-                                                            c.share_live_position = Some(on);
-                                                        }
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    let _ = error.try_set(Some(e.to_string()));
-                                                }
-                                            }
-                                            let _ = live_busy.try_set(false);
-                                        });
-                                    }
-                                >
-                                    {label}
-                                </button>
-                            })
-                            .collect_view()}
-                    </div>
-                </div>
-            </Show>
-            <div class="row">
-                <input style="max-width:260px" placeholder="user@email.com"
-                    prop:value=move || share_email.get()
-                    on:input=move |ev| share_email.set(event_target_value(&ev))/>
-                <select style="max-width:140px" prop:value=move || share_role.get()
-                    on:change=move |ev| share_role.set(event_target_value(&ev))>
-                    <option value="viewer">"viewer"</option>
-                    <option value="editor">"editor"</option>
-                </select>
-                <button class="btn" on:click={
-                    let vault = vault.clone();
-                    move |_| {
-                    let id = params.with(|p| p.get("id").unwrap_or_default());
-                    let email = share_email.get();
-                    let role = share_role.get();
-                    let sealed = car.get().map(|c| c.vault_sealed).unwrap_or(false);
-                    let sess = vault.clone();
-                    leptos::task::spawn_local(async move {
-                        match create_share(&id, &email, &role).await {
-                            Ok(resp) => {
-                                if sealed
-                                    && let Some(share) = resp.share.as_ref()
-                                {
-                                    if let Some(pk) = share.vault_identity_pubkey_b64.as_ref() {
-                                        if sess.is_unlocked() {
-                                            match load_car_dek(&sess, &id).await {
-                                                Ok(dek) => {
-                                                    if let Err(e) = wrap_and_upload_dek(
-                                                        &sess,
-                                                        &id,
-                                                        &share.user_id,
-                                                        pk,
-                                                        &dek,
-                                                    )
-                                                    .await
-                                                    {
-                                                        error.set(Some(format!(
-                                                            "Share added but DEK wrap failed: {e}"
-                                                        )));
-                                                    }
-                                                }
-                                                Err(e) => error.set(Some(format!(
-                                                    "Share added but could not load DEK: {e}"
-                                                ))),
-                                            }
-                                        } else {
-                                            error.set(Some(
-                                                "Share added — unlock vault to wrap the car key for the recipient.".into(),
-                                            ));
-                                        }
-                                    } else {
-                                        error.set(Some(
-                                            "Share added — recipient has no vault pubkey yet (pending wrap).".into(),
-                                        ));
-                                    }
-                                }
-                                share_email.set(String::new());
-                                match list_shares(&id).await {
-                                    Ok(s) => shares.set(s),
-                                    Err(e) => error.set(Some(e.to_string())),
-                                }
-                            }
-                            Err(e) => error.set(Some(e.to_string())),
-                        }
-                    });
-                }}>
-                    <Icon name="user-plus" />
-                    "Invite"
-                </button>
-            </div>
-            <table class="table">
-                <thead><tr><th>"User"</th><th>"Email"</th><th>"Role"</th></tr></thead>
-                <tbody>
-                    <For
-                        each=move || shares.get()
-                        key=|s| format!("{}:{}", s.car_id, s.user_id)
-                        children=move |s| {
-                            let role_icon = match s.role.as_str() {
-                                "editor" => "pencil-simple",
-                                _ => "eye",
-                            };
-                            let vault_hint = if s.vault_has_pubkey {
-                                ""
-                            } else {
-                                " · no vault key"
-                            };
-                            view! {
-                                <tr>
-                                    <td>{s.name.clone()}</td>
-                                    <td>{s.email.clone()}{vault_hint}</td>
-                                    <td>
-                                        <span class=format!("badge {}", s.role)>
-                                            <span class="icon-label">
-                                                <Icon name=role_icon size=IconSize::Sm />
-                                                {s.role.clone()}
-                                            </span>
-                                        </span>
-                                    </td>
-                                </tr>
-                            }
-                        }
-                    />
-                </tbody>
-            </table>
-        </div>
+        <SharingCard
+            car=car
+            car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
+            error=error
+        />
 
         <GarageSection
             car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))

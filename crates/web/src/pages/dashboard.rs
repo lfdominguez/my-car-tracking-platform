@@ -7,6 +7,7 @@ use crate::api::{
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::pages::live::LiveCard;
+use crate::pages::sharing::PendingInvites;
 use crate::units::{
     UnitPrefsSignal, avg_economy, fmt_distance, fmt_distance_value, fmt_economy, fmt_fuel,
     fmt_odometer_delta, use_unit_prefs,
@@ -62,6 +63,8 @@ pub fn DashboardPage() -> impl IntoView {
         <Show when=move || error.get().is_some()>
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
+
+        <PendingInvites compact=true />
 
         <section class="dash-cars-section">
             <h2 class="section-title dash-section-heading">

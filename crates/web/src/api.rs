@@ -868,7 +868,6 @@ pub async fn list_shares(car_id: &str) -> Result<Vec<Share>, ApiError> {
 pub struct CreateShareResponse {
     pub ok: bool,
     #[serde(default)]
-    pub share: Option<Share>,
     pub message: String,
 }
 
@@ -1631,4 +1630,73 @@ pub async fn trip_geometries(
         url.push_str(&format!("&to={}", urlencoding_trip_query(t)));
     }
     send_json(Request::get(&url)).await
+}
+
+// --- share invitations ----------------------------------------------------------
+
+/// A pending invitation to one of the owner's cars.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CarInvite {
+    pub id: String,
+    pub email: String,
+    pub role: String,
+    pub created_at: String,
+}
+
+/// An invitation waiting for the signed-in user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MyInvite {
+    pub id: String,
+    pub car_id: String,
+    pub car_name: String,
+    pub invited_by: Option<String>,
+    pub role: String,
+    pub created_at: String,
+}
+
+pub async fn list_car_invites(car_id: &str) -> Result<Vec<CarInvite>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/share-invites"))).await
+}
+
+pub async fn cancel_car_invite(car_id: &str, invite_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/share-invites/{invite_id}"
+    )))
+    .await
+}
+
+pub async fn my_share_invites() -> Result<Vec<MyInvite>, ApiError> {
+    send_json(Request::get("/api/me/share-invites")).await
+}
+
+/// Accept an invitation; returns the car id now shared with the user.
+pub async fn accept_share_invite(invite_id: &str) -> Result<String, ApiError> {
+    let v: serde_json::Value = send_json_body(
+        Request::post(&format!("/api/me/share-invites/{invite_id}/accept")),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(v.get("car_id")
+        .and_then(|c| c.as_str())
+        .unwrap_or_default()
+        .to_string())
+}
+
+pub async fn decline_share_invite(invite_id: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post(&format!("/api/me/share-invites/{invite_id}/decline")),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Give up access to a car shared with the user.
+pub async fn leave_shared_car(car_id: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/shares/me/leave")),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
 }

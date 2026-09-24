@@ -6,6 +6,7 @@ use crate::api::{
     update_me_preferences, update_me_unit_system,
 };
 use crate::components::{Icon, IconColor, IconSize};
+use crate::pages::sharing::PendingInvites;
 use crate::units::{UnitPrefs, UnitSystem, use_unit_prefs};
 use crate::vault::VaultSettingsCard;
 
@@ -683,6 +684,8 @@ pub fn SettingsPage() -> impl IntoView {
                 </table>
             </div>
         </div>
+
+        <PendingInvites />
 
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">
