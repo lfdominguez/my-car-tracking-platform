@@ -950,6 +950,21 @@ function bindTripInteractions(entry) {
     });
   }
 
+  // Chart click → move the map pin to the nearest sample in time. Charts fire this
+  // for their own clicks and when echoing a map click; either way the pin lands on
+  // the same sample, and nothing is re-dispatched, so there is no loop.
+  if (!entry.onTelemetrySelect) {
+    entry.onTelemetrySelect = (ev) => {
+      if (__tripMaps.get(entry._elId) !== entry) return;
+      const iso = ev && ev.detail && ev.detail.iso;
+      const idx = nearestPointIndexByTime(entry.points, iso);
+      if (idx < 0) return;
+      const p = entry.points[idx];
+      applyLocalSelection({ iso: String(iso), point_index: idx, lon: p.lon, lat: p.lat });
+    };
+    window.addEventListener('trip-telemetry-select', entry.onTelemetrySelect);
+  }
+
   // If charts clear selection (future), drop map pin.
   if (!entry.onTelemetryClear) {
     entry.onTelemetryClear = () => {
@@ -957,6 +972,23 @@ function bindTripInteractions(entry) {
     };
     window.addEventListener('trip-telemetry-clear', entry.onTelemetryClear);
   }
+}
+
+/** Index of the positioned sample closest in time to `iso`, or -1. */
+function nearestPointIndexByTime(points, iso) {
+  const target = parseTimeMs(iso);
+  if (target == null || !points || !points.length) return -1;
+  let best = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (!p || !Number.isFinite(p.lon) || !Number.isFinite(p.lat)) continue;
+    const t = parseTimeMs(p.recorded_at);
+    if (t == null) continue;
+    const d = Math.abs(t - target);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
 }
 
 function restoreSelectionMarker(entry) {
@@ -981,6 +1013,7 @@ function destroyTripMapEntry(elId, entry) {
   try { if (entry._arrowZoomTimer) clearTimeout(entry._arrowZoomTimer); } catch (_) {}
   try { if (entry.onKey) window.removeEventListener('keydown', entry.onKey); } catch (_) {}
   try { if (entry.onTelemetryClear) window.removeEventListener('trip-telemetry-clear', entry.onTelemetryClear); } catch (_) {}
+  try { if (entry.onTelemetrySelect) window.removeEventListener('trip-telemetry-select', entry.onTelemetrySelect); } catch (_) {}
   try { entry.popup && entry.popup.remove(); } catch (_) {}
   try { entry.stopPopup && entry.stopPopup.remove(); } catch (_) {}
   try { entry.map && entry.map.remove(); } catch (_) {}

@@ -13,6 +13,9 @@ const __tripCharts = new Map();
 const __tripChartTimes = new Map(); // elId -> full ISO timestamps aligned with category axis
 let __tripSelection = null; // { iso, dataIndexHint }
 let __zoomState = { start: 0, end: 100 };
+// Which trip the zoom + selection above belong to. Module globals outlive the page,
+// so without this a zoomed-in range or pinned time leaked into the next trip opened.
+let __tripKey = null;
 let __syncingZoom = false;
 let __selectionRaf = null;
 let __pendingSelection = null;
@@ -386,6 +389,16 @@ export function renderTelemetryChart(elId, optionJson) {
   } catch (e) {
     console.error('chart option parse failed', e);
     return;
+  }
+  // A different trip starts from the full range with nothing pinned.
+  if (typeof option.__tripKey === 'string') {
+    if (option.__tripKey !== __tripKey) {
+      __tripKey = option.__tripKey;
+      __zoomState = { start: 0, end: 100 };
+      __tripSelection = null;
+      __pendingSelection = null;
+    }
+    delete option.__tripKey;
   }
   // Optional full timestamps for map↔chart sync (stripped before setOption).
   if (Array.isArray(option.__times)) {
@@ -1253,6 +1266,7 @@ fn TelemetryChart(
     y_right_name: Option<String>,
     kind: PanelKind,
     line_smooth: f64,
+    trip_key: String,
 ) -> impl IntoView {
     let el_id = chart_id.clone();
     let el_id_dispose = chart_id.clone();
@@ -1284,6 +1298,11 @@ fn TelemetryChart(
                 line_smooth,
             ),
         };
+        let mut option = option;
+        if let Some(obj) = option.as_object_mut() {
+            // Stripped in JS; resets the shared zoom/selection when the trip changes.
+            obj.insert("__tripKey".into(), trip_key.clone().into());
+        }
         if let Ok(s) = serde_json::to_string(&option) {
             renderTelemetryChart(&el_id, &s);
         }
@@ -1757,7 +1776,13 @@ pub fn TripTelemetryDashboard(
         });
 
         let line_smooth = if want_smooth { LINE_SMOOTH_VISUAL } else { 0.0 };
-        Some((labels, times, sections, has_obd, line_smooth))
+        let trip_key = format!(
+            "{}|{}|{}",
+            raw.first().map(|p| p.recorded_at.as_str()).unwrap_or(""),
+            raw.last().map(|p| p.recorded_at.as_str()).unwrap_or(""),
+            raw.len()
+        );
+        Some((labels, times, sections, has_obd, line_smooth, trip_key))
     });
 
     view! {
@@ -1770,13 +1795,13 @@ pub fn TripTelemetryDashboard(
                             <div>"No samples for this trip yet."</div>
                         </div>
                     }.into_any(),
-                    Some((_, _, sections, _, _)) if sections.is_empty() => view! {
+                    Some((_, _, sections, _, _, _)) if sections.is_empty() => view! {
                         <div class="empty-state compact">
                             <Icon name="chart-line" size=IconSize::Lg color=IconColor::Accent />
                             <div>"No chartable telemetry in these samples."</div>
                         </div>
                     }.into_any(),
-                    Some((labels, times, sections, has_obd, line_smooth)) => {
+                    Some((labels, times, sections, has_obd, line_smooth, trip_key)) => {
                         let labels = labels.clone();
                         let times = times.clone();
                         let smooth_tag = if line_smooth > 0.0 { "s" } else { "r" };
@@ -1953,6 +1978,7 @@ pub fn TripTelemetryDashboard(
                                             children=move |(id, panel_title, blurb, primary, y_left, y_right, series, kind, _sec)| {
                                                 let labels = labels.clone();
                                                 let times = times.clone();
+                                                let trip_key = trip_key.clone();
                                                 let chart_id = format!("tel-{id}-{smooth_tag}");
                                                 let panel_class = if primary {
                                                     "card telemetry-panel telemetry-panel-primary"
@@ -1977,6 +2003,7 @@ pub fn TripTelemetryDashboard(
                                                             y_right_name=y_right
                                                             kind=kind
                                                             line_smooth=line_smooth
+                                                            trip_key=trip_key
                                                         />
                                                     </div>
                                                 }
