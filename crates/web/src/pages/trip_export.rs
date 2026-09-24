@@ -207,6 +207,37 @@ pub fn download_text(filename: &str, mime: &str, body: &str) {
     let _ = web_sys::Url::revoke_object_url(&url);
 }
 
+/// Close the `<details>` menu a click came from.
+fn close_menu(ev: &web_sys::MouseEvent) {
+    let details = ev
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        .and_then(|el| el.closest("details").ok().flatten());
+    if let Some(d) = details {
+        let _ = d.remove_attribute("open");
+    }
+}
+
+/// Print the trip page (the browser offers "Save as PDF"). Charts paint to
+/// canvas in the app theme, so a dark UI is switched to light for the print and
+/// back afterwards; `window.print()` blocks until the dialog closes.
+fn print_page(theme: crate::components::theme::ThemeSignal) {
+    let dark = theme.theme.get_untracked() == crate::components::theme::Theme::Dark;
+    if dark {
+        theme.toggle();
+    }
+    leptos::task::spawn_local(async move {
+        // Let the charts repaint in the light palette first.
+        gloo_timers::future::TimeoutFuture::new(if dark { 700 } else { 50 }).await;
+        if let Some(w) = web_sys::window() {
+            let _ = w.print();
+        }
+        if dark {
+            theme.toggle();
+        }
+    });
+}
+
 /// "Export" dropdown for the trip page.
 #[component]
 pub fn TripExportMenu(
@@ -216,6 +247,7 @@ pub fn TripExportMenu(
     vault_points: Signal<Option<Vec<TripPoint>>>,
 ) -> impl IntoView {
     let sealed = move || trip.with(|t| t.as_ref().is_some_and(|t| t.vault_sealed));
+    let theme = crate::components::use_theme();
     view! {
         <details class="export-menu">
             <summary class="btn secondary sm">
@@ -268,6 +300,17 @@ pub fn TripExportMenu(
                         }
                     })
                     .collect_view()}
+                <button
+                    type="button"
+                    class="export-menu-item export-menu-print"
+                    role="menuitem"
+                    on:click=move |ev| {
+                        close_menu(&ev);
+                        print_page(theme);
+                    }
+                >
+                    "Print / Save as PDF"
+                </button>
                 <Show when=sealed>
                     <p class="export-menu-note muted">
                         {move || if vault_points.with(|p| p.is_some()) {
