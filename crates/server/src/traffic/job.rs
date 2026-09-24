@@ -191,17 +191,33 @@ pub async fn process_finished_track(
         }
     }
 
-    let mut scored = Vec::with_capacity(frames.len());
+    let mut matched = Vec::with_capacity(frames.len());
     for frame in frames {
-        let matched = match_way(pool, frame.lon, frame.lat, MATCH_RADIUS_M)
+        let way = match_way(pool, frame.lon, frame.lat, MATCH_RADIUS_M)
             .await
             .ok()
             .flatten();
-        let (mut v_ff, way_id, has_ms) = free_flow_kph(matched.as_ref());
-        if let Some(wid) = way_id
-            && let Ok(Some(p85)) = offpeak_p85(pool, car_id, wid).await
-        {
-            v_ff = apply_history_boost(v_ff, Some(p85), has_ms);
+        matched.push((frame, free_flow_kph(way.as_ref())));
+    }
+
+    // Off-peak history for every way on the trip in one query, not one per frame.
+    let way_ids: Vec<i64> = matched
+        .iter()
+        .filter_map(|(_, (_, way_id, _))| *way_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let p85_by_way = offpeak_p85(pool, car_id, &way_ids)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(%track_id, error = %e, "off-peak history lookup failed");
+            Default::default()
+        });
+
+    let mut scored = Vec::with_capacity(matched.len());
+    for (frame, (mut v_ff, way_id, has_ms)) in matched {
+        if let Some(p85) = way_id.and_then(|w| p85_by_way.get(&w)) {
+            v_ff = apply_history_boost(v_ff, Some(*p85), has_ms);
         }
         scored.push(ScoredFrame {
             frame,
@@ -260,23 +276,37 @@ pub async fn process_finished_track(
     Ok(())
 }
 
-async fn offpeak_p85(pool: &PgPool, car_id: Uuid, way_id: i64) -> Result<Option<f64>, sqlx::Error> {
-    let v: Option<f64> = sqlx::query_scalar(
+/// 85th-percentile off-peak speed this car has driven on each way, for ways with at
+/// least five frames of history.
+async fn offpeak_p85(
+    pool: &PgPool,
+    car_id: Uuid,
+    way_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, f64>, sqlx::Error> {
+    if way_ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let rows: Vec<(i64, f64)> = sqlx::query_as(
         r#"
-        SELECT percentile_cont(0.85) WITHIN GROUP (ORDER BY f.speed_kph)
+        SELECT f.osm_way_id,
+               percentile_cont(0.85) WITHIN GROUP (ORDER BY f.speed_kph)
         FROM trip_traffic_frames f
         JOIN tracks t ON t.id = f.track_id
-        WHERE t.car_id = $1
-          AND f.osm_way_id = $2
-          AND EXTRACT(HOUR FROM f.t_start AT TIME ZONE 'UTC') NOT IN (7,8,9,17,18,19)
+        JOIN cars c ON c.id = t.car_id
+        JOIN users u ON u.id = c.owner_user_id
+        WHERE f.osm_way_id = ANY($2)
+          AND t.car_id = $1
+          -- Rush hours are local time for the car's owner.
+          AND EXTRACT(HOUR FROM f.t_start AT TIME ZONE u.timezone) NOT IN (7,8,9,17,18,19)
+        GROUP BY f.osm_way_id
         HAVING COUNT(*) >= 5
         "#,
     )
     .bind(car_id)
-    .bind(way_id)
-    .fetch_optional(pool)
+    .bind(way_ids)
+    .fetch_all(pool)
     .await?;
-    Ok(v)
+    Ok(rows.into_iter().collect())
 }
 
 fn summarize(frames: &[ScoredFrame]) -> (serde_json::Value, serde_json::Value, f64) {
