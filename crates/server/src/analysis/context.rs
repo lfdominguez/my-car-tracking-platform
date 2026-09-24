@@ -9,6 +9,7 @@ use ai::{
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use shared::FuelClass;
 use shared::speed_events::{self, MotionSample, SpeedSample};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -80,6 +81,20 @@ impl PointRow {
     }
     fn rpm(&self) -> Option<f64> {
         self.vehicle_engine_rpm.or(self.engine_rpm)
+    }
+    /// Liquid fuel rate under the car's powertrain rules, `None` when it does not
+    /// apply: never for FULL_ELECTRIC, and for HYBRID only while the engine turns
+    /// (RPM 0 is the car running on the battery, not a 0 L/h engine). Negative and
+    /// non-finite readings are adapter noise.
+    fn liquid_rate_lph(&self, class: FuelClass) -> Option<f64> {
+        if !class.uses_liquid_fuel() {
+            return None;
+        }
+        if class.liquid_fuel_requires_rpm() && self.rpm().is_none_or(|r| r <= 0.0) {
+            return None;
+        }
+        self.fuel_consumption_rate
+            .filter(|r| r.is_finite() && *r >= 0.0)
     }
     /// Motion aggregates for this sample's second, when the client sent them.
     fn motion(&self) -> Option<MotionSample> {
@@ -215,14 +230,6 @@ pub async fn build_trip_analysis_context(
                 )) - t.started_at
             ))::float8 AS duration_secs,
             (
-                SELECT AVG(COALESCE(vehicle_speed_kph, engine_vel))::float8
-                FROM track_points WHERE track_id = $1
-            ) AS avg_speed_kph,
-            (
-                SELECT MAX(COALESCE(vehicle_speed_kph, engine_vel))::float8
-                FROM track_points WHERE track_id = $1
-            ) AS max_speed_kph,
-            (
                 SELECT SUM(
                     rate * EXTRACT(EPOCH FROM (lead_t - t)) / 3600.0
                 )::float8
@@ -323,12 +330,17 @@ pub async fn build_trip_analysis_context(
     .fetch_one(pool)
     .await?;
 
+    let class = FuelClass::parse(&track.fuel_class);
+    // From the sanitized series, like the graphs: a raw AVG/MAX lets one isolated
+    // OBD spike (a 255 km/h glitch) become the trip's reported top speed.
+    let (avg_speed_kph, max_speed_kph) = speed_avg_max(&points);
+
     let overview = TripOverview {
         trip_id: track.track_id.to_string(),
         car_name: track.car_name,
         make_model: track.make_model,
         fuel_type: track.fuel_type,
-        fuel_class: track.fuel_class,
+        fuel_class: class.as_str().to_string(),
         battery_capacity_kwh: track.battery_capacity_kwh,
         energy_used_kwh: crate::trips::energy_from_soc_kwh(
             points.iter().find_map(|p| p.battery_soc_pct),
@@ -343,8 +355,8 @@ pub async fn build_trip_analysis_context(
         point_count: stats.point_count.unwrap_or(0),
         distance_m: stats.distance_m,
         duration_secs: stats.duration_secs,
-        avg_speed_kph: stats.avg_speed_kph,
-        max_speed_kph: stats.max_speed_kph,
+        avg_speed_kph,
+        max_speed_kph,
         fuel_used_l: stats.fuel_used_l,
         fuel_used_moving_l: stats.fuel_used_moving_l,
         displacement_l: track.displacement_l,
@@ -354,11 +366,11 @@ pub async fn build_trip_analysis_context(
     };
 
     let speed = compute_speed_profile(&points, &raw_speed, stats.distance_m);
-    let engine = compute_engine_stats(&points);
-    let fuel = compute_fuel_stats(&points);
+    let engine = compute_engine_stats(&points, class);
+    let fuel = compute_fuel_stats(&points, class);
     let thermal = compute_thermal_stats(&points);
     let stops = compute_stops(&points);
-    let samples = downsample_samples(&points, 400);
+    let samples = downsample_samples(&points, 400, class);
     let route_positions = build_route_position_profile(pool, &points, overpass_url).await;
 
     let traffic_row = sqlx::query_as::<
@@ -421,8 +433,6 @@ pub async fn build_trip_analysis_context(
 struct StatsRow {
     distance_m: Option<f64>,
     duration_secs: Option<f64>,
-    avg_speed_kph: Option<f64>,
-    max_speed_kph: Option<f64>,
     fuel_used_l: Option<f64>,
     fuel_used_moving_l: Option<f64>,
     point_count: Option<i64>,
@@ -479,6 +489,16 @@ fn compute_speed_profile(
     }
 }
 
+fn speed_avg_max(points: &[PointRow]) -> (Option<f64>, Option<f64>) {
+    let speeds: Vec<f64> = points
+        .iter()
+        .filter_map(|p| p.speed())
+        .filter(|v| v.is_finite())
+        .collect();
+    let (_, max, avg) = min_max_avg(&speeds);
+    (avg, max)
+}
+
 fn min_max_avg(vals: &[f64]) -> (Option<f64>, Option<f64>, Option<f64>) {
     if vals.is_empty() {
         return (None, None, None);
@@ -489,8 +509,15 @@ fn min_max_avg(vals: &[f64]) -> (Option<f64>, Option<f64>, Option<f64>) {
     (Some(min), Some(max), Some(avg))
 }
 
-fn compute_engine_stats(points: &[PointRow]) -> EngineStats {
-    let rpms: Vec<f64> = points.iter().filter_map(|p| p.rpm()).collect();
+fn compute_engine_stats(points: &[PointRow], class: FuelClass) -> EngineStats {
+    // Hybrid/EV: RPM 0 is the car driving on the battery, so it would drag the
+    // minimum and average down to "engine at 0 rpm". Only engine-running samples
+    // describe the engine.
+    let rpms: Vec<f64> = points
+        .iter()
+        .filter_map(|p| p.rpm())
+        .filter(|r| !class.rpm_may_be_zero_while_on() || *r > 0.0)
+        .collect();
     let loads: Vec<f64> = points.iter().filter_map(|p| p.engine_load_pct).collect();
     let abs_loads: Vec<f64> = points
         .iter()
@@ -525,10 +552,10 @@ fn compute_engine_stats(points: &[PointRow]) -> EngineStats {
     }
 }
 
-fn compute_fuel_stats(points: &[PointRow]) -> FuelMixtureStats {
+fn compute_fuel_stats(points: &[PointRow], class: FuelClass) -> FuelMixtureStats {
     let rates: Vec<f64> = points
         .iter()
-        .filter_map(|p| p.fuel_consumption_rate)
+        .filter_map(|p| p.liquid_rate_lph(class))
         .collect();
     let levels: Vec<(DateTime<Utc>, f64)> = points
         .iter()
@@ -597,24 +624,43 @@ fn compute_thermal_stats(points: &[PointRow]) -> ThermalElectricalStats {
     }
 }
 
-/// Stops: contiguous samples with speed <= 2 kph spanning >= 60s.
+/// Longest run of samples with no speed reading that a stop may bridge. A dropped
+/// OBD read or two inside a real stop should not split it; minutes of silence say
+/// nothing about whether the car moved.
+const STOP_MAX_UNKNOWN_GAP_SECS: i64 = 5;
+
+/// Stops: contiguous samples with a **known** speed <= 2 kph spanning >= 60s.
+///
+/// A sample without a speed reading is unknown, not stopped: counting it as 0 kph
+/// turned every trip without OBD speed into one long "stop". Unknown samples never
+/// start or end a stop and only bridge short gaps inside one.
 fn compute_stops(points: &[PointRow]) -> StopSummary {
+    let stopped = |p: &PointRow| p.speed().is_some_and(|s| s <= 2.0);
     let mut stops = Vec::new();
     let mut i = 0;
     while i < points.len() {
-        let speed = points[i].speed().unwrap_or(0.0);
-        if speed > 2.0 {
+        if !stopped(&points[i]) {
             i += 1;
             continue;
         }
         let start_i = i;
         let mut end_i = i;
-        while end_i + 1 < points.len() {
-            let s = points[end_i + 1].speed().unwrap_or(0.0);
-            if s > 2.0 {
-                break;
+        let mut j = i + 1;
+        while j < points.len() {
+            match points[j].speed() {
+                Some(s) if s <= 2.0 => {
+                    end_i = j;
+                    j += 1;
+                }
+                Some(_) => break,
+                None => {
+                    let gap = (points[j].recorded_at - points[end_i].recorded_at).num_seconds();
+                    if gap > STOP_MAX_UNKNOWN_GAP_SECS {
+                        break;
+                    }
+                    j += 1;
+                }
             }
-            end_i += 1;
         }
         let start = points[start_i].recorded_at;
         let end = points[end_i].recorded_at;
@@ -648,7 +694,7 @@ fn compute_stops(points: &[PointRow]) -> StopSummary {
     }
 }
 
-fn downsample_samples(points: &[PointRow], max: usize) -> Vec<SamplePoint> {
+fn downsample_samples(points: &[PointRow], max: usize, class: FuelClass) -> Vec<SamplePoint> {
     if points.is_empty() {
         return vec![];
     }
@@ -667,7 +713,7 @@ fn downsample_samples(points: &[PointRow], max: usize) -> Vec<SamplePoint> {
             speed_kph: p.speed(),
             rpm: p.rpm(),
             engine_load_pct: p.engine_load_pct,
-            fuel_rate_lph: p.fuel_consumption_rate,
+            fuel_rate_lph: p.liquid_rate_lph(class),
             coolant_c: p.engine_coolant_temp_c,
             voltage: p.control_module_voltage,
             stft_pct: p.short_term_fuel_trim_pct,
@@ -916,6 +962,96 @@ mod tests {
         let profile = compute_speed_profile(&pts, &raw, Some(10_000.0));
         assert_eq!(profile.hard_brake_events, None);
         assert_eq!(profile.hard_accel_events, None);
+    }
+
+    #[test]
+    fn missing_speed_is_unknown_not_a_stop() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let pts: Vec<PointRow> = (0..300)
+            .map(|i| {
+                let mut p = pt(t0 + chrono::Duration::seconds(i), 0.0);
+                p.vehicle_speed_kph = None;
+                p
+            })
+            .collect();
+        assert_eq!(compute_stops(&pts).stop_count, 0);
+    }
+
+    #[test]
+    fn a_dropped_read_inside_a_stop_does_not_split_it() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let mut pts: Vec<PointRow> = (0..90)
+            .map(|i| pt(t0 + chrono::Duration::seconds(i), 0.0))
+            .collect();
+        pts[40].vehicle_speed_kph = None;
+        pts[41].vehicle_speed_kph = None;
+        let stops = compute_stops(&pts);
+        assert_eq!(stops.stop_count, 1);
+        assert!(stops.longest_stop_secs >= 89.0);
+    }
+
+    #[test]
+    fn overview_speed_ignores_an_isolated_obd_spike() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let mut pts: Vec<PointRow> = [50.0, 51.0, 50.0, 245.0, 50.0, 51.0, 50.0]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| pt(t0 + chrono::Duration::seconds(i as i64), *v))
+            .collect();
+        sanitize_analysis_points(&mut pts);
+        let (avg, max) = speed_avg_max(&pts);
+        assert!(max.unwrap() < 60.0, "max {max:?}");
+        assert!(avg.unwrap() < 60.0, "avg {avg:?}");
+    }
+
+    fn with_rpm_and_rate(t: DateTime<Utc>, rpm: f64, rate: f64) -> PointRow {
+        let mut p = pt(t, 40.0);
+        p.engine_rpm = Some(rpm);
+        p.fuel_consumption_rate = Some(rate);
+        p
+    }
+
+    #[test]
+    fn electric_trips_report_no_liquid_fuel() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let pts = vec![with_rpm_and_rate(t0, 0.0, 2.0)];
+        let fuel = compute_fuel_stats(&pts, FuelClass::FullElectric);
+        assert_eq!(fuel.fuel_rate_lph_avg, None);
+        assert_eq!(fuel.fuel_rate_lph_max, None);
+        let samples = downsample_samples(&pts, 10, FuelClass::FullElectric);
+        assert_eq!(samples[0].fuel_rate_lph, None);
+    }
+
+    #[test]
+    fn hybrid_engine_and_fuel_stats_only_cover_engine_running_samples() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let s = |i| t0 + chrono::Duration::seconds(i);
+        let pts = vec![
+            with_rpm_and_rate(s(0), 0.0, 0.0),
+            with_rpm_and_rate(s(1), 0.0, 0.0),
+            with_rpm_and_rate(s(2), 2000.0, 4.0),
+            with_rpm_and_rate(s(3), 1000.0, 2.0),
+        ];
+        let engine = compute_engine_stats(&pts, FuelClass::Hybrid);
+        assert_eq!(engine.rpm_min, Some(1000.0));
+        assert_eq!(engine.rpm_avg, Some(1500.0));
+        let fuel = compute_fuel_stats(&pts, FuelClass::Hybrid);
+        assert_eq!(fuel.fuel_rate_lph_avg, Some(3.0));
+
+        // The same series on a gasoline car keeps every sample.
+        let engine = compute_engine_stats(&pts, FuelClass::Gasoline);
+        assert_eq!(engine.rpm_min, Some(0.0));
+    }
+
+    #[test]
+    fn negative_fuel_rates_are_dropped() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let pts = vec![
+            with_rpm_and_rate(t0, 1500.0, -3.0),
+            with_rpm_and_rate(t0 + chrono::Duration::seconds(1), 1500.0, 3.0),
+        ];
+        let fuel = compute_fuel_stats(&pts, FuelClass::Diesel);
+        assert_eq!(fuel.fuel_rate_lph_avg, Some(3.0));
     }
 
     #[test]
