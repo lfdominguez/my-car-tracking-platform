@@ -14,6 +14,7 @@ use crate::api::{
 use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::pages::trip_export::TripExportMenu;
 use crate::units::{
     avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, point_si_to_display,
     trip_si_to_display, use_unit_prefs,
@@ -1447,6 +1448,14 @@ pub fn TripDetailPage() -> impl IntoView {
                                 {move || if finishing.get() { "Finishing…" } else { "Finish trip" }}
                             </span>
                         </button>
+                    </Show>
+                    <Show when=move || trip.with(|t| t.is_some())>
+                        <TripExportMenu
+                            trip=trip
+                            vault_points=Signal::derive(move || {
+                                vault_si.with(|v| v.as_ref().map(|(_, points)| points.clone()))
+                            })
+                        />
                     </Show>
                     <button
                         type="button"

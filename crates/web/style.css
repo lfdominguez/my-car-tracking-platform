@@ -4309,3 +4309,39 @@ button.tag-chip:hover { color: var(--accent); border-color: var(--color-border-a
 }
 .live-sharing-title { display: flex; align-items: center; gap: 0.4rem; color: var(--text); font-weight: var(--font-weight-body-bold); }
 .live-sharing-row .field-hint { margin-top: 0.2rem; }
+
+/* ---- Trip export menu (#117) ---------------------------------------------- */
+.export-menu { position: relative; }
+.export-menu > summary { list-style: none; cursor: pointer; }
+.export-menu > summary::-webkit-details-marker { display: none; }
+.export-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 13rem;
+  padding: 0.35rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel-3);
+  box-shadow: var(--shadow-3);
+}
+.export-menu-item {
+  appearance: none;
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.export-menu-item:hover:not(:disabled) { background: var(--color-accent-softer); color: var(--accent); }
+.export-menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.export-menu-note { margin: 0.35rem 0.5rem 0.2rem; font-size: var(--text-xs); max-width: 13rem; }
