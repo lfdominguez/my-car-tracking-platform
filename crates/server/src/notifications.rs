@@ -38,6 +38,7 @@ pub fn router() -> Router<AppState> {
             post(subscribe).delete(unsubscribe),
         )
         .route("/api/push/test", post(push_test))
+        .route("/api/me/notification-prefs", get(get_prefs).put(put_prefs))
 }
 
 /// Notification kinds, used for muting and de-duplication.
@@ -513,6 +514,65 @@ async fn push_test(
     )
     .await;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// --- preferences -------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct NotificationPrefs {
+    /// Browser push on (default) or off; the inbox always records.
+    #[serde(default = "default_true")]
+    pub push: bool,
+    /// Notification kinds not to push (e.g. "alert.speeding").
+    #[serde(default)]
+    pub muted: Vec<String>,
+    /// "off" (default), "weekly" or "monthly".
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+async fn get_prefs(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> AppResult<Json<NotificationPrefs>> {
+    let raw: serde_json::Value =
+        sqlx::query_scalar("SELECT notification_prefs FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&state.pool)
+            .await?;
+    Ok(Json(serde_json::from_value(raw).unwrap_or(
+        NotificationPrefs {
+            push: true,
+            ..Default::default()
+        },
+    )))
+}
+
+async fn put_prefs(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(b): Json<NotificationPrefs>,
+) -> AppResult<Json<NotificationPrefs>> {
+    if let Some(d) = b.digest.as_deref()
+        && !matches!(d, "off" | "weekly" | "monthly")
+    {
+        return Err(AppError::BadRequest(
+            "digest must be off, weekly or monthly".into(),
+        ));
+    }
+    if b.muted.len() > 50 || b.muted.iter().any(|k| k.len() > 64) {
+        return Err(AppError::BadRequest("too many muted kinds".into()));
+    }
+    sqlx::query("UPDATE users SET notification_prefs = $2 WHERE id = $1")
+        .bind(user.id)
+        .bind(serde_json::to_value(&b).map_err(|e| AppError::internal(e.to_string()))?)
+        .execute(&state.pool)
+        .await?;
+    Ok(Json(b))
 }
 
 #[cfg(test)]

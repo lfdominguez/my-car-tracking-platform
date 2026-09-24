@@ -17,7 +17,7 @@ use crate::error::AppResult;
 
 /// Bump whenever [`TRACK_POINT_AGGREGATE`] changes meaning. Rows written by an older
 /// version stop being usable immediately and the sweeper recomputes them.
-pub const SCHEMA_VERSION: i16 = 2;
+pub const SCHEMA_VERSION: i16 = 3;
 
 /// The per-trip aggregate over `track_points`, as the body of a correlated subquery.
 ///
@@ -49,6 +49,8 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        -- Negative readings are adapter noise, as in analysis::context.
+                        WHEN tp2.fuel_consumption_rate < 0 THEN NULL
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
@@ -93,6 +95,8 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        -- Negative readings are adapter noise, as in analysis::context.
+                        WHEN tp2.fuel_consumption_rate < 0 THEN NULL
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
@@ -187,7 +191,8 @@ pub fn stats_join(alias: &str) -> String {
         "LEFT JOIN track_stats {alias}
                 ON {alias}.track_id = t.id
                AND NOT {alias}.stale
-               AND {alias}.schema_version = {SCHEMA_VERSION}"
+               -- A pruned trip's row is all there is: keep using it after a schema bump.
+               AND ({alias}.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)"
     )
 }
 
@@ -198,7 +203,7 @@ pub fn stats_join_required(alias: &str) -> String {
         "JOIN track_stats {alias}
                 ON {alias}.track_id = t.id
                AND NOT {alias}.stale
-               AND {alias}.schema_version = {SCHEMA_VERSION}"
+               AND ({alias}.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)"
     )
 }
 
@@ -210,7 +215,7 @@ pub fn no_usable_stats() -> String {
                       SELECT 1 FROM track_stats s2
                       WHERE s2.track_id = t.id
                         AND NOT s2.stale
-                        AND s2.schema_version = {SCHEMA_VERSION}
+                        AND (s2.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)
                   )"
     )
 }
@@ -246,6 +251,8 @@ pub async fn recompute(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
         {lateral}
         WHERE t.id = $1
           AND ou.vault_status <> 'active'
+          -- Pruned trips keep the row computed before their points were deleted.
+          AND t.points_pruned_at IS NULL
         ON CONFLICT (track_id) DO UPDATE SET
             point_count = EXCLUDED.point_count,
             first_point_at = EXCLUDED.first_point_at,

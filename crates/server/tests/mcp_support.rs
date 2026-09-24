@@ -102,12 +102,16 @@ pub async fn insert_user(pool: &PgPool) -> Uuid {
 /// Give `user_id` an MCP token and return its plaintext.
 pub async fn mcp_token(pool: &PgPool, user_id: Uuid) -> String {
     let token = format!("mcp-{}", Uuid::new_v4().simple());
-    sqlx::query("UPDATE users SET mcp_token_hash = $2 WHERE id = $1")
-        .bind(user_id)
-        .bind(server::mcp::hash_token(&token, PEPPER))
-        .execute(pool)
-        .await
-        .expect("set mcp token");
+    sqlx::query(
+        "INSERT INTO mcp_tokens (id, user_id, name, token_hash, hint)
+         VALUES ($1, $2, 'test', $3, 'mcp-…')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .bind(server::mcp::hash_token(&token, PEPPER))
+    .execute(pool)
+    .await
+    .expect("set mcp token");
     token
 }
 

@@ -110,3 +110,42 @@ async fn notification_inbox_counts_and_marks_read() {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn notification_prefs_round_trip_and_digest_pass_runs() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let user = login(&base).await;
+    let put = user
+        .client
+        .put(format!("{base}/api/me/notification-prefs"))
+        .json(&json!({ "push": false, "muted": ["alert.speeding"], "digest": "weekly" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success());
+    let prefs: Value = user
+        .client
+        .get(format!("{base}/api/me/notification-prefs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(prefs["digest"], "weekly");
+    assert_eq!(prefs["push"], false);
+    let bad = user
+        .client
+        .put(format!("{base}/api/me/notification-prefs"))
+        .json(&json!({ "digest": "hourly" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
+    // The scheduled pass must run cleanly against real data (whether or not it is
+    // Monday 08:00 anywhere right now).
+    server::digest::run(&common::pool().await).await.unwrap();
+}

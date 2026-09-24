@@ -7,7 +7,15 @@ pub fn issue_mcp_token() -> String {
     issue_plaintext_token()
 }
 
+/// Hash of an MCP token. The "mcp:" label keeps the hash domain separate from
+/// device tokens, which share the pepper and hash function.
 pub fn hash_token(plaintext: &str, pepper: &str) -> String {
+    device_hash_token(&format!("mcp:{plaintext}"), pepper)
+}
+
+/// Pre-label hash, for tokens issued before `hash_token` was domain-separated
+/// (`mcp_tokens.hash_version = 1`).
+pub fn legacy_hash_token(plaintext: &str, pepper: &str) -> String {
     device_hash_token(plaintext, pepper)
 }
 
@@ -15,7 +23,7 @@ pub fn hash_token(plaintext: &str, pepper: &str) -> String {
 /// and compared through the device path, kept so the pair stays together.
 #[allow(dead_code)]
 pub fn verify_token(plaintext: &str, pepper: &str, expected_hash: &str) -> bool {
-    verify_token_hash(plaintext, pepper, expected_hash)
+    verify_token_hash(&format!("mcp:{plaintext}"), pepper, expected_hash)
 }
 
 /// Short UI hint from plaintext (first 8 chars + ellipsis).

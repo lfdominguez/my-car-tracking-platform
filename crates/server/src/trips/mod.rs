@@ -200,6 +200,7 @@ async fn sweep_track_stats(state: &AppState, limit: i64) -> AppResult<usize> {
         LEFT JOIN track_stats s ON s.track_id = t.id
         WHERE t.finished = true
           AND ou.vault_status <> 'active'
+          AND t.points_pruned_at IS NULL
           AND (s.track_id IS NULL OR s.stale OR s.schema_version <> $1)
         ORDER BY t.started_at DESC
         LIMIT $2
@@ -1317,6 +1318,17 @@ async fn trip_map(
     .fetch_all(&state.pool)
     .await?;
 
+    if coords.is_empty() {
+        // Raw points removed by the car's retention setting: serve the kept line.
+        let archived: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT archived_route FROM tracks WHERE id = $1")
+                .bind(id)
+                .fetch_one(&state.pool)
+                .await?;
+        if let Some(route) = archived {
+            return Ok(Json(route));
+        }
+    }
     let coordinates: Vec<Vec<f64>> = coords
         .into_iter()
         .map(|(lon, lat)| vec![lon, lat])

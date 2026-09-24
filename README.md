@@ -224,6 +224,8 @@ To rotate the primary encryption key without losing access to existing encrypted
 
 ## 📚 Going further
 
+💾 **Backups, restore and data retention:** see [`docs/backup.md`](docs/backup.md) and `scripts/backup.sh`.
+
 <details>
 <summary>📡 Android ingest contract</summary>
 
