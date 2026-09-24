@@ -4489,3 +4489,18 @@ button.cal-day:hover { box-shadow: inset 0 0 0 1px var(--text); }
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ---- Compare trips (#122) -------------------------------------------------- */
+.compare-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: 1rem;
+  font-size: var(--text-sm);
+}
+.compare-legend a { display: inline-flex; align-items: center; gap: 0.45rem; color: var(--text); }
+.compare-legend a:hover { color: var(--accent); }
+.compare-swatch { width: 22px; height: 4px; border-radius: 2px; }
+.compare-a { background: var(--color-chart-series-1); }
+.compare-b { background: var(--color-chart-series-2); }
+.compare-table th[scope="row"] { color: var(--muted); font-weight: var(--font-weight-body-medium); text-align: left; }

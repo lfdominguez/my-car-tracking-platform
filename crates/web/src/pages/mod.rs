@@ -1,5 +1,6 @@
 pub mod cars;
 pub mod chat;
+pub mod compare;
 pub mod dashboard;
 pub mod garage;
 pub mod landing;

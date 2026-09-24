@@ -13,6 +13,7 @@ use crate::components::layout::AppLayout;
 use crate::components::provide_theme;
 use crate::pages::cars::{CarDetailPage, CarsPage};
 use crate::pages::chat::{ChatConversationPage, ChatPage};
+use crate::pages::compare::TripComparePage;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::landing::LandingPage;
 use crate::pages::login::LoginPage;
@@ -42,6 +43,7 @@ fn main() {
                         <Route path=path!("chat") view=ChatPage/>
                         <Route path=path!("chat/:id") view=ChatConversationPage/>
                         <Route path=path!("trips") view=TripsPage/>
+                        <Route path=path!("trips/compare") view=TripComparePage/>
                         <Route path=path!("trips/:id") view=TripDetailPage/>
                         <Route path=path!("routes") view=RoutesPage/>
                         <Route path=path!("routes/:id") view=RouteCorridorPage/>
