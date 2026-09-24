@@ -18,6 +18,7 @@ use crate::api::{
 };
 
 use super::VaultSession;
+use crate::units::{UnitSystem, point_display_to_si, trip_display_to_si};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CarProfileV1 {
@@ -464,8 +465,12 @@ pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String
     })
     .await
     .map_err(|e| e.to_string())?;
-    for trip in trips {
-        migrate_trip(&dek, car_uuid, &trip).await?;
+    // The plaintext APIs answer in the caller's display units, but sealed objects are
+    // SI (the trip page converts them back on the way out), so undo the conversion.
+    let system = UnitSystem::parse(&me.unit_system);
+    for mut trip in trips {
+        trip_display_to_si(&mut trip, system);
+        migrate_trip(&dek, car_uuid, &trip, system).await?;
     }
 
     vault_migration_clear_car(&car.id)
@@ -474,7 +479,12 @@ pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String
     Ok(())
 }
 
-async fn migrate_trip(dek: &Dek, car_uuid: Uuid, trip: &Trip) -> Result<(), String> {
+async fn migrate_trip(
+    dek: &Dek,
+    car_uuid: Uuid,
+    trip: &Trip,
+    system: UnitSystem,
+) -> Result<(), String> {
     let track_uuid = parse_uuid(&trip.id)?;
     let meta = TrackMetaV1 {
         started_at: Some(trip.started_at.clone()),
@@ -495,7 +505,10 @@ async fn migrate_trip(dek: &Dek, car_uuid: Uuid, trip: &Trip) -> Result<(), Stri
     let body = encrypt_put(dek, car_uuid, "track_meta", track_uuid, None, 1, &plain)?;
     vault_put_object(body).await.map_err(|e| e.to_string())?;
 
-    let points = trip_points(&trip.id).await.map_err(|e| e.to_string())?;
+    let mut points = trip_points(&trip.id).await.map_err(|e| e.to_string())?;
+    for p in &mut points {
+        point_display_to_si(p, system);
+    }
     for (i, chunk) in points.chunks(POINTS_CHUNK).enumerate() {
         let plain = serde_json::to_vec(chunk).map_err(|e| e.to_string())?;
         let body = encrypt_put(

@@ -13,11 +13,18 @@ use crate::api::{
 use crate::components::charts::TripTelemetryDashboard;
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
-use crate::units::{avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, use_unit_prefs};
+use crate::units::{
+    avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, point_si_to_display,
+    trip_si_to_display, use_unit_prefs,
+};
 use crate::vault::{
     VaultUnlockGate, build_analysis_context_json, decrypt_ai_report, decrypt_track_meta,
     decrypt_track_points, seal_ai_report, use_vault_session,
 };
+
+/// A decrypted vault trip in SI units: the summary patched from `track_meta`, and
+/// its samples.
+type VaultTripSi = (Trip, Vec<TripPoint>);
 
 fn fmt_duration(s: Option<f64>) -> String {
     let secs = s.unwrap_or(0.0).max(0.0);
@@ -697,6 +704,32 @@ pub fn TripDetailPage() -> impl IntoView {
     let finishing = RwSignal::new(false);
     let vault = use_vault_session();
     let vault_unlocked = vault.unlocked();
+    // A vault trip decrypts to SI, while everything on screen expects the display units
+    // the server applies to plaintext trips. Keep the SI copy: the display copy is
+    // re-derived from it whenever the unit system changes (it may still be loading),
+    // and the client-built AI bundle is declared in SI.
+    let vault_si = RwSignal::new(Option::<VaultTripSi>::None);
+    Effect::new(move |_| {
+        let system = prefs.with(|p| p.system);
+        vault_si.with(|si| {
+            let Some((si_trip, si_points)) = si else {
+                return;
+            };
+            let mut t = si_trip.clone();
+            trip_si_to_display(&mut t, system);
+            trip.set(Some(t));
+            points.set(
+                si_points
+                    .iter()
+                    .cloned()
+                    .map(|mut p| {
+                        point_si_to_display(&mut p, system);
+                        p
+                    })
+                    .collect(),
+            );
+        });
+    });
 
     Effect::new(move |_| {
         let id = params.with(|p| p.get("id").map(|s| s.to_string()).unwrap_or_default());
@@ -757,25 +790,27 @@ pub fn TripDetailPage() -> impl IntoView {
                                     "type": "LineString",
                                     "coordinates": coords,
                                 })));
+                                let mut si_trip = trip.try_get_untracked().flatten();
                                 if let Ok(Some(meta)) =
                                     decrypt_track_meta(&sess, &car_id, &id_fetch).await
+                                    && let Some(t) = si_trip.as_mut()
                                 {
-                                    if let Some(mut t) = trip.try_get_untracked().flatten() {
-                                        t.point_count = meta.point_count;
-                                        t.distance_m = meta.distance_m;
-                                        t.duration_s = meta.duration_s;
-                                        t.avg_speed_kph = meta.avg_speed_kph;
-                                        t.max_speed_kph = meta.max_speed_kph;
-                                        t.fuel_used_l = meta.fuel_used_l;
-                                        t.fuel_used_moving_l = meta.fuel_used_moving_l;
-                                        if let Some(n) = meta.started_at {
-                                            // keep skeleton started_at if empty
-                                            let _ = n;
-                                        }
-                                        trip.set(Some(t));
-                                    }
+                                    t.point_count = meta.point_count;
+                                    t.distance_m = meta.distance_m;
+                                    t.economy_distance_m = meta.economy_distance_m;
+                                    t.duration_s = meta.duration_s;
+                                    t.avg_speed_kph = meta.avg_speed_kph;
+                                    t.max_speed_kph = meta.max_speed_kph;
+                                    t.fuel_used_l = meta.fuel_used_l;
+                                    t.fuel_used_moving_l = meta.fuel_used_moving_l;
+                                    t.fuel_from_level_l = meta.fuel_from_level_l;
                                 }
-                                points.set(p);
+                                // The effect above converts both into display units.
+                                if alive_fetch.load(Ordering::SeqCst)
+                                    && let Some(t) = si_trip
+                                {
+                                    vault_si.set(Some((t, p)));
+                                }
                             }
                         }
                         Err(e) => err = Some(format!("vault decrypt: {e}")),
@@ -1176,6 +1211,7 @@ pub fn TripDetailPage() -> impl IntoView {
                 trip_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
                 trip=trip
                 points=points
+                vault_si=vault_si
                 analysis=analysis
                 analysis_busy=analysis_busy
                 analysis_err=analysis_err
@@ -1563,6 +1599,7 @@ fn TripAiPanel(
     trip_id: Signal<String>,
     trip: RwSignal<Option<Trip>>,
     points: RwSignal<Vec<TripPoint>>,
+    vault_si: RwSignal<Option<VaultTripSi>>,
     analysis: RwSignal<Option<TripAnalysis>>,
     analysis_busy: RwSignal<bool>,
     analysis_err: RwSignal<Option<String>>,
@@ -1597,8 +1634,15 @@ fn TripAiPanel(
                 .flatten()
                 .map(|t| t.vault_sealed)
                 .unwrap_or(false);
-            let trip_snap = trip.try_get_untracked().flatten();
-            let pts = points.try_get_untracked().unwrap_or_default();
+            // A vault trip's bundle is built from the SI copy: the context declares
+            // metric units, and the display copy is in whatever the user prefers.
+            let (trip_snap, pts) = match vault_si.try_get_untracked().flatten() {
+                Some((t, p)) if sealed => (Some(t), p),
+                _ => (
+                    trip.try_get_untracked().flatten(),
+                    points.try_get_untracked().unwrap_or_default(),
+                ),
+            };
             let sess = vault.clone();
             leptos::task::spawn_local(async move {
                 if sealed {
