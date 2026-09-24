@@ -11,3 +11,4 @@ pub mod settings;
 pub mod stats;
 pub mod trip_export;
 pub mod trips;
+pub mod trips_views;

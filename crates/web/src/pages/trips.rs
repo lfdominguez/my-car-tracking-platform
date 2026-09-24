@@ -15,6 +15,7 @@ use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
 use crate::pages::trip_export::TripExportMenu;
+use crate::pages::trips_views::{TripsCalendar, TripsOverlayMap};
 use crate::units::{
     avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, point_si_to_display,
     trip_si_to_display, use_unit_prefs,
@@ -360,6 +361,14 @@ fn trip_matches_query(t: &Trip, q: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// How the trips page shows the filtered trips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TripsView {
+    List,
+    Map,
+    Calendar,
+}
+
 /// Display label for a stored purpose.
 pub(crate) fn purpose_label(purpose: &str) -> Option<&'static str> {
     match purpose {
@@ -411,6 +420,7 @@ pub fn TripsPage() -> impl IntoView {
     let cars_list = RwSignal::new(Vec::<Car>::new());
     let selected = RwSignal::new(Vec::<String>::new());
     let merging = RwSignal::new(false);
+    let view_mode = RwSignal::new(TripsView::List);
 
     // `TripsPage` can be reused across navigations that only change the query
     // string (e.g. clicking a different car on the dashboard), so the car
@@ -582,6 +592,24 @@ pub fn TripsPage() -> impl IntoView {
                 </h1>
                 <p class="muted">"History across accessible cars — filter by time, purpose or tag, open a trip for full telemetry"</p>
             </div>
+            <div class="seg-control" role="group" aria-label="Trips view">
+                {[(TripsView::List, "List", "list-bullets"), (TripsView::Map, "Map", "map-trifold"), (TripsView::Calendar, "Calendar", "calendar-dots")]
+                    .into_iter()
+                    .map(|(v, label, icon)| view! {
+                        <button
+                            type="button"
+                            class=move || if view_mode.get() == v { "seg-btn is-active" } else { "seg-btn" }
+                            aria-pressed=move || (view_mode.get() == v).to_string()
+                            on:click=move |_| view_mode.set(v)
+                        >
+                            <span class="icon-label">
+                                <Icon name=icon size=IconSize::Sm />
+                                {label}
+                            </span>
+                        </button>
+                    })
+                    .collect_view()}
+            </div>
         </div>
 
         <div class="trips-filter-bar">
@@ -752,6 +780,40 @@ pub fn TripsPage() -> impl IntoView {
         <Show when=move || error.get().is_some()>
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
+        <Show
+            when=move || view_mode.get() == TripsView::List
+            fallback=move || move || {
+                if view_mode.get() == TripsView::Map {
+                    let narrowed = Signal::derive(move || {
+                        let on = !purpose_filter.get().is_empty() || !tag_filter.get().trim().is_empty();
+                        on.then(|| trips.with(|t| t.iter().map(|t| t.id.clone()).collect::<Vec<_>>()))
+                    });
+                    view! {
+                        <TripsOverlayMap
+                            car_id=Signal::derive(move || car_filter_id.get())
+                            from=Signal::derive(move || base_opts().from)
+                            to=Signal::derive(move || base_opts().to)
+                            restrict_ids=narrowed
+                        />
+                    }
+                    .into_any()
+                } else {
+                    view! {
+                        <TripsCalendar
+                            car_id=Signal::derive(move || car_filter_id.get())
+                            on_pick=Callback::new(move |day: chrono::NaiveDate| {
+                                let d = day.format("%Y-%m-%d").to_string();
+                                custom_from.set(d.clone());
+                                custom_to.set(d);
+                                filter.set(TripListFilter::Custom);
+                                view_mode.set(TripsView::List);
+                            })
+                        />
+                    }
+                    .into_any()
+                }
+            }
+        >
         <Show when=move || loading.get() && trips.get().is_empty()>
             <div class="card">
                 <div class="empty-state compact">
@@ -996,6 +1058,7 @@ pub fn TripsPage() -> impl IntoView {
                     {move || if loading_more.get() { "Loading…" } else { "Load more" }}
                 </button>
             </div>
+        </Show>
         </Show>
     }
 }

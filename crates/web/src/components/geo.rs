@@ -289,6 +289,8 @@ export function disposeGeoMap(elId) {
 "#)]
 extern "C" {
     fn geoRenderLive(el_id: &str, json: &str);
+    fn geoRenderLines(el_id: &str, json: &str);
+    fn geoSetCursor(el_id: &str, lon: f64, lat: f64);
     fn disposeGeoMap(el_id: &str);
 }
 
@@ -321,4 +323,71 @@ pub fn LiveMap(
         }
     });
     view! { <div id=id class="map live-map"></div> }
+}
+
+/// One line on a [`LinesMap`].
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MapLine {
+    pub id: String,
+    /// CSS color; the accent when `None`.
+    pub color: Option<String>,
+    /// `[lon, lat]` pairs.
+    pub coordinates: Vec<[f64; 2]>,
+}
+
+/// What a [`LinesMap`] draws.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct LinesData {
+    pub features: Vec<MapLine>,
+    /// `lines` or `heat` (vertices as a heatmap).
+    pub mode: &'static str,
+    /// Emit `geo-map-select` on click.
+    pub clickable: bool,
+    /// The map re-frames itself whenever this changes.
+    #[serde(rename = "fitKey")]
+    pub fit_key: String,
+}
+
+/// Many trip lines on one map, with an optional heatmap mode (#120, #122).
+#[component]
+pub fn LinesMap(
+    #[prop(into)] data: Signal<LinesData>,
+    id: &'static str,
+    /// Optional `[lon, lat]` highlight marker.
+    #[prop(optional, into)]
+    cursor: Option<Signal<Option<[f64; 2]>>>,
+) -> impl IntoView {
+    on_cleanup(move || disposeGeoMap(id));
+    Effect::new(move |_| {
+        let Some(d) = data.try_get() else {
+            return;
+        };
+        if let Ok(json) = serde_json::to_string(&d) {
+            geoRenderLines(id, &json);
+        }
+    });
+    if let Some(cursor) = cursor {
+        Effect::new(move |_| {
+            let at = cursor.try_get().flatten();
+            let (lon, lat) = at.map(|c| (c[0], c[1])).unwrap_or((f64::NAN, f64::NAN));
+            geoSetCursor(id, lon, lat);
+        });
+    }
+    view! { <div id=id class="map lines-map"></div> }
+}
+
+/// `[lon, lat]` pairs from a GeoJSON LineString value.
+pub fn line_coordinates(geometry: &serde_json::Value) -> Vec<[f64; 2]> {
+    geometry
+        .get("coordinates")
+        .and_then(|c| c.as_array())
+        .map(|pts| {
+            pts.iter()
+                .filter_map(|p| {
+                    let p = p.as_array()?;
+                    Some([p.first()?.as_f64()?, p.get(1)?.as_f64()?])
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }

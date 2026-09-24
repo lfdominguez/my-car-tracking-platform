@@ -1601,3 +1601,34 @@ pub async fn stats_periods(
     }
     send_json(Request::get(&url)).await
 }
+
+// --- many trips on one map (#120) ------------------------------------------------
+
+/// A trip's simplified route line (GeoJSON LineString, ~10 m tolerance).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TripGeometry {
+    pub id: String,
+    pub car_id: String,
+    pub started_at: String,
+    pub geometry: serde_json::Value,
+}
+
+/// `GET /api/trips/geometries`: newest first, vault cars skipped. Bounds are RFC3339.
+pub async fn trip_geometries(
+    car_id: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    limit: i64,
+) -> Result<Vec<TripGeometry>, ApiError> {
+    let mut url = format!("/api/trips/geometries?limit={limit}");
+    if let Some(c) = car_id.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&car_id={}", urlencoding_trip_query(c)));
+    }
+    if let Some(f) = from.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&from={}", urlencoding_trip_query(f)));
+    }
+    if let Some(t) = to.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&to={}", urlencoding_trip_query(t)));
+    }
+    send_json(Request::get(&url)).await
+}
