@@ -128,3 +128,99 @@ async fn speeding_rule_and_geofence_enter_notify_the_user() {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn reported_fault_codes_are_listed_and_notified() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let owner = login(&base).await;
+    let car_id = create_car(&base, &owner).await;
+    let device: Value = owner
+        .client
+        .post(format!("{base}/api/cars/{car_id}/devices"))
+        .json(&json!({ "name": "phone" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = device["token"].as_str().unwrap();
+    let phone = reqwest::Client::new();
+    let start = chrono::Utc::now() - chrono::Duration::seconds(30);
+    phone
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": start }))
+        .send()
+        .await
+        .unwrap();
+    let resp = phone
+        .post(format!("{base}/api/track/sample"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(
+            &json!({ "tracking_id": start.to_rfc3339(), "recorded_at": start.timestamp_millis(),
+                       "dtc_codes": ["p0420"], "pending_dtc_codes": ["P0171"] }),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let mut dtcs = Value::Null;
+    for _ in 0..50 {
+        dtcs = owner
+            .client
+            .get(format!("{base}/api/cars/{car_id}/dtcs"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if dtcs.as_array().is_some_and(|a| a.len() == 2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let codes: Vec<&str> = dtcs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert!(
+        codes.contains(&"P0420") && codes.contains(&"P0171"),
+        "{dtcs}"
+    );
+    let p0420 = dtcs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "P0420")
+        .unwrap();
+    assert!(p0420["description"].as_str().unwrap().contains("Catalyst"));
+
+    let notes: Value = owner
+        .client
+        .get(format!("{base}/api/notifications"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(notes.to_string().contains("P0420"), "{notes}");
+
+    for path in ["health", "battery"] {
+        let r = owner
+            .client
+            .get(format!("{base}/api/cars/{car_id}/{path}"))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success(), "{path}: {}", r.status());
+    }
+}

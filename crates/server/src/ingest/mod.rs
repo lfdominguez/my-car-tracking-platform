@@ -95,6 +95,13 @@ pub struct TrackSampleRequest {
     pub accel_rms_mps2: Option<f64>,
     #[serde(default)]
     pub device_tilt_delta_deg: Option<f64>,
+    /// Stored diagnostic trouble codes (Mode 03), e.g. `["P0420"]`. Absent means
+    /// "not read"; an empty list is a report that no codes are stored.
+    #[serde(default)]
+    pub dtc_codes: Option<Vec<String>>,
+    /// Pending codes (Mode 07), not yet confirmed by the ECU.
+    #[serde(default)]
+    pub pending_dtc_codes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +268,7 @@ async fn track_sample(
     let track = insert_sample(&state, device.car_id, &body)
         .await
         .map_err(map_sample_error)?;
+    record_dtc_report(&state, device.car_id, std::slice::from_ref(&body));
     after_points_landed(&state, &[track.track_id]).await;
     Ok(StatusCode::OK)
 }
@@ -335,6 +343,7 @@ async fn track_samples(
         outcomes[i] = Some(result);
     }
     crate::alerts::on_points(&state, device.car_id, stored);
+    record_dtc_report(&state, device.car_id, &body.samples);
 
     for (sample, outcome) in body.samples.iter().zip(outcomes) {
         let outcome = outcome.unwrap_or(Ok(()));
@@ -525,6 +534,29 @@ impl PreparedPoint<'_> {
             fuel_level_pct: s.fuel_level_pct,
         }
     }
+}
+
+/// Hand the newest DTC report in these samples to `health::record_dtcs`, in the
+/// background. Samples without the fields did not read codes and are skipped.
+fn record_dtc_report(state: &AppState, car_id: Uuid, samples: &[TrackSampleRequest]) {
+    let Some(latest) = samples
+        .iter()
+        .filter(|s| s.dtc_codes.is_some() || s.pending_dtc_codes.is_some())
+        .max_by_key(|s| s.recorded_at)
+    else {
+        return;
+    };
+    let Some(at) = millis_to_datetime(latest.recorded_at) else {
+        return;
+    };
+    let stored = latest.dtc_codes.clone().unwrap_or_default();
+    let pending = latest.pending_dtc_codes.clone().unwrap_or_default();
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::health::record_dtcs(&pool, car_id, at, &stored, &pending).await {
+            tracing::warn!(%car_id, error = %e, "recording DTCs failed");
+        }
+    });
 }
 
 /// Validate one sample against the track it targets.

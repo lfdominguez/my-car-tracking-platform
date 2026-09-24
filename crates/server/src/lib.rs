@@ -14,6 +14,7 @@ pub mod driving;
 pub mod error;
 pub mod garage;
 pub mod geofences;
+pub mod health;
 pub mod http_client;
 pub mod ingest;
 pub mod jobs;
@@ -79,6 +80,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(alerts::router())
         .merge(geofences::router())
         .merge(driving::router())
+        .merge(health::router())
         .merge(photo_routes)
         .merge(devices::router())
         .merge(shares::router())
