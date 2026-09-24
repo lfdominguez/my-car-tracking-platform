@@ -407,14 +407,44 @@ function applyChartOption(elId, chart, option) {
   });
 }
 
-export function renderTelemetryChart(elId, optionJson) {
+/**
+ * ECharts' base theme for the app theme: its built-in 'dark' for dark, the default
+ * (light) theme otherwise. The option paints most chrome from CSS tokens, but the
+ * base theme still decides defaults the option leaves out (label and marker
+ * colours), which is why a light app must not init charts with 'dark'.
+ */
+function echartsThemeFor(appTheme) {
+  return appTheme === 'dark' ? 'dark' : null;
+}
+
+function initChart(elId, node, appTheme) {
+  const chart = echarts.init(node, echartsThemeFor(appTheme), { renderer: 'canvas' });
+  chart.__appTheme = appTheme;
+  __tripCharts.set(elId, chart);
+  ensureChartObservers(elId, node, chart);
+  bindChartInteractions(elId, chart);
+  return chart;
+}
+
+/** Existing chart for `elId`, re-created when the app theme changed since init. */
+function chartFor(elId, node, appTheme) {
+  let chart = __tripCharts.get(elId);
+  if (chart && chart.__appTheme !== appTheme) {
+    // A theme is fixed at init; switching means a fresh instance.
+    teardownChart(elId, chart);
+    chart = null;
+  }
+  return chart || initChart(elId, node, appTheme);
+}
+
+export function renderTelemetryChart(elId, optionJson, appTheme) {
   if (!window.echarts) {
-    __pendingCharts.set(elId, optionJson);
+    __pendingCharts.set(elId, [optionJson, appTheme]);
     loadVendorScript('/vendor/echarts.min.js', 'echarts')
       .then(() => {
         const pending = __pendingCharts.get(elId);
         __pendingCharts.delete(elId);
-        if (pending != null) renderTelemetryChart(elId, pending);
+        if (pending != null) renderTelemetryChart(elId, ...pending);
       })
       .catch((err) => console.error('ECharts failed to load', err));
     return;
@@ -465,26 +495,12 @@ export function renderTelemetryChart(elId, optionJson) {
         requestAnimationFrame(() => run(attempt + 1));
       } else {
         // Last resort: init anyway and rely on observers.
-        let chart = __tripCharts.get(elId);
-        if (!chart) {
-          chart = echarts.init(node, 'dark', { renderer: 'canvas' });
-          __tripCharts.set(elId, chart);
-          ensureChartObservers(elId, node, chart);
-          bindChartInteractions(elId, chart);
-        }
-        applyChartOption(elId, chart, option);
+        applyChartOption(elId, chartFor(elId, node, appTheme), option);
       }
       return;
     }
 
-    let chart = __tripCharts.get(elId);
-    if (!chart) {
-      chart = echarts.init(node, 'dark', { renderer: 'canvas' });
-      __tripCharts.set(elId, chart);
-      ensureChartObservers(elId, node, chart);
-      bindChartInteractions(elId, chart);
-    }
-    applyChartOption(elId, chart, option);
+    applyChartOption(elId, chartFor(elId, node, appTheme), option);
   };
 
   run(0);
@@ -494,6 +510,11 @@ export function disposeTelemetryChart(elId) {
   __pendingCharts.delete(elId);
   const chart = __tripCharts.get(elId);
   if (!chart) return;
+  teardownChart(elId, chart);
+  __tripChartTimes.delete(elId);
+}
+
+function teardownChart(elId, chart) {
   if (chart.__onResize) {
     window.removeEventListener('resize', chart.__onResize);
   }
@@ -505,11 +526,10 @@ export function disposeTelemetryChart(elId) {
   }
   chart.dispose();
   __tripCharts.delete(elId);
-  __tripChartTimes.delete(elId);
 }
 "#)]
 extern "C" {
-    fn renderTelemetryChart(el_id: &str, option_json: &str);
+    fn renderTelemetryChart(el_id: &str, option_json: &str, app_theme: &str);
     fn disposeTelemetryChart(el_id: &str);
 }
 
@@ -1450,8 +1470,12 @@ fn TelemetryChart(
 
     Effect::new(move |_| {
         // Subscribe to the theme so a light/dark flip repaints the canvas with
-        // the new palette (ECharts draws to canvas; CSS variables can't reach it).
-        let _ = theme.theme.get();
+        // the new palette (ECharts draws to canvas; CSS variables can't reach it)
+        // and re-creates the instance with the matching ECharts base theme.
+        let app_theme = match theme.theme.get() {
+            crate::components::theme::Theme::Dark => "dark",
+            crate::components::theme::Theme::Light => "light",
+        };
         if series_c.is_empty() || labels_c.is_empty() {
             return;
         }
@@ -1474,7 +1498,7 @@ fn TelemetryChart(
             obj.insert("__tripKey".into(), trip_key.clone().into());
         }
         if let Ok(s) = serde_json::to_string(&option) {
-            renderTelemetryChart(&el_id, &s);
+            renderTelemetryChart(&el_id, &s, app_theme);
         }
     });
 
