@@ -209,10 +209,13 @@ pub fn RoutesPage() -> impl IntoView {
                             let round_trip = c.is_round_trip;
                             let best = c.best_variant_label.clone().unwrap_or_else(|| "—".into());
                             let dur = c.median_duration_secs.map(fmt_duration).unwrap_or_else(|| "—".into());
-                            let dist = c
-                                .median_distance
-                                .map(|d| fmt_distance(Some(d), &prefs.get()))
-                                .unwrap_or_else(|| "—".into());
+                            // Reactive: rows can render before `/api/me` settles the units.
+                            let median_distance = c.median_distance;
+                            let dist = move || {
+                                median_distance
+                                    .map(|d| fmt_distance(Some(d), &prefs.get()))
+                                    .unwrap_or_else(|| "—".into())
+                            };
                             let od_label = if round_trip {
                                 if let (Some(vlat), Some(vlon)) = (c.via_lat, c.via_lon) {
                                     format!(
@@ -442,7 +445,8 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                 key=|(_, v)| v.id.clone()
                                 children=move |(i, v)| {
                                     let elev = v.median_elev_gain_m.map(|e| format!("{e:.0} m")).unwrap_or_else(|| "—".into());
-                                    let dist_label = fmt_distance(Some(v.median_distance), &prefs.get());
+                                    let median_distance = v.median_distance;
+                                    let dist_label = move || fmt_distance(Some(median_distance), &prefs.get());
                                     let color = variant_swatch(i).to_string();
                                     let label = v.label.clone();
                                     view! {
@@ -495,7 +499,8 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                     }
                                     key=|(i, a)| format!("{}-{}-{}", i, a.preference, a.fetched_at)
                                     children=move |(i, a)| {
-                                        let dist_label = fmt_distance(Some(a.distance), &prefs.get());
+                                        let distance = a.distance;
+                                        let dist_label = move || fmt_distance(Some(distance), &prefs.get());
                                         let color = ors_swatch(i).to_string();
                                         let pref = a.preference.clone();
                                         view! {

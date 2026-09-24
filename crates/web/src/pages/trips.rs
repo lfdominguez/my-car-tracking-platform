@@ -511,20 +511,22 @@ pub fn TripsPage() -> impl IntoView {
                     let status_stale = !finished && status_label.starts_with("No GPS");
                     let car = t.car_name.clone();
                     let started = pretty_started(&t.started_at);
-                    let p = prefs.get();
-                    let distance = fmt_distance(t.distance_m, &p);
+                    // `For` children run once per card, so each unit-dependent value reads
+                    // `prefs` in its own closure: cards rendered before `/api/me` resolves
+                    // must re-format once the user's unit system is known.
+                    let (distance_m, avg_kph, max_kph, fuel_l) =
+                        (t.distance_m, t.avg_speed_kph, t.max_speed_kph, t.fuel_used_l);
+                    let (moving_l, economy_m) =
+                        (t.fuel_used_moving_l, t.economy_distance_m.or(t.distance_m));
+                    let distance = move || fmt_distance(distance_m, &prefs.get());
                     let duration = fmt_duration(t.duration_s);
-                    let avg = fmt_speed(t.avg_speed_kph, &p);
-                    let max = fmt_speed(t.max_speed_kph, &p);
-                    let fuel = fmt_fuel(t.fuel_used_l, &p);
-                    let moving_econ = fmt_economy(
-                        avg_economy(
-                            t.fuel_used_moving_l,
-                            t.economy_distance_m.or(t.distance_m),
-                            &p,
-                        ),
-                        &p,
-                    );
+                    let avg = move || fmt_speed(avg_kph, &prefs.get());
+                    let max = move || fmt_speed(max_kph, &prefs.get());
+                    let fuel = move || fmt_fuel(fuel_l, &prefs.get());
+                    let moving_econ = move || {
+                        let p = prefs.get();
+                        fmt_economy(avg_economy(moving_l, economy_m, &p), &p)
+                    };
                     let points = t.point_count;
                     let trips_sig = trips;
                     let err_sig = error;
