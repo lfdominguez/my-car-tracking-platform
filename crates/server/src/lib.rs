@@ -10,6 +10,7 @@ pub mod crypto;
 pub mod db;
 pub mod devices;
 pub mod error;
+pub mod garage;
 pub mod http_client;
 pub mod ingest;
 pub mod jobs;
@@ -69,6 +70,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(mcp::router(state.clone()))
         .merge(live::router())
         .merge(cars::router())
+        .merge(garage::router())
         .merge(photo_routes)
         .merge(devices::router())
         .merge(shares::router())

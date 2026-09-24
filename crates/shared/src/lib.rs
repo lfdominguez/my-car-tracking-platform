@@ -136,6 +136,19 @@ impl FuelType {
         }
     }
 
+    /// Tailpipe CO₂ per litre burnt (kg/L). Blends are weighted by volume from
+    /// petrol 2.31, ethanol 1.51, fossil diesel 2.68 and biodiesel 2.50 kg/L.
+    pub fn co2_kg_per_litre(&self) -> Option<f64> {
+        match self {
+            Self::E0 => Some(2.31),
+            Self::E10 => Some(0.9 * 2.31 + 0.1 * 1.51),
+            Self::E27 => Some(0.73 * 2.31 + 0.27 * 1.51),
+            Self::E100 => Some(1.51),
+            Self::B7 => Some(0.93 * 2.68 + 0.07 * 2.50),
+            Self::Custom => None,
+        }
+    }
+
     pub fn density_gl(&self) -> Option<f64> {
         match self {
             Self::E0 | Self::E10 => Some(745.0),
@@ -176,6 +189,9 @@ fn normalize_token(s: &str) -> String {
 fn default_fuel_class_str() -> String {
     FuelClass::Gasoline.as_str().into()
 }
+
+/// Default grid carbon intensity for charging (g CO₂/kWh), roughly the EU average.
+pub const DEFAULT_GRID_G_CO2_PER_KWH: f64 = 250.0;
 
 /// Default fuel/engine values aligned with Android `AppSettings`.
 pub mod defaults {
