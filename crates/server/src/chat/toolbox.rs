@@ -128,11 +128,7 @@ fn to_json<T: serde::Serialize>(result: Result<T, AppError>) -> Result<String, S
         Ok(value) => serde_json::to_string(&value).map_err(|e| format!("serialize: {e}")),
         // Not-found and forbidden are the same answer to the model: it cannot see it.
         // Keeping them distinct would let a chat turn probe for other users' ids.
-        Err(AppError::NotFound) | Err(AppError::Forbidden) => Err(
-            "not found, or not visible to this user (it may belong to someone else, \
-             or be sealed in the vault)"
-                .into(),
-        ),
+        Err(AppError::NotFound) | Err(AppError::Forbidden) => Err(tools::NOT_VISIBLE.into()),
         Err(AppError::BadRequest(msg)) => Err(msg),
         Err(other) => {
             tracing::error!(error = %other, "chat tool failed");
