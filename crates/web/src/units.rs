@@ -485,7 +485,7 @@ pub fn display_to_price_per_litre(p: f64, system: UnitSystem) -> f64 {
 pub fn l_per_100km_to_display(v: f64, system: UnitSystem) -> Option<f64> {
     match system {
         UnitSystem::Metric => (v > 0.0).then_some(v),
-        UnitSystem::Us => (v > 0.0).then(|| 100.0 * KM_PER_MILE / LITERS_PER_US_GALLON / v),
+        UnitSystem::Us => (v > 0.0).then(|| 100.0 * LITERS_PER_US_GALLON / KM_PER_MILE / v),
     }
 }
 
@@ -657,5 +657,173 @@ mod tests {
             return None;
         }
         Some(vals.iter().sum::<f64>() / vals.len() as f64)
+    }
+}
+
+/// Formatting and SI ↔ display conversion (#137).
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    fn metric() -> UnitPrefs {
+        UnitPrefs::default()
+    }
+
+    fn us() -> UnitPrefs {
+        UnitPrefs {
+            system: UnitSystem::Us,
+            labels: UnitLabels::us(),
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    fn si_trip() -> Trip {
+        serde_json::from_value(serde_json::json!({
+            "id": "t", "car_id": "c", "car_name": "Car", "started_at": "2026-01-01T08:00:00Z",
+            "finished_at": null, "finished": true, "fuel_type_snapshot": "E10",
+            "point_count": 2,
+            "distance_m": 16093.44, "economy_distance_m": 16093.44, "duration_s": 600.0,
+            "avg_speed_kph": 96.56064, "max_speed_kph": 160.9344,
+            "fuel_used_l": 3.785411784, "fuel_used_moving_l": 3.785411784,
+            "fuel_from_level_l": 7.570823568
+        }))
+        .unwrap()
+    }
+
+    fn si_point() -> TripPoint {
+        serde_json::from_value(serde_json::json!({
+            "recorded_at": "2026-01-01T08:00:00Z", "lat": 40.0, "lon": -3.7, "gps_acc_m": 5.0,
+            "vehicle_speed_kph": 80.4672, "vehicle_engine_rpm": 2000.0, "engine_rpm": null,
+            "engine_vel": 80.4672, "fuel_consumption_rate": 7.570823568, "engine_load_pct": 40.0,
+            "absolute_engine_load_pct": null, "short_term_fuel_trim_pct": null,
+            "long_term_fuel_trim_pct": null, "fuel_level_pct": 50.0,
+            "accelerator_pedal_pct": null, "ambient_air_temp_c": 20.0,
+            "odometer_value_km": 1609.344, "engine_coolant_temp_c": 90.0,
+            "manifold_absolute_pressure_kpa": null, "control_module_voltage": 14.1,
+            "engine_on_time": null, "lambda_cmd": null, "atmospheric_pressure": null,
+            "intake_air_temperature": null, "mass_air_flow": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn distance_is_km_from_metres_or_miles_as_sent() {
+        assert_eq!(fmt_distance(Some(12_345.0), &metric()), "12.3 km");
+        assert_eq!(fmt_distance(Some(7.66), &us()), "7.7 mi");
+        assert_eq!(fmt_distance(None, &metric()), "0.0 km");
+        assert_eq!(fmt_distance_value(1500.0, &metric()), "1.5");
+        assert_eq!(fmt_distance_value(1500.0, &us()), "1500.0");
+    }
+
+    #[test]
+    fn speed_and_fuel_carry_their_unit() {
+        assert_eq!(fmt_speed(Some(88.4), &metric()), "88 km/h");
+        assert_eq!(fmt_speed(Some(55.0), &us()), "55 mph");
+        assert_eq!(fmt_fuel(Some(3.456), &metric()), "3.46 L");
+        assert_eq!(fmt_fuel(Some(1.25), &us()), "1.25 gal");
+        assert_eq!(fmt_fuel(Some(0.0), &metric()), "—");
+        assert_eq!(fmt_fuel(None, &us()), "—");
+    }
+
+    #[test]
+    fn economy_is_l_per_100km_or_mpg() {
+        // 6 L over 100 km.
+        let l100 = avg_economy(Some(6.0), Some(100_000.0), &metric()).unwrap();
+        assert!(close(l100, 6.0));
+        assert_eq!(fmt_economy(Some(l100), &metric()), "6.0 L/100km");
+        // 2 gal over 60 mi.
+        let mpg = avg_economy(Some(2.0), Some(60.0), &us()).unwrap();
+        assert!(close(mpg, 30.0));
+        assert_eq!(fmt_economy(Some(mpg), &us()), "30.0 mpg");
+        // Too short to mean anything.
+        assert_eq!(avg_economy(Some(0.1), Some(10.0), &metric()), None);
+        assert_eq!(fmt_economy(None, &us()), "—");
+        // 7.84 L/100 km ≈ 30 mpg.
+        let converted = l_per_100km_to_display(7.84, UnitSystem::Us).unwrap();
+        assert!((converted - 30.0).abs() < 0.05, "{converted}");
+        assert_eq!(l_per_100km_to_display(7.84, UnitSystem::Metric), Some(7.84));
+        assert_eq!(l_per_100km_to_display(0.0, UnitSystem::Us), None);
+    }
+
+    #[test]
+    fn vault_trip_si_converts_to_imperial_and_back() {
+        let mut t = si_trip();
+        trip_si_to_display(&mut t, UnitSystem::Us);
+        assert!(close(t.distance_m.unwrap(), 10.0), "miles");
+        assert!(close(t.economy_distance_m.unwrap(), 10.0));
+        assert!(close(t.avg_speed_kph.unwrap(), 60.0), "mph");
+        assert!(close(t.max_speed_kph.unwrap(), 100.0));
+        assert!(close(t.fuel_used_l.unwrap(), 1.0), "gallons");
+        assert!(close(t.fuel_from_level_l.unwrap(), 2.0));
+        assert_eq!(
+            fmt_economy(avg_economy(t.fuel_used_l, t.distance_m, &us()), &us()),
+            "10.0 mpg"
+        );
+        trip_display_to_si(&mut t, UnitSystem::Us);
+        let orig = si_trip();
+        assert!(close(t.distance_m.unwrap(), orig.distance_m.unwrap()));
+        assert!(close(t.fuel_used_l.unwrap(), orig.fuel_used_l.unwrap()));
+
+        // Metric keeps metres and litres untouched.
+        let mut m = si_trip();
+        trip_si_to_display(&mut m, UnitSystem::Metric);
+        assert_eq!(m, si_trip());
+    }
+
+    #[test]
+    fn vault_point_si_converts_to_imperial_and_back() {
+        let mut p = si_point();
+        point_si_to_display(&mut p, UnitSystem::Us);
+        assert!(close(p.vehicle_speed_kph.unwrap(), 50.0), "mph");
+        assert!(close(p.engine_vel.unwrap(), 50.0));
+        assert!(
+            close(p.odometer_value_km.unwrap(), 1000.0),
+            "odometer miles"
+        );
+        assert!(close(p.fuel_consumption_rate.unwrap(), 2.0), "gal/h");
+        // Not unit-bearing: left alone.
+        assert_eq!(p.engine_coolant_temp_c, Some(90.0));
+        assert_eq!(p.vehicle_engine_rpm, Some(2000.0));
+        point_display_to_si(&mut p, UnitSystem::Us);
+        assert!(close(p.vehicle_speed_kph.unwrap(), 80.4672));
+        assert!(close(p.fuel_consumption_rate.unwrap(), 7.570823568));
+    }
+
+    #[test]
+    fn garage_helpers_round_trip() {
+        assert!(close(km_to_display(160.9344, UnitSystem::Us), 100.0));
+        assert!(close(display_to_km(100.0, UnitSystem::Us), 160.9344));
+        assert!(close(
+            litres_to_display(LITERS_PER_US_GALLON, UnitSystem::Us),
+            1.0
+        ));
+        assert!(close(
+            display_to_litres(1.0, UnitSystem::Us),
+            LITERS_PER_US_GALLON
+        ));
+        // 1.50 per litre is ~5.68 per gallon.
+        let per_gal = price_per_litre_to_display(1.5, UnitSystem::Us);
+        assert!(close(per_gal, 1.5 * LITERS_PER_US_GALLON));
+        assert!(close(
+            display_to_price_per_litre(per_gal, UnitSystem::Us),
+            1.5
+        ));
+        assert_eq!(fmt_km(Some(1609.344), &us()), "1000 mi");
+        assert_eq!(fmt_km(Some(15_000.0), &metric()), "15000 km");
+        assert_eq!(fmt_km(None, &metric()), "—");
+        assert_eq!(fmt_money(Some(12.5), Some("EUR")), "12.50 EUR");
+        assert_eq!(fmt_money(Some(3.0), None), "3.00");
+        assert_eq!(fmt_money(None, Some("EUR")), "—");
+    }
+
+    #[test]
+    fn unit_system_parses_loosely() {
+        assert_eq!(UnitSystem::parse("imperial"), UnitSystem::Us);
+        assert_eq!(UnitSystem::parse(" US "), UnitSystem::Us);
+        assert_eq!(UnitSystem::parse("metric"), UnitSystem::Metric);
+        assert_eq!(UnitSystem::parse("anything"), UnitSystem::Metric);
     }
 }
