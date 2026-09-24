@@ -12,6 +12,7 @@ use crate::pages::alerts::AlertsSection;
 use crate::pages::driving::CarScoreChart;
 use crate::pages::garage::GarageSection;
 use crate::pages::health::HealthSection;
+use crate::pages::retention::RetentionCard;
 use crate::pages::sharing::SharingCard;
 use crate::vault::{
     CarProfileV1, VaultUnlockGate, decrypt_car_profile, put_car_profile, use_vault_session,
@@ -731,6 +732,8 @@ pub fn CarDetailPage() -> impl IntoView {
                 </table>
             </div>
         </div>
+
+        <RetentionCard car=car error=error />
 
         <SharingCard
             car=car

@@ -4755,3 +4755,8 @@ button.cal-day:hover { box-shadow: inset 0 0 0 1px var(--text); }
 .notif-prefs { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid var(--border); }
 .notif-mute { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.75rem; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 0.35rem 1rem; }
 .notif-mute legend { padding: 0 0.3rem; color: var(--muted); font-size: var(--text-xs); }
+
+/* ---- Raw data retention ---------------------------------------------------------- */
+.retention-card { margin-top: 1rem; }
+.retention-custom { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0; }
+.retention-custom input { width: 6rem; min-height: 34px; padding: 0.3rem 0.5rem; }

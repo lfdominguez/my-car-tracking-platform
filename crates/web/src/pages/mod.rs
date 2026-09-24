@@ -13,6 +13,7 @@ pub mod mcp_tokens;
 pub mod not_found;
 pub mod notifications;
 pub mod places;
+pub mod retention;
 pub mod routes;
 pub mod settings;
 pub mod sharing;

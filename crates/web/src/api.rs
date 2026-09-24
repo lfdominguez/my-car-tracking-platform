@@ -95,6 +95,22 @@ pub struct Car {
     /// when the server does not report it.
     #[serde(default)]
     pub share_live_position: Option<bool>,
+    /// Days of per-second samples kept; `None` keeps everything.
+    #[serde(default)]
+    pub raw_retention_days: Option<i32>,
+}
+
+/// Owner only: keep raw samples for `days` (at least 30) or, with `None`, forever.
+/// Returns the stored value.
+pub async fn set_car_retention(car_id: &str, days: Option<i32>) -> Result<Option<i32>, ApiError> {
+    let v: serde_json::Value = send_json_body(
+        Request::put(&format!("/api/cars/{car_id}/retention")),
+        &serde_json::json!({ "raw_retention_days": days }),
+    )
+    .await?;
+    Ok(v.get("raw_retention_days")
+        .and_then(|d| d.as_i64())
+        .map(|d| d as i32))
 }
 
 /// Authenticated photo URL (same-origin cookie). `cache_bust` optional query.
