@@ -1778,3 +1778,51 @@ pub async fn push_test() -> Result<(), ApiError> {
         send_json_body(Request::post("/api/push/test"), &serde_json::json!({})).await?;
     Ok(())
 }
+
+// --- alert rules (#110) -------------------------------------------------------------
+
+/// One of the signed-in user's alert rules for a car. `threshold` is SI:
+/// km/h, V, °C, %, days or hours depending on `kind`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AlertRule {
+    pub id: String,
+    pub car_id: String,
+    pub kind: String,
+    pub threshold: f64,
+    pub enabled: bool,
+}
+
+pub async fn list_alert_rules(car_id: &str) -> Result<Vec<AlertRule>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/alert-rules"))).await
+}
+
+/// Create or replace the rule of `kind` (one per kind and car).
+pub async fn upsert_alert_rule(
+    car_id: &str,
+    kind: &str,
+    threshold: f64,
+    enabled: bool,
+) -> Result<AlertRule, ApiError> {
+    let body = serde_json::json!({ "kind": kind, "threshold": threshold, "enabled": enabled });
+    send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/alert-rules")),
+        &body,
+    )
+    .await
+}
+
+pub async fn toggle_alert_rule(car_id: &str, rule_id: &str, enabled: bool) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::patch(&format!("/api/cars/{car_id}/alert-rules/{rule_id}")),
+        &serde_json::json!({ "enabled": enabled }),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_alert_rule(car_id: &str, rule_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/alert-rules/{rule_id}"
+    )))
+    .await
+}

@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod cars;
 pub mod chat;
 pub mod compare;
