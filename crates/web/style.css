@@ -4371,3 +4371,23 @@ button.tag-chip:hover { color: var(--accent); border-color: var(--color-border-a
   color: var(--color-danger);
 }
 .danger-zone .field { margin-bottom: 0.75rem; }
+
+/* ---- Statistics (#116) ------------------------------------------------------ */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+.stats-grid > .card { margin-top: 0; }
+.stats-grid + .card { margin-top: 1.25rem; }
+.stats-chart-card { padding-bottom: 0.5rem; }
+.stats-chart-title {
+  margin: 0 0 0.25rem;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-body-bold);
+  color: var(--muted);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.stats-chart-card .chart { height: 240px; }

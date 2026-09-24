@@ -8,5 +8,6 @@ pub mod login;
 pub mod not_found;
 pub mod routes;
 pub mod settings;
+pub mod stats;
 pub mod trip_export;
 pub mod trips;

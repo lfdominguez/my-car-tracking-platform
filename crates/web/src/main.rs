@@ -19,6 +19,7 @@ use crate::pages::login::LoginPage;
 use crate::pages::not_found::NotFoundPage;
 use crate::pages::routes::{RouteCorridorPage, RoutesPage};
 use crate::pages::settings::SettingsPage;
+use crate::pages::stats::StatsPage;
 use crate::pages::trips::{TripDetailPage, TripsPage};
 use crate::vault::provide_vault_session;
 
@@ -44,6 +45,7 @@ fn main() {
                         <Route path=path!("trips/:id") view=TripDetailPage/>
                         <Route path=path!("routes") view=RoutesPage/>
                         <Route path=path!("routes/:id") view=RouteCorridorPage/>
+                        <Route path=path!("stats") view=StatsPage/>
                         <Route path=path!("settings") view=SettingsPage/>
                     </ParentRoute>
                 </Routes>

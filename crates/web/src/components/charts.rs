@@ -581,7 +581,8 @@ struct PanelDef {
 /// them every chart label falls back to the browser's default sans and visibly
 /// disagrees with the rest of the UI.
 const CHART_FONT_UI: &str = "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
-const CHART_FONT_NUM: &str = "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace";
+pub(crate) const CHART_FONT_NUM: &str =
+    "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace";
 
 /// Healthy closed-loop fuel trim band (percent). Outside this is worth investigating.
 const FUEL_TRIM_HEALTHY_PCT: f64 = 10.0;
@@ -1017,19 +1018,19 @@ fn css_var(name: &str, fallback: &str) -> String {
 /// Resolved chart chrome for the active theme. Built per render (cheap: a handful
 /// of computed-style reads) rather than cached, so a theme flip mid-session
 /// repaints correctly.
-struct ChartTheme {
-    ink: String,
-    muted: String,
-    border: String,
+pub(crate) struct ChartTheme {
+    pub ink: String,
+    pub muted: String,
+    pub border: String,
     axis_pointer: String,
-    tooltip_bg: String,
-    accent: String,
+    pub tooltip_bg: String,
+    pub accent: String,
     accent_soft: String,
-    grid_line: String,
-    series: Vec<String>,
+    pub grid_line: String,
+    pub series: Vec<String>,
 }
 
-fn chart_theme() -> ChartTheme {
+pub(crate) fn chart_theme() -> ChartTheme {
     let series = [
         ("--color-chart-series-1", "#5a9aff"),
         ("--color-chart-series-2", "#ffb545"),

@@ -146,6 +146,10 @@ pub fn AppLayout() -> impl IntoView {
                         <Icon name="path" color=IconColor::Accent />
                         "Routes"
                     </A>
+                    <A href="/app/stats" on:click=move |_| nav_open.set(false)>
+                        <Icon name="chart-bar" color=IconColor::Accent />
+                        "Statistics"
+                    </A>
                     <span class="nav-group-label">"Account"</span>
                     <A href="/app/settings" on:click=move |_| nav_open.set(false)>
                         <Icon name="gear" color=IconColor::Accent />

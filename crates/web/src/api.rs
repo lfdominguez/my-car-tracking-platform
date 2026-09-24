@@ -1561,3 +1561,43 @@ pub async fn set_live_sharing(car_id: &str, enabled: bool) -> Result<bool, ApiEr
         .and_then(|b| b.as_bool())
         .unwrap_or(enabled))
 }
+
+// --- statistics (#116) ------------------------------------------------------
+
+/// One week / month / year of driving. `distance` and `fuel_used` follow the
+/// trips-list convention: metres and litres (metric) or miles and US gallons.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PeriodStats {
+    /// First day of the bucket (`YYYY-MM-DD`) in the user's timezone.
+    pub period_start: String,
+    pub trips: i64,
+    pub distance: f64,
+    pub duration_s: f64,
+    pub fuel_used: f64,
+    pub co2_kg: f64,
+    pub fuel_cost: Option<f64>,
+}
+
+/// `GET /api/stats/periods`. `bucket` is `week`, `month` or `year`; bounds are
+/// RFC3339.
+pub async fn stats_periods(
+    bucket: &str,
+    car_id: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Vec<PeriodStats>, ApiError> {
+    let mut url = format!(
+        "/api/stats/periods?bucket={}",
+        urlencoding_trip_query(bucket)
+    );
+    if let Some(c) = car_id.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&car_id={}", urlencoding_trip_query(c)));
+    }
+    if let Some(f) = from.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&from={}", urlencoding_trip_query(f)));
+    }
+    if let Some(t) = to.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&to={}", urlencoding_trip_query(t)));
+    }
+    send_json(Request::get(&url)).await
+}
