@@ -109,7 +109,15 @@ async fn get_analysis(
     let raw_err: Option<String> = row.try_get("analysis_error").ok().flatten();
     let analysis_error =
         if raw_err.as_ref().is_some_and(|e| !e.trim().is_empty()) || status == "failed" {
-            Some("System Error".into())
+            // Actionable provider failures (bad key, no credits, unknown model) get
+            // their own line; anything internal stays behind the generic one.
+            Some(
+                raw_err
+                    .as_deref()
+                    .and_then(ai::user_facing_error)
+                    .unwrap_or("System Error")
+                    .into(),
+            )
         } else {
             None
         };
@@ -177,7 +185,7 @@ async fn start_analysis(
     let version: i32 = creds.try_get("openrouter_key_version").unwrap_or(1);
     let model: String = creds
         .try_get::<String, _>("openrouter_model")
-        .unwrap_or_else(|_| "anthropic/claude-3.7-sonnet".into());
+        .unwrap_or_else(|_| ai::DEFAULT_MODEL.into());
     let unit_raw: String = creds
         .try_get::<String, _>("unit_system")
         .unwrap_or_else(|_| "metric".into());

@@ -179,6 +179,9 @@ pub fn public_error(status: &str, raw: Option<&str>) -> Option<String> {
     if status != "failed" {
         return None;
     }
+    if let Some(line) = raw.and_then(ai::user_facing_error) {
+        return Some(line.into());
+    }
     match raw {
         Some(e) if e.contains("api key") || e.contains("OpenRouter API key") => {
             Some("Add your OpenRouter API key in Settings to use chat.".into())
@@ -926,5 +929,13 @@ mod tests {
         assert!(!generic.contains("10.0.0.2"), "{generic}");
         let key = public_error("failed", Some("openrouter/agent error: api key is empty")).unwrap();
         assert!(key.contains("Settings"), "{key}");
+        let credits = public_error(
+            "failed",
+            Some("openrouter account has insufficient credits: openrouter error (HTTP 402)"),
+        )
+        .unwrap();
+        assert!(credits.contains("credits"), "{credits}");
+        let model = public_error("failed", Some("openrouter model not found: x/y")).unwrap();
+        assert!(model.contains("model"), "{model}");
     }
 }

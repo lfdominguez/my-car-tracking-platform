@@ -504,7 +504,7 @@ async fn openrouter_credentials(state: &AppState, user_id: Uuid) -> AppResult<Cr
     let version: i32 = row.try_get("openrouter_key_version").unwrap_or(1);
     let model: String = row
         .try_get::<String, _>("openrouter_model")
-        .unwrap_or_else(|_| "anthropic/claude-3.7-sonnet".into());
+        .unwrap_or_else(|_| ai::DEFAULT_MODEL.into());
 
     let missing = || {
         AppError::BadRequest("Configure your OpenRouter API key in Settings before chatting".into())

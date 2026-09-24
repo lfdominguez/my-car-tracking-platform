@@ -12,6 +12,8 @@ mod math;
 mod openrouter;
 mod prompt;
 mod report;
+#[cfg(test)]
+mod test_http;
 mod tools;
 
 pub use agent::analyze_trip;
@@ -20,6 +22,10 @@ pub use chat::{
     ToolInvocation, run_chat,
 };
 pub use context::*;
-pub use error::AiError;
+pub use error::{AiError, user_facing_error};
 pub use prompt::{ChatCarBrief, chat_system_prompt, quoted_user_text, sanitize_user_text};
 pub use report::*;
+
+/// Model used when a user has not picked one. The single definition: the server's
+/// fallbacks read this rather than repeating the id.
+pub const DEFAULT_MODEL: &str = "anthropic/claude-3.7-sonnet";
