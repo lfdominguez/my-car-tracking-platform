@@ -372,6 +372,9 @@ function speedLinePaintColor() {
   ];
 }
 
+/** Furthest a sample may sit from a traffic frame and still take its colour. */
+const TRAFFIC_MATCH_MAX_GAP_MS = 30000;
+
 function levelForTime(frames, tMs) {
   if (!frames || !frames.length || tMs == null) return null;
   for (let i = 0; i < frames.length; i++) {
@@ -382,14 +385,15 @@ function levelForTime(frames, tMs) {
       return f.level || null;
     }
   }
-  // nearest by start time
+  // Nearest frame by start time, but only close by: without a cap a sample from
+  // minutes (or another trip) away inherited whatever congestion was nearest.
   let best = null;
-  let bestD = Infinity;
+  let bestD = TRAFFIC_MATCH_MAX_GAP_MS;
   for (let i = 0; i < frames.length; i++) {
     const a = Date.parse(frames[i].t_start);
     if (!Number.isFinite(a)) continue;
     const d = Math.abs(a - tMs);
-    if (d < bestD) { bestD = d; best = frames[i].level; }
+    if (d <= bestD) { bestD = d; best = frames[i].level; }
   }
   return best;
 }
@@ -987,6 +991,38 @@ function destroyTripMapEntry(elId, entry) {
   __tripMaps.delete(elId);
 }
 
+/** Identity of a sample list, so a pinned selection never carries over to another trip. */
+function tripKeyOf(points) {
+  if (!points || !points.length) return '';
+  return `${points[0].recorded_at || ''}|${points[points.length - 1].recorded_at || ''}|${points.length}`;
+}
+
+/**
+ * Blank the route while the next trip loads. The page reuses this map when only the
+ * trip id changes; without this the previous trip's route stayed on screen.
+ */
+export function clearTripMap(elId) {
+  const entry = __tripMaps.get(elId);
+  if (!entry) return;
+  entry.points = [];
+  entry.stopFeatures = [];
+  entry.selection = null;
+  entry._tripKey = '';
+  entry._lineFc = emptyFc();
+  entry._arrowsFc = emptyFc();
+  entry._stopsFc = emptyFc();
+  const map = entry.map;
+  if (!map || !map.isStyleLoaded()) return;
+  for (const id of ['trip', 'trip-arrows', 'trip-stops', 'trip-selection']) {
+    const src = map.getSource(id);
+    if (src) src.setData(emptyFc());
+  }
+  try { entry.popup && entry.popup.remove(); } catch (_) {}
+  try { entry.stopPopup && entry.stopPopup.remove(); } catch (_) {}
+  setSelectionClearVisible(false);
+  updateSpeedLegend(null, null, false);
+}
+
 /** Tear down MapLibre instance when the Leptos map component unmounts. */
 export function disposeTripMap(elId) {
   const entry = __tripMaps.get(elId);
@@ -1067,6 +1103,9 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
   if (existing) {
     existing._elId = elId;
     existing.container = el;
+    const tripKey = tripKeyOf(points);
+    if (existing._tripKey !== tripKey) existing.selection = null;
+    existing._tripKey = tripKey;
     existing.points = points;
     existing.stopFeatures = stopFeatures;
     existing._lineFc = lineFc;
@@ -1133,6 +1172,7 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     points,
     stopFeatures,
     selection: null,
+    _tripKey: tripKeyOf(points),
     bound: false,
     overStop: false,
     overRoute: false,
@@ -1181,6 +1221,7 @@ extern "C" {
     fn renderTripMap(el_id: &str, geojson: &JsValue, points_json: &str, traffic_json: &str);
     fn setTripMapSpeedUnit(unit: &str);
     fn disposeTripMap(el_id: &str);
+    fn clearTripMap(el_id: &str);
 }
 
 #[component]
@@ -1214,6 +1255,7 @@ pub fn TripMap(
         let frames = traffic_frames.try_get().unwrap_or_default();
         // Need either a line payload or enough points to draw.
         if gj.is_none() && pts.len() < 2 {
+            clearTripMap(id);
             return;
         }
         let gj_val = gj.unwrap_or_else(|| {

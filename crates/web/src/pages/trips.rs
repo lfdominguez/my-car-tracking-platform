@@ -748,6 +748,20 @@ pub fn TripDetailPage() -> impl IntoView {
             alive_cleanup.store(false, Ordering::SeqCst);
         });
 
+        // `TripDetailPage` is reused when only the `:id` changes, so every per-trip
+        // signal starts over here. Otherwise the previous trip's map, charts, traffic
+        // colours and AI report stay on screen until (or, when a fetch fails, even
+        // after) the new trip loads.
+        vault_si.set(None);
+        trip.set(None);
+        points.set(Vec::new());
+        geojson.set(None);
+        traffic_frames.set(Vec::new());
+        analysis.set(None);
+        analysis_busy.set(false);
+        traffic_busy.set(false);
+        traffic_err.set(None);
+        error.set(None);
         loading.set(true);
         analysis_err.set(None);
 
@@ -1315,6 +1329,16 @@ fn traffic_route_toolbar(
             return;
         }
         let id = t.id.clone();
+        // The poll below outlives a navigation to another trip (the page is reused)
+        // and the page itself. Stop as soon as the trip on screen is no longer the
+        // one being analysed; `try_with_untracked` also reads `false` once disposed.
+        let still_current = {
+            let id = id.clone();
+            move || {
+                trip.try_with_untracked(|t| t.as_ref().is_some_and(|t| t.id == id))
+                    .unwrap_or(false)
+            }
+        };
         traffic_busy.set(true);
         traffic_err.set(None);
         // Optimistic pending so the status badge updates immediately.
@@ -1329,21 +1353,38 @@ fn traffic_route_toolbar(
             trip.set(Some(t));
         }
         leptos::task::spawn_local(async move {
-            match start_trip_traffic_analyze(&id).await {
+            let result = start_trip_traffic_analyze(&id).await;
+            if !still_current() {
+                return;
+            }
+            match result {
                 Ok(acc) => {
                     if acc.status == "ready" {
-                        if let Ok(t) = get_trip(&id).await {
+                        if let Ok(t) = get_trip(&id).await
+                            && still_current()
+                        {
                             trip.set(Some(t));
                         }
-                        if let Ok(f) = trip_traffic_frames(&id).await {
+                        if let Ok(f) = trip_traffic_frames(&id).await
+                            && still_current()
+                        {
                             traffic_frames.set(f);
                         }
-                        traffic_busy.set(false);
+                        if still_current() {
+                            traffic_busy.set(false);
+                        }
                         return;
                     }
                     for _ in 0..60 {
                         gloo_timers::future::TimeoutFuture::new(500).await;
-                        match get_trip(&id).await {
+                        if !still_current() {
+                            return;
+                        }
+                        let polled = get_trip(&id).await;
+                        if !still_current() {
+                            return;
+                        }
+                        match polled {
                             Ok(t) => {
                                 let st = t
                                     .traffic
@@ -1357,10 +1398,13 @@ fn traffic_route_toolbar(
                                     );
                                 trip.set(Some(t));
                                 if done {
-                                    if st == "ready" {
-                                        if let Ok(f) = trip_traffic_frames(&id).await {
-                                            traffic_frames.set(f);
+                                    if st == "ready"
+                                        && let Ok(f) = trip_traffic_frames(&id).await
+                                    {
+                                        if !still_current() {
+                                            return;
                                         }
+                                        traffic_frames.set(f);
                                     }
                                     break;
                                 }
@@ -1629,6 +1673,15 @@ fn TripAiPanel(
             ai_open.set(true);
 
             let alive_job = Arc::clone(&panel_alive);
+            // The panel survives a switch to another trip, so "alive" also means the
+            // trip this job started for is still the one on screen.
+            let alive_job = {
+                let id = id.clone();
+                move || {
+                    alive_job.load(Ordering::SeqCst)
+                        && trip_id.try_get_untracked().as_deref() == Some(id.as_str())
+                }
+            };
             let sealed = trip
                 .try_get_untracked()
                 .flatten()
@@ -1647,14 +1700,14 @@ fn TripAiPanel(
             leptos::task::spawn_local(async move {
                 if sealed {
                     let Some(t) = trip_snap else {
-                        if alive_job.load(Ordering::SeqCst) {
+                        if alive_job() {
                             analysis_err.set(Some("Trip not loaded".into()));
                             analysis_busy.set(false);
                         }
                         return;
                     };
                     if !sess.is_unlocked() {
-                        if alive_job.load(Ordering::SeqCst) {
+                        if alive_job() {
                             analysis_err.set(Some(
                                 "Unlock vault and consent to send a temporary analysis bundle."
                                     .into(),
@@ -1664,7 +1717,7 @@ fn TripAiPanel(
                         return;
                     }
                     if pts.is_empty() {
-                        if alive_job.load(Ordering::SeqCst) {
+                        if alive_job() {
                             analysis_err.set(Some("No decrypted points to analyze".into()));
                             analysis_busy.set(false);
                         }
@@ -1677,7 +1730,7 @@ fn TripAiPanel(
                     });
                     match vault_create_job("ai_analysis", bundle).await {
                         Ok(job) => {
-                            if !alive_job.load(Ordering::SeqCst) {
+                            if !alive_job() {
                                 return;
                             }
                             if job.status != "done" {
@@ -1702,7 +1755,7 @@ fn TripAiPanel(
                             }
                         }
                         Err(e) => {
-                            if alive_job.load(Ordering::SeqCst) {
+                            if alive_job() {
                                 analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
                             }
                         }
@@ -1710,12 +1763,12 @@ fn TripAiPanel(
                 } else {
                     match start_trip_analysis(&id).await {
                         Ok(_) => loop {
-                            if !alive_job.load(Ordering::SeqCst) {
+                            if !alive_job() {
                                 break;
                             }
                             match fetch_trip_analysis(&id).await {
                                 Ok(a) => {
-                                    if !alive_job.load(Ordering::SeqCst) {
+                                    if !alive_job() {
                                         break;
                                     }
                                     let st = a.analysis_status.clone();
@@ -1725,7 +1778,7 @@ fn TripAiPanel(
                                     }
                                 }
                                 Err(e) => {
-                                    if alive_job.load(Ordering::SeqCst) {
+                                    if alive_job() {
                                         analysis_err
                                             .set(Some(sanitize_analysis_ui_error(&e.to_string())));
                                     }
@@ -1735,13 +1788,13 @@ fn TripAiPanel(
                             gloo_timers::future::TimeoutFuture::new(3000).await;
                         },
                         Err(e) => {
-                            if alive_job.load(Ordering::SeqCst) {
+                            if alive_job() {
                                 analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
                             }
                         }
                     }
                 }
-                if alive_job.load(Ordering::SeqCst) {
+                if alive_job() {
                     analysis_busy.set(false);
                 }
             });
