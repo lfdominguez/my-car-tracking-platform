@@ -12,8 +12,9 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 
-/// Character budget for the replayed transcript. Roughly 30k tokens of history,
-/// leaving room for the system prompt, this turn's tool results and the answer.
+/// Character budget for the system prompt, tool schemas and replayed transcript
+/// together (~30k tokens). The rest of `ai::TURN_CHAR_BUDGET` is left for this
+/// turn's tool results, which `ai::run_chat` keeps within that overall budget.
 pub const HISTORY_CHAR_BUDGET: usize = 120_000;
 
 #[derive(Debug, Clone, Serialize)]

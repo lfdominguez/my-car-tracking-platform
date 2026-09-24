@@ -347,15 +347,23 @@ impl GenerationJob {
     async fn run(self, tx: tokio::sync::broadcast::Sender<ai::ChatEvent>) -> Result<(), String> {
         let pool = self.state.pool.clone();
 
-        let history = store::load_transcript(&pool, self.conversation_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let history = store::trim_history(history, store::HISTORY_CHAR_BUDGET);
-
         let system = self
             .system_prompt()
             .await
             .map_err(|e: AppError| e.to_string())?;
+
+        // The history budget is what is left once the system prompt and the tool
+        // schemas — sent with every request — are paid for.
+        let fixed = system.len()
+            + toolbox::definitions()
+                .iter()
+                .map(|t| t.to_string().len())
+                .sum::<usize>();
+        let history = store::load_transcript(&pool, self.conversation_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let history =
+            store::trim_history(history, store::HISTORY_CHAR_BUDGET.saturating_sub(fixed));
 
         let tool_user = McpUser {
             id: self.user_id,

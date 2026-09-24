@@ -22,6 +22,22 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// Cap on a single tool result fed back into the transcript. Long JSON payloads
 /// crowd out conversation history and cost tokens on every later turn.
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
+/// Character budget for one request: system prompt, replayed history, tool schemas
+/// and everything this turn added, together. At ~4 characters per token that is
+/// ~50k tokens, which leaves room for the answer on every model we offer. Without
+/// a running check, twelve round trips of 24k-character tool results could build a
+/// request several times that size and fail the turn outright.
+pub const TURN_CHAR_BUDGET: usize = 200_000;
+/// Replaces a tool result evicted to stay within [`TURN_CHAR_BUDGET`].
+const EVICTED_TOOL_RESULT: &str = "[result omitted to stay within the context budget; \
+                                   call the tool again if you still need it]";
+/// Sent (never persisted) when the model must stop calling tools and answer.
+const ANSWER_NOW: &str = "Answer the user now with the data you already have. Tools are no \
+                          longer available for this question; say plainly if something \
+                          could not be checked.";
+/// Appended when the model hit its output limit mid-answer.
+const TRUNCATED_NOTICE: &str = "\n\n_[This answer was cut off because it reached the length \
+                                limit. Ask me to continue, or narrow the question.]_";
 
 /// The read-only data tools a chat turn may call.
 ///
@@ -83,6 +99,8 @@ pub struct ToolInvocation {
 pub struct ChatOptions {
     pub max_turns: usize,
     pub max_tokens: u32,
+    /// See [`TURN_CHAR_BUDGET`].
+    pub context_char_budget: usize,
 }
 
 impl Default for ChatOptions {
@@ -90,11 +108,13 @@ impl Default for ChatOptions {
         Self {
             max_turns: MAX_CHAT_TURNS,
             max_tokens: DEFAULT_MAX_TOKENS,
+            context_char_budget: TURN_CHAR_BUDGET,
         }
     }
 }
 
 /// The outcome of one user turn.
+#[derive(Debug)]
 pub struct ChatTurnResult {
     /// Final assistant text shown to the user.
     pub content: String,
@@ -105,6 +125,8 @@ pub struct ChatTurnResult {
     pub tool_trace: Vec<ToolInvocation>,
     /// Model id as reported by OpenRouter (providers may resolve aliases).
     pub model: Option<String>,
+    /// The model stopped at its output limit; `content` ends with a notice saying so.
+    pub truncated: bool,
 }
 
 /// Run one user turn to completion, streaming fragments to `sink`.
@@ -131,18 +153,36 @@ pub async fn run_chat(
     }
 
     let client = OpenRouterClient::new(api_key)?;
-    let tool_defs = toolbox.definitions();
+    run_chat_with(&client, model, system, history, toolbox, sink, opts).await
+}
+
+pub(crate) async fn run_chat_with(
+    client: &OpenRouterClient,
+    model: &str,
+    system: &str,
+    history: Vec<Value>,
+    toolbox: &dyn ChatToolbox,
+    sink: &dyn ChatSink,
+    opts: ChatOptions,
+) -> Result<ChatTurnResult, AiError> {
+    let all_tools = toolbox.definitions();
+    let schema_chars: usize = all_tools.iter().map(|t| t.to_string().len()).sum();
+    // Room left for messages once the tool schemas are paid for.
+    let message_budget = opts.context_char_budget.saturating_sub(schema_chars);
 
     let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 1);
     messages.push(json!({ "role": "system", "content": system }));
     messages.extend(history);
+    // Everything from here on was added by this turn and may be evicted.
+    let turn_start = messages.len();
+    let mut answer_now = false;
 
     let mut new_messages: Vec<Value> = Vec::new();
     let mut tool_trace: Vec<ToolInvocation> = Vec::new();
     let mut content = String::new();
     let mut resolved_model: Option<String> = None;
 
-    info!(%model, tools = tool_defs.len(), "starting chat turn");
+    info!(%model, tools = all_tools.len(), "starting chat turn");
 
     for turn_idx in 0..opts.max_turns {
         // Each round trip streams into the same accumulated `content`, so text from a
@@ -150,9 +190,25 @@ pub async fn run_chat(
         let base_offset = content.len();
         let mut streamed = String::new();
 
+        // The last round trip, or one that no longer fits, must produce the answer:
+        // offer no tools and say so, rather than ending on "ran out of steps".
+        let last_round = turn_idx + 1 == opts.max_turns;
+        let mut request: Vec<Value>;
+        let (request_messages, tool_defs): (&[Value], &[Value]) = if answer_now || last_round {
+            request = messages.clone();
+            request.push(json!({ "role": "user", "content": ANSWER_NOW }));
+            (&request, &[])
+        } else {
+            (&messages, &all_tools)
+        };
+
         let turn = client
-            .chat_completion_stream(model, &messages, &tool_defs, opts.max_tokens, |delta| {
-                match delta {
+            .chat_completion_stream(
+                model,
+                request_messages,
+                tool_defs,
+                opts.max_tokens,
+                |delta| match delta {
                     StreamDelta::Text(text) => {
                         let offset = base_offset + streamed.len();
                         streamed.push_str(&text);
@@ -161,8 +217,8 @@ pub async fn run_chat(
                     StreamDelta::ToolCallNamed(name) => {
                         sink.emit(ChatEvent::ToolStarted { name });
                     }
-                }
-            })
+                },
+            )
             .await?;
 
         if resolved_model.is_none() {
@@ -172,7 +228,19 @@ pub async fn run_chat(
 
         if turn.tool_calls.is_empty() {
             // Plain answer: this is the end of the turn.
-            let text = turn.content.unwrap_or(streamed);
+            let mut text = turn.content.unwrap_or(streamed);
+            let truncated = turn.finish_reason.as_deref() == Some("length");
+            if truncated {
+                // Say so in the answer itself: a sentence that simply stops reads
+                // like a finished (and wrong) answer.
+                warn!("chat answer hit the output token limit");
+                sink.emit(ChatEvent::Delta {
+                    offset: content.len(),
+                    text: TRUNCATED_NOTICE.to_string(),
+                });
+                content.push_str(TRUNCATED_NOTICE);
+                text.push_str(TRUNCATED_NOTICE);
+            }
             let message = json!({ "role": "assistant", "content": text });
             new_messages.push(message);
 
@@ -190,6 +258,7 @@ pub async fn run_chat(
                 new_messages,
                 tool_trace,
                 model: resolved_model,
+                truncated,
             });
         }
 
@@ -237,6 +306,14 @@ pub async fn run_chat(
             messages.push(tool_msg.clone());
             new_messages.push(tool_msg);
         }
+
+        if !fit_turn_budget(&mut messages, turn_start, message_budget) {
+            warn!(
+                budget = message_budget,
+                "chat turn exceeds its context budget; asking for an answer now"
+            );
+            answer_now = true;
+        }
     }
 
     // Ran out of round trips. Anything already streamed is still worth keeping.
@@ -257,7 +334,40 @@ pub async fn run_chat(
         new_messages,
         tool_trace,
         model: resolved_model,
+        truncated: false,
     })
+}
+
+/// Approximate request size in characters, as serialized.
+pub fn approx_chars(messages: &[Value]) -> usize {
+    messages.iter().map(|m| m.to_string().len()).sum()
+}
+
+/// Keep the request under `budget` by evicting this turn's tool results, oldest
+/// first, down to a short stub. Returns `false` when even that is not enough —
+/// the caller must then stop offering tools.
+///
+/// Only messages from `turn_start` on are touched: the replayed history was already
+/// trimmed to its own budget, and the stub keeps each reply's `tool_call_id`, so
+/// the call/reply pairing the provider validates stays intact. The stored transcript
+/// is unaffected; it keeps the full results.
+fn fit_turn_budget(messages: &mut [Value], turn_start: usize, budget: usize) -> bool {
+    let mut total = approx_chars(messages);
+    if total <= budget {
+        return true;
+    }
+    for m in messages.iter_mut().skip(turn_start) {
+        if total <= budget {
+            break;
+        }
+        if m["role"] != "tool" || m["content"] == EVICTED_TOOL_RESULT {
+            continue;
+        }
+        let before = m.to_string().len();
+        m["content"] = Value::String(EVICTED_TOOL_RESULT.to_string());
+        total = total - before + m.to_string().len();
+    }
+    total <= budget
 }
 
 fn assistant_tool_call_message(tool_calls: &[ToolCall], content: Option<&str>) -> Value {
@@ -307,6 +417,262 @@ mod tests {
         fn emit(&self, event: ChatEvent) {
             self.0.lock().unwrap().push(event);
         }
+    }
+
+    use crate::test_http::{Scripted, serve};
+
+    /// Records every call and answers with a fixed-size payload.
+    struct FakeTools {
+        calls: Mutex<Vec<(String, String)>>,
+        result_chars: usize,
+    }
+
+    impl FakeTools {
+        fn new(result_chars: usize) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                result_chars,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChatToolbox for FakeTools {
+        fn definitions(&self) -> Vec<Value> {
+            vec![json!({
+                "type": "function",
+                "function": {
+                    "name": "get_trip",
+                    "description": "trip",
+                    "parameters": { "type": "object", "properties": {} }
+                }
+            })]
+        }
+
+        async fn dispatch(&self, name: &str, arguments: &str) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((name.to_string(), arguments.to_string()));
+            Ok(format!(
+                "{{\"data\":\"{}\"}}",
+                "x".repeat(self.result_chars)
+            ))
+        }
+    }
+
+    fn text_frame(text: &str, finish: Option<&str>) -> String {
+        let finish = finish.map_or("null".to_string(), |f| format!("\"{f}\""));
+        format!(
+            "data: {{\"model\":\"m\",\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":{finish}}}]}}\n\n",
+            serde_json::to_string(text).unwrap()
+        )
+    }
+
+    fn tool_frame(index: u32, id: &str, args: &str) -> String {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":{index},\"id\":\"{id}\",\"function\":{{\"name\":\"get_trip\",\"arguments\":{}}}}}]}}}}]}}\n\n",
+            serde_json::to_string(args).unwrap()
+        )
+    }
+
+    fn sse(frames: &[String]) -> Scripted {
+        let refs: Vec<&str> = frames.iter().map(String::as_str).collect();
+        Scripted::sse(&refs)
+    }
+
+    async fn run(
+        endpoint: &str,
+        tools: &FakeTools,
+        sink: &RecordingSink,
+        opts: ChatOptions,
+    ) -> Result<ChatTurnResult, AiError> {
+        let client = OpenRouterClient::with_endpoint("sk", endpoint).unwrap();
+        run_chat_with(
+            &client,
+            "m",
+            "system prompt",
+            vec![json!({ "role": "user", "content": "q" })],
+            tools,
+            sink,
+            opts,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_length_cut_answer_is_marked_truncated() {
+        let mock = serve(vec![sse(&[
+            text_frame("Your trips in August were", None),
+            text_frame(" mostly", Some("length")),
+            "data: [DONE]\n\n".into(),
+        ])])
+        .await;
+        let sink = RecordingSink(Mutex::new(Vec::new()));
+        let out = run(
+            &mock.endpoint,
+            &FakeTools::new(1),
+            &sink,
+            ChatOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert!(out.truncated);
+        assert!(out.content.ends_with(TRUNCATED_NOTICE), "{}", out.content);
+        // The live client is told too, at the right offset.
+        let events = sink.0.lock().unwrap();
+        let last_delta = events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                ChatEvent::Delta { offset, text } => Some((*offset, text.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(last_delta.1, TRUNCATED_NOTICE);
+        assert_eq!(last_delta.0, "Your trips in August were mostly".len());
+    }
+
+    #[tokio::test]
+    async fn parallel_tool_calls_are_all_answered_in_order() {
+        let mock = serve(vec![
+            sse(&[
+                tool_frame(0, "call_a", "{\"trip_id\":\"a\"}"),
+                tool_frame(1, "call_b", "{\"trip_id\":\"b\"}"),
+                "data: [DONE]\n\n".into(),
+            ]),
+            sse(&[text_frame("done", Some("stop"))]),
+        ])
+        .await;
+        let tools = FakeTools::new(10);
+        let sink = RecordingSink(Mutex::new(Vec::new()));
+        let out = run(&mock.endpoint, &tools, &sink, ChatOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(out.content, "done");
+        assert_eq!(tools.calls.lock().unwrap().len(), 2);
+
+        let second = &mock.bodies().await[1];
+        let msgs = second["messages"].as_array().unwrap();
+        let n = msgs.len();
+        assert_eq!(msgs[n - 3]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(msgs[n - 2]["tool_call_id"], "call_a");
+        assert_eq!(msgs[n - 1]["tool_call_id"], "call_b");
+        // Persisted shape: one assistant call row, two replies, then the answer.
+        assert_eq!(out.new_messages.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn tool_results_are_evicted_to_fit_the_turn_budget() {
+        let mock = serve(vec![
+            sse(&[tool_frame(0, "c1", "{}"), "data: [DONE]\n\n".into()]),
+            sse(&[tool_frame(0, "c2", "{}"), "data: [DONE]\n\n".into()]),
+            sse(&[text_frame("answer", Some("stop"))]),
+        ])
+        .await;
+        // Each result is ~20k chars; the budget holds one, not two.
+        let tools = FakeTools::new(20_000);
+        let sink = RecordingSink(Mutex::new(Vec::new()));
+        let opts = ChatOptions {
+            context_char_budget: 30_000,
+            ..ChatOptions::default()
+        };
+        let out = run(&mock.endpoint, &tools, &sink, opts).await.unwrap();
+        assert_eq!(out.content, "answer");
+
+        let third = &mock.bodies().await[2];
+        let msgs = third["messages"].as_array().unwrap();
+        let tool_contents: Vec<&str> = msgs
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(|m| m["content"].as_str().unwrap())
+            .collect();
+        assert_eq!(tool_contents.len(), 2);
+        assert_eq!(tool_contents[0], EVICTED_TOOL_RESULT);
+        assert!(tool_contents[1].len() > 20_000);
+        assert!(approx_chars(msgs) <= 30_000);
+        // The stored transcript keeps the full results.
+        assert!(
+            out.new_messages
+                .iter()
+                .filter(|m| m["role"] == "tool")
+                .all(|m| m["content"].as_str().unwrap().len() > 20_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_cannot_fit_stops_offering_tools() {
+        let mock = serve(vec![
+            sse(&[tool_frame(0, "c1", "{}"), "data: [DONE]\n\n".into()]),
+            sse(&[text_frame("best effort", Some("stop"))]),
+        ])
+        .await;
+        let tools = FakeTools::new(20_000);
+        let sink = RecordingSink(Mutex::new(Vec::new()));
+        // Too small for even the stubbed request plus the schema: answer now.
+        let opts = ChatOptions {
+            context_char_budget: 200,
+            ..ChatOptions::default()
+        };
+        let out = run(&mock.endpoint, &tools, &sink, opts).await.unwrap();
+        assert_eq!(out.content, "best effort");
+        let second = &mock.bodies().await[1];
+        assert!(second.get("tools").is_none(), "{second}");
+        let last = second["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(last["content"], ANSWER_NOW);
+    }
+
+    #[tokio::test]
+    async fn the_last_round_trip_must_answer() {
+        let mock = serve(vec![
+            sse(&[tool_frame(0, "c1", "{}"), "data: [DONE]\n\n".into()]),
+            sse(&[text_frame("final", Some("stop"))]),
+        ])
+        .await;
+        let tools = FakeTools::new(10);
+        let sink = RecordingSink(Mutex::new(Vec::new()));
+        let opts = ChatOptions {
+            max_turns: 2,
+            ..ChatOptions::default()
+        };
+        let out = run(&mock.endpoint, &tools, &sink, opts).await.unwrap();
+        assert_eq!(out.content, "final");
+        let bodies = mock.bodies().await;
+        assert!(bodies[0].get("tools").is_some());
+        assert!(bodies[1].get("tools").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_mid_stream_error_fails_the_turn_without_a_done_event() {
+        let mock = serve(vec![Scripted::sse(&[
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            "data: {\"error\":{\"message\":\"Provider crashed\",\"code\":502}}\n\n",
+        ])])
+        .await;
+        let sink = RecordingSink(Mutex::new(Vec::new()));
+        let err = run(
+            &mock.endpoint,
+            &FakeTools::new(1),
+            &sink,
+            ChatOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Provider crashed"), "{err}");
+        // Only the caller may announce the end of a turn.
+        assert!(
+            !sink
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Done { .. }))
+        );
     }
 
     #[test]

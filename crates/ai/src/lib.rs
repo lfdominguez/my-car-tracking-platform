@@ -19,7 +19,7 @@ mod tools;
 pub use agent::analyze_trip;
 pub use chat::{
     ChatEvent, ChatOptions, ChatSink, ChatToolbox, ChatTurnResult, MAX_CHAT_TURNS, NullSink,
-    ToolInvocation, run_chat,
+    TURN_CHAR_BUDGET, ToolInvocation, run_chat,
 };
 pub use context::*;
 pub use error::{AiError, user_facing_error};
