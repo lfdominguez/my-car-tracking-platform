@@ -429,56 +429,56 @@ impl GenerationJob {
         Ok(())
     }
 
-    /// Build the system prompt from facts the model would otherwise have to spend a
-    /// round trip discovering.
     async fn system_prompt(&self) -> AppResult<String> {
-        let tool_user = McpUser {
-            id: self.user_id,
-            unit_system: self.unit_system,
-        };
-        let ctx = crate::mcp::tools::ToolCtx {
-            state: &self.state,
-            user: &tool_user,
-        };
-        let cars = crate::mcp::tools::list_cars(&ctx).await?;
-        let value = serde_json::to_value(&cars).unwrap_or(Value::Null);
-
-        let briefs: Vec<ai::ChatCarBrief> = value
-            .as_array()
-            .map(|rows| {
-                rows.iter()
-                    .filter(|c| {
-                        // A pinned car narrows the thread; other cars stay callable
-                        // by id but are not advertised as the default subject.
-                        self.car_focus.0.is_none_or(|focus| {
-                            c["id"].as_str() == Some(focus.to_string().as_str())
-                        })
-                    })
-                    .map(|c| ai::ChatCarBrief {
-                        id: string_field(c, "id"),
-                        name: string_field(c, "name"),
-                        make_model: string_field(c, "make_model"),
-                        fuel_class: string_field(c, "fuel_class"),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let today = chrono::Utc::now().format("%Y-%m-%d (%A)").to_string();
-        Ok(ai::chat_system_prompt(
-            self.unit_system.as_str(),
-            &today,
-            &briefs,
-        ))
+        system_prompt_for(
+            &self.state,
+            self.user_id,
+            self.unit_system,
+            self.car_focus.0,
+        )
+        .await
     }
 }
 
-fn string_field(value: &Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string()
+/// Build the chat system prompt from facts the model would otherwise have to spend a
+/// round trip discovering: units, today's date and the cars (with their fuel class).
+///
+/// Public so integration tests can assert what the model is actually told.
+pub async fn system_prompt_for(
+    state: &AppState,
+    user_id: Uuid,
+    unit_system: UnitSystem,
+    car_focus: Option<Uuid>,
+) -> AppResult<String> {
+    let tool_user = McpUser {
+        id: user_id,
+        unit_system,
+    };
+    let ctx = crate::mcp::tools::ToolCtx {
+        state,
+        user: &tool_user,
+    };
+    let cars = crate::mcp::tools::list_cars(&ctx).await?;
+
+    let briefs: Vec<ai::ChatCarBrief> = cars
+        .into_iter()
+        // A pinned car narrows the thread; other cars stay callable by id but are
+        // not advertised as the default subject.
+        .filter(|c| car_focus.is_none_or(|focus| c.id == focus))
+        .map(|c| ai::ChatCarBrief {
+            id: c.id.to_string(),
+            name: c.name,
+            make_model: c.make_model,
+            fuel_class: c.fuel_class,
+        })
+        .collect();
+
+    let today = chrono::Utc::now().format("%Y-%m-%d (%A)").to_string();
+    Ok(ai::chat_system_prompt(
+        unit_system.as_str(),
+        &today,
+        &briefs,
+    ))
 }
 
 /// Decrypt the user's OpenRouter key, mirroring `analysis::start_analysis`.
@@ -569,14 +569,6 @@ mod tests {
         assert_eq!(value["kind"], "delta");
         assert_eq!(value["offset"], 7);
         assert_eq!(value["text"], "hi");
-    }
-
-    #[test]
-    fn string_field_falls_back_rather_than_panicking() {
-        let value = json!({ "name": "Golf", "fuel_class": null });
-        assert_eq!(string_field(&value, "name"), "Golf");
-        assert_eq!(string_field(&value, "fuel_class"), "unknown");
-        assert_eq!(string_field(&value, "absent"), "unknown");
     }
 
     #[test]
