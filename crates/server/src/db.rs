@@ -10,9 +10,17 @@ pub enum DbError {
     Migrate(#[from] sqlx::migrate::MigrateError),
 }
 
+/// Pool size when `DATABASE_MAX_CONNECTIONS` is unset.
+const DEFAULT_MAX_CONNECTIONS: u32 = 10;
+
 pub async fn connect(database_url: &str) -> Result<PgPool, DbError> {
+    let max = std::env::var("DATABASE_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(max)
         .connect(database_url)
         .await?;
     Ok(pool)

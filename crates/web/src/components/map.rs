@@ -4,6 +4,56 @@ use wasm_bindgen::prelude::*;
 use crate::api::TripPoint;
 
 #[wasm_bindgen(inline_js = r#"
+/**
+ * Load a self-hosted vendor script on first use instead of blocking <head>.
+ * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
+ * shared on `window`, so every snippet that needs the library waits on one fetch.
+ */
+function loadVendorScript(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[src]) {
+    loads[src] = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => (window[globalName] ? resolve() : reject(new Error(`${src} loaded without ${globalName}`)));
+      s.onerror = () => {
+        delete loads[src];
+        reject(new Error(`failed to load ${src}`));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return loads[src];
+}
+/** Stylesheet counterpart of loadVendorScript; resolves once applied (errors too). */
+function loadVendorCss(href) {
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[href]) {
+    loads[href] = new Promise((resolve) => {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = href;
+      // A missing stylesheet degrades the controls, not the map: never block on it.
+      l.onload = l.onerror = () => resolve();
+      document.head.appendChild(l);
+    });
+  }
+  return loads[href];
+}
+
+/** MapLibre warns about (and mis-lays out) a map created before its CSS applied. */
+function loadMapLibre() {
+  return Promise.all([
+    loadVendorCss('/vendor/maplibre-gl.css'),
+    loadVendorScript('/vendor/maplibre-gl.js', 'maplibregl'),
+  ]);
+}
+
+/** Latest render arguments per map element while MapLibre is still loading. */
+const __pendingTripMaps = new Map();
+
 let __tripSpeedUnit = 'km/h';
 const TRIP_MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const TRIP_MAP_PITCH = 48;
@@ -58,6 +108,12 @@ function isStoppedSample(p, prev) {
   const dtH = (t1 - t0) / 3600000;
   if (dtH <= 0) return d < 3;
   return (d / 1000) / dtH <= 2;
+}
+
+/** UI text published by the app (src/i18n.rs) for the current language. */
+function tt(key, fallback) {
+  const table = window.__ctpI18n;
+  return (table && table[key]) || fallback;
 }
 
 function formatDwell(ms) {
@@ -244,11 +300,61 @@ function bindArrowZoomRefresh(entry) {
   });
 }
 
+/** Colour steps along the speed ramp; consecutive segments in one step share a line. */
+const SPEED_BINS = 24;
+
+/** Furthest a sample may sit from a traffic frame and still take its colour. */
+const TRAFFIC_MATCH_MAX_GAP_MS = 30000;
+
+/** Frames with parsed bounds, sorted by start, for binary search. */
+function prepareTrafficFrames(frames) {
+  return (frames || [])
+    .map((f) => ({ a: Date.parse(f.t_start), b: Date.parse(f.t_end), level: f.level || null }))
+    .filter((f) => Number.isFinite(f.a) && Number.isFinite(f.b) && f.level)
+    .sort((x, y) => x.a - y.a);
+}
+
 /**
- * Route as short segments colored by speed (trip-local min/max → speed_t 0..1).
- * Each segment carries hover/click telemetry (speed, rpm, time, point index).
+ * Congestion level at `tMs`: the frame containing it, else the frame starting
+ * nearest to it within TRAFFIC_MATCH_MAX_GAP_MS. O(log frames) per lookup — the
+ * old linear scan per segment made traffic colouring features × frames.
  */
-function buildSpeedLineFeatures(points, fallbackCoordinates) {
+function levelForTime(sorted, tMs) {
+  if (!sorted.length || tMs == null) return null;
+  // Last frame starting at or before tMs.
+  let lo = 0;
+  let hi = sorted.length - 1;
+  let idx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid].a <= tMs) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  // Frames can overlap slightly; the latest-starting one that still covers tMs wins.
+  for (let i = idx; i >= 0 && i >= idx - 2; i--) {
+    if (tMs <= sorted[i].b) return sorted[i].level;
+  }
+  // Nearest frame by start time, but only close by: without a cap a sample from
+  // minutes (or another trip) away inherited whatever congestion was nearest.
+  let best = null;
+  let bestD = TRAFFIC_MATCH_MAX_GAP_MS;
+  for (const i of [idx, idx + 1]) {
+    if (i < 0 || i >= sorted.length) continue;
+    const d = Math.abs(sorted[i].a - tMs);
+    if (d <= bestD) { bestD = d; best = sorted[i].level; }
+  }
+  return best;
+}
+
+/**
+ * Route as speed- (or congestion-) coloured lines.
+ *
+ * Adjacent segments that land in the same colour step are merged into one
+ * LineString, so a long trip is a few hundred features instead of one per sample
+ * pair. Each feature keeps the sample index range it covers (`i0`..`i1`); hover and
+ * click resolve the sample under the cursor from that range (see
+ * `sampleNearLngLat`) rather than carrying telemetry on every segment.
+ */
+function buildSpeedLineFeatures(points, fallbackCoordinates, trafficFrames) {
   const coords = [];
   (points || []).forEach((p, idx) => {
     if (p && Number.isFinite(p.lon) && Number.isFinite(p.lat)) {
@@ -256,8 +362,7 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
         lon: p.lon,
         lat: p.lat,
         speed: pointSpeed(p),
-        rpm: pointRpm(p),
-        recorded_at: p.recorded_at || null,
+        t: parseTimeMs(p.recorded_at),
         point_index: idx
       });
     }
@@ -266,20 +371,18 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
   if (coords.length < 2) {
     const fc = fallbackCoordinates || [];
     if (fc.length < 2) {
-      return { features: [], minSpeed: null, maxSpeed: null, hasSpeed: false };
+      return { features: [], minSpeed: null, maxSpeed: null, hasSpeed: false, usedTraffic: false };
     }
     return {
       features: [{
         type: 'Feature',
-        properties: {
-          speed_t: 0.45,
-          point_index: 0
-        },
+        properties: { speed_t: 0.45, i0: 0, i1: 0 },
         geometry: { type: 'LineString', coordinates: fc }
       }],
       minSpeed: null,
       maxSpeed: null,
-      hasSpeed: false
+      hasSpeed: false,
+      usedTraffic: false
     };
   }
 
@@ -296,63 +399,122 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
     else if (last != null) speeds[i] = last;
   }
 
-  const finite = speeds.filter((s) => s != null && Number.isFinite(s));
-  let minSpeed = finite.length ? Math.min(...finite) : null;
-  let maxSpeed = finite.length ? Math.max(...finite) : null;
+  // Colour scale spans p2–p98 rather than min–max, so one leftover outlier cannot
+  // squash the whole route into a single hue. (Sorting a copy also avoids
+  // Math.min(...spread), which throws RangeError past the engine's argument limit
+  // on long trips.)
+  const finite = speeds.filter((s) => s != null && Number.isFinite(s)).sort((a, b) => a - b);
+  const pct = (p) => finite[Math.min(finite.length - 1, Math.max(0, Math.round((finite.length - 1) * p)))];
+  const minSpeed = finite.length ? pct(0.02) : null;
+  const maxSpeed = finite.length ? pct(0.98) : null;
   const span = (minSpeed != null && maxSpeed != null) ? (maxSpeed - minSpeed) : 0;
   const hasSpeed = finite.length > 0;
 
+  const frames = prepareTrafficFrames(trafficFrames);
+  let usedTraffic = false;
+
   const features = [];
+  let run = null; // { key, props, coordinates }
   for (let i = 0; i < coords.length - 1; i++) {
     const a = coords[i];
     const b = coords[i + 1];
     const sa = speeds[i];
     const sb = speeds[i + 1];
-    let speed = null;
-    if (sa != null && sb != null) speed = (sa + sb) / 2;
-    else speed = sa ?? sb;
+    const speed = (sa != null && sb != null) ? (sa + sb) / 2 : (sa ?? sb);
 
-    let speed_t = 0.45;
-    if (hasSpeed && speed != null) {
-      speed_t = span > 1e-6 ? (speed - minSpeed) / span : 0.5;
-      speed_t = Math.max(0, Math.min(1, speed_t));
-    }
+    const level = frames.length ? levelForTime(frames, a.t) : null;
+    const congestion = level && TRAFFIC_LEVEL_COLORS[level] ? level : null;
+    if (congestion) usedTraffic = true;
 
-    // Prefer start sample for click sync; average RPM when both present.
-    let rpm = a.rpm;
-    if (a.rpm != null && b.rpm != null) rpm = (a.rpm + b.rpm) / 2;
-    else rpm = a.rpm ?? b.rpm;
-
-    // Omit null numerics — MapLibre style exprs expect number|undefined, not JSON null.
-    const props = {
-      speed_t,
-      point_index: a.point_index
-    };
-    if (speed != null && Number.isFinite(speed)) props.speed_kph = speed;
-    if (rpm != null && Number.isFinite(rpm)) props.rpm = rpm;
-    if (a.recorded_at) props.recorded_at = a.recorded_at;
-
-    features.push({
-      type: 'Feature',
-      properties: props,
-      geometry: {
-        type: 'LineString',
-        coordinates: [[a.lon, a.lat], [b.lon, b.lat]]
+    let bin = null;
+    if (!congestion) {
+      let speed_t = 0.45;
+      if (hasSpeed && speed != null) {
+        speed_t = span > 1e-6 ? (speed - minSpeed) / span : 0.5;
+        speed_t = Math.max(0, Math.min(1, speed_t));
       }
-    });
-  }
+      bin = Math.round(speed_t * (SPEED_BINS - 1));
+    }
+    const key = congestion ? `t:${congestion}` : `s:${bin}`;
 
-  return { features, minSpeed, maxSpeed, hasSpeed };
+    if (run && run.key === key) {
+      run.coordinates.push([b.lon, b.lat]);
+      run.props.i1 = b.point_index;
+      continue;
+    }
+    if (run) features.push(runFeature(run));
+    // Omit null numerics — MapLibre style exprs expect number|undefined, not JSON null.
+    const props = { i0: a.point_index, i1: b.point_index };
+    if (congestion) {
+      props.congestion_color = TRAFFIC_LEVEL_COLORS[congestion];
+      props.traffic_level = congestion;
+    } else {
+      props.speed_t = bin / (SPEED_BINS - 1);
+    }
+    run = { key, props, coordinates: [[a.lon, a.lat], [b.lon, b.lat]] };
+  }
+  if (run) features.push(runFeature(run));
+
+  return { features, minSpeed, maxSpeed, hasSpeed, usedTraffic };
 }
 
-const TRAFFIC_LEVEL_COLORS = {
-  free: '#2ecc71',
-  light: '#a8e063',
-  moderate: '#f1c40f',
-  heavy: '#e67e22',
-  jam: '#e74c3c',
-  signal_stop: '#95a5a6'
-};
+function runFeature(run) {
+  return {
+    type: 'Feature',
+    properties: run.props,
+    geometry: { type: 'LineString', coordinates: run.coordinates }
+  };
+}
+
+/**
+ * The positioned sample within `[i0, i1]` closest to the cursor, as
+ * `{ index, point }`, or null. Scans only the hovered feature's range.
+ */
+function sampleNearLngLat(points, props, lngLat) {
+  if (!points || !points.length || !props || !lngLat) return null;
+  const i0 = Math.max(0, Math.floor(propNum(props.i0) ?? 0));
+  const i1 = Math.min(points.length - 1, Math.floor(propNum(props.i1) ?? i0));
+  const k = Math.cos((lngLat.lat * Math.PI) / 180);
+  let best = null;
+  let bestD = Infinity;
+  for (let i = i0; i <= i1; i++) {
+    const p = points[i];
+    if (!p || !Number.isFinite(p.lon) || !Number.isFinite(p.lat)) continue;
+    const dx = (p.lon - lngLat.lng) * k;
+    const dy = p.lat - lngLat.lat;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best == null ? null : { index: best, point: points[best] };
+}
+
+/**
+ * Speed ramp: viridis. Perceptually uniform and still ordered under the common
+ * colour-vision deficiencies and in greyscale, because lightness rises steadily
+ * with speed (the old blue→green→red ramp relied on red/green hue alone).
+ */
+const SPEED_RAMP = [
+  [0.0, '#440154'],
+  [0.25, '#3b528b'],
+  [0.5, '#21918c'],
+  [0.75, '#5ec962'],
+  [1.0, '#fde725']
+];
+
+/**
+ * Congestion: one warm hue family whose lightness falls from free flow to jam, so
+ * the order reads without telling red from green. Signal stops are a neutral grey
+ * (no chroma), set apart from the ramp rather than placed on it.
+ */
+const TRAFFIC_LEVELS = [
+  ['free', 'Free flow', '#fcd34d'],
+  ['light', 'Light', '#f59e0b'],
+  ['moderate', 'Moderate', '#d9480f'],
+  ['heavy', 'Heavy', '#9f1239'],
+  ['jam', 'Jam', '#4a0d2a'],
+  ['signal_stop', 'Signal stop', '#9ca3af']
+];
+const TRAFFIC_LEVEL_COLORS = Object.fromEntries(TRAFFIC_LEVELS.map(([k, , c]) => [k, c]));
 
 function speedLinePaintColor() {
   // Prefer discrete congestion color when present; else speed gradient.
@@ -360,53 +522,43 @@ function speedLinePaintColor() {
     'case',
     ['has', 'congestion_color'],
     ['to-color', ['get', 'congestion_color']],
-    [
-      'interpolate', ['linear'], ['coalesce', ['get', 'speed_t'], 0.45],
-      0.0, '#1d4ed8',
-      0.2, '#0891b2',
-      0.4, '#16a34a',
-      0.6, '#ca8a04',
-      0.8, '#ea580c',
-      1.0, '#dc2626'
-    ]
+    ['interpolate', ['linear'], ['coalesce', ['get', 'speed_t'], 0.45], ...SPEED_RAMP.flat()]
   ];
 }
 
-function levelForTime(frames, tMs) {
-  if (!frames || !frames.length || tMs == null) return null;
-  for (let i = 0; i < frames.length; i++) {
-    const f = frames[i];
-    const a = Date.parse(f.t_start);
-    const b = Date.parse(f.t_end);
-    if (Number.isFinite(a) && Number.isFinite(b) && tMs >= a && tMs <= b) {
-      return f.level || null;
-    }
-  }
-  // nearest by start time
-  let best = null;
-  let bestD = Infinity;
-  for (let i = 0; i < frames.length; i++) {
-    const a = Date.parse(frames[i].t_start);
-    if (!Number.isFinite(a)) continue;
-    const d = Math.abs(a - tMs);
-    if (d < bestD) { bestD = d; best = frames[i].level; }
-  }
-  return best;
+function speedRampCss() {
+  return `linear-gradient(90deg,${SPEED_RAMP.map(([t, c]) => `${c} ${t * 100}%`).join(',')})`;
 }
 
-function applyTrafficColors(features, frames) {
-  if (!frames || !frames.length || !features || !features.length) return false;
-  let any = false;
-  for (let i = 0; i < features.length; i++) {
-    const t = parseTimeMs(features[i].properties && features[i].properties.recorded_at);
-    const level = levelForTime(frames, t);
-    if (level && TRAFFIC_LEVEL_COLORS[level]) {
-      features[i].properties.congestion_color = TRAFFIC_LEVEL_COLORS[level];
-      features[i].properties.traffic_level = level;
-      any = true;
-    }
+/** Hard-stop gradient of the five congestion steps (signal stop is listed separately). */
+function trafficRampCss() {
+  const steps = TRAFFIC_LEVELS.filter(([k]) => k !== 'signal_stop');
+  const w = 100 / steps.length;
+  return `linear-gradient(90deg,${steps
+    .map(([, , c], i) => `${c} ${i * w}%,${c} ${(i + 1) * w}%`)
+    .join(',')})`;
+}
+
+/** Fill the labelled congestion key under the map (text labels, not colour alone). */
+function renderTrafficLegend(visible) {
+  const list = document.getElementById('trip-traffic-legend');
+  if (!list) return;
+  list.hidden = !visible;
+  if (!visible) return;
+  // Rebuilt on every show so the labels follow the current language.
+  list.replaceChildren();
+  for (const [key, fallback, color] of TRAFFIC_LEVELS) {
+    const label = tt('js.traffic.' + key, fallback);
+    const li = document.createElement('li');
+    li.className = 'map-traffic-legend-item';
+    const sw = document.createElement('span');
+    sw.className = 'map-traffic-swatch';
+    sw.setAttribute('aria-hidden', 'true');
+    sw.style.background = color;
+    li.appendChild(sw);
+    li.appendChild(document.createTextNode(label));
+    list.appendChild(li);
   }
-  return any;
 }
 
 /** Prefer {width,height,data} over ImageData to avoid WebGL texImage y-flip deprecation noise. */
@@ -533,7 +685,11 @@ function updateSpeedLegend(minSpeed, maxSpeed, hasSpeed) {
   const bar = document.getElementById('trip-speed-bar');
   if (minEl) minEl.textContent = hasSpeed ? formatSpeedKph(minSpeed) : '—';
   if (maxEl) maxEl.textContent = hasSpeed ? formatSpeedKph(maxSpeed) : '—';
-  if (bar) bar.classList.toggle('is-empty', !hasSpeed);
+  if (bar) {
+    bar.classList.toggle('is-empty', !hasSpeed);
+    bar.style.background = speedRampCss();
+  }
+  renderTrafficLegend(false);
 }
 
 function setSelectionClearVisible(visible) {
@@ -769,11 +925,11 @@ function addTripLayers(map, lineFc, arrowsFc, stopsFc) {
   }
 }
 
-function routeHoverHtml(props) {
-  const speed = formatSpeedKph(propNum(props && props.speed_kph));
-  const rpm = formatRpm(propNum(props && props.rpm));
+function routeHoverHtml(point) {
+  const speed = formatSpeedKph(point ? pointSpeed(point) : null);
+  const rpm = formatRpm(point ? pointRpm(point) : null);
   return `<div class="trip-route-popup-inner">
-    <div class="trip-route-popup-row"><span>Velocity</span><strong>${speed}</strong></div>
+    <div class="trip-route-popup-row"><span>${tt('js.map.speed', 'Speed')}</span><strong>${speed}</strong></div>
     <div class="trip-route-popup-row"><span>RPM</span><strong>${rpm}</strong></div>
   </div>`;
 }
@@ -858,10 +1014,10 @@ function bindTripInteractions(entry) {
     const f = e.features && e.features[0];
     if (!f) return;
     const coords = f.geometry.coordinates.slice();
-    const label = (f.properties && f.properties.dwell_label) || 'Stop';
+    const label = (f.properties && f.properties.dwell_label) || tt('js.map.stop', 'Stop');
     stopPopup
       .setLngLat(coords)
-      .setHTML(`<div class="trip-stop-popup-inner"><strong>Stopped</strong><span>${label}</span></div>`)
+      .setHTML(`<div class="trip-stop-popup-inner"><strong>${tt('js.map.stopped', 'Stopped')}</strong><span>${label}</span></div>`)
       .addTo(map);
   });
   map.on('mouseleave', 'trip-stops', () => {
@@ -877,9 +1033,10 @@ function bindTripInteractions(entry) {
     map.getCanvas().style.cursor = 'pointer';
     const f = e.features && e.features[0];
     if (!f) return;
+    const hit = sampleNearLngLat(entry.points, f.properties, e.lngLat);
     popup
       .setLngLat(e.lngLat)
-      .setHTML(routeHoverHtml(f.properties || {}))
+      .setHTML(routeHoverHtml(hit && hit.point))
       .addTo(map);
   };
   const onRouteLeave = () => {
@@ -901,7 +1058,11 @@ function bindTripInteractions(entry) {
     }
     const f = e.features && e.features[0];
     if (!f) return;
-    entry.setSelectionFromProps(f.properties || {}, e.lngLat);
+    const hit = sampleNearLngLat(entry.points, f.properties, e.lngLat);
+    const props = hit
+      ? { recorded_at: hit.point.recorded_at || null, point_index: hit.index }
+      : { point_index: propNum(f.properties && f.properties.i0) };
+    entry.setSelectionFromProps(props, e.lngLat);
   };
   map.on('click', 'trip-line-hit', onRouteClick);
 
@@ -936,14 +1097,32 @@ function bindTripInteractions(entry) {
     window.addEventListener('keydown', entry.onKey);
   }
 
-  // Legend clear button.
+  // Legend clear button. Kept on the entry so teardown can remove it: the button
+  // outlives a map rebuild (style change, WebGL loss), and a stale listener would
+  // keep clearing a destroyed map.
   const btn = document.getElementById('trip-selection-clear');
-  if (btn && !btn.__tripBound) {
-    btn.__tripBound = true;
-    btn.addEventListener('click', (ev) => {
+  if (btn && !entry.onClearClick) {
+    entry.onClearClick = (ev) => {
       ev.preventDefault();
       entry.clearSelection();
-    });
+    };
+    entry.clearBtn = btn;
+    btn.addEventListener('click', entry.onClearClick);
+  }
+
+  // Chart click → move the map pin to the nearest sample in time. Charts fire this
+  // for their own clicks and when echoing a map click; either way the pin lands on
+  // the same sample, and nothing is re-dispatched, so there is no loop.
+  if (!entry.onTelemetrySelect) {
+    entry.onTelemetrySelect = (ev) => {
+      if (__tripMaps.get(entry._elId) !== entry) return;
+      const iso = ev && ev.detail && ev.detail.iso;
+      const idx = nearestPointIndexByTime(entry.points, iso);
+      if (idx < 0) return;
+      const p = entry.points[idx];
+      applyLocalSelection({ iso: String(iso), point_index: idx, lon: p.lon, lat: p.lat });
+    };
+    window.addEventListener('trip-telemetry-select', entry.onTelemetrySelect);
   }
 
   // If charts clear selection (future), drop map pin.
@@ -955,7 +1134,75 @@ function bindTripInteractions(entry) {
   }
 }
 
+/** Index of the positioned sample closest in time to `iso`, or -1. */
+function nearestPointIndexByTime(points, iso) {
+  const target = parseTimeMs(iso);
+  if (target == null || !points || !points.length) return -1;
+  let best = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (!p || !Number.isFinite(p.lon) || !Number.isFinite(p.lat)) continue;
+    const t = parseTimeMs(p.recorded_at);
+    if (t == null) continue;
+    const d = Math.abs(t - target);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+/** Extra point highlights per map (speeding spots), kept across map rebuilds. */
+const __tripHighlights = new Map();
+
+function applyTripHighlights(entry) {
+  const map = entry && entry.map;
+  if (!map || !map.isStyleLoaded()) return;
+  const fc = __tripHighlights.get(entry._elId) || emptyFc();
+  const src = map.getSource('trip-highlights');
+  if (src) {
+    src.setData(fc);
+    return;
+  }
+  map.addSource('trip-highlights', { type: 'geojson', data: fc });
+  map.addLayer({
+    id: 'trip-highlights',
+    type: 'circle',
+    source: 'trip-highlights',
+    paint: {
+      'circle-radius': 8,
+      'circle-color': '#e5484d',
+      'circle-opacity': 0.9,
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2,
+    },
+  });
+  map.addLayer({
+    id: 'trip-highlights-label',
+    type: 'symbol',
+    source: 'trip-highlights',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-size': 11,
+      'text-offset': [0, 1.5],
+      'text-anchor': 'top',
+    },
+    paint: { 'text-color': '#b42318', 'text-halo-color': '#ffffff', 'text-halo-width': 1.6 },
+  });
+}
+
+/** Replace the highlight points (a GeoJSON FeatureCollection string; empty hides). */
+export function setTripMapHighlights(elId, json) {
+  let fc;
+  try { fc = JSON.parse(json); } catch (_) { fc = emptyFc(); }
+  __tripHighlights.set(elId, fc || emptyFc());
+  const entry = __tripMaps.get(elId);
+  if (entry) {
+    try { applyTripHighlights(entry); } catch (_) {}
+  }
+}
+
 function restoreSelectionMarker(entry) {
+  try { applyTripHighlights(entry); } catch (_) {}
   if (!entry.selection) {
     setSelectionClearVisible(false);
     if (entry.map.getSource('trip-selection')) {
@@ -977,18 +1224,53 @@ function destroyTripMapEntry(elId, entry) {
   try { if (entry._arrowZoomTimer) clearTimeout(entry._arrowZoomTimer); } catch (_) {}
   try { if (entry.onKey) window.removeEventListener('keydown', entry.onKey); } catch (_) {}
   try { if (entry.onTelemetryClear) window.removeEventListener('trip-telemetry-clear', entry.onTelemetryClear); } catch (_) {}
+  try { if (entry.onTelemetrySelect) window.removeEventListener('trip-telemetry-select', entry.onTelemetrySelect); } catch (_) {}
   try { entry.popup && entry.popup.remove(); } catch (_) {}
   try { entry.stopPopup && entry.stopPopup.remove(); } catch (_) {}
   try { entry.map && entry.map.remove(); } catch (_) {}
   try {
-    const btn = document.getElementById('trip-selection-clear');
-    if (btn) btn.__tripBound = false;
+    if (entry.clearBtn && entry.onClearClick) {
+      entry.clearBtn.removeEventListener('click', entry.onClearClick);
+    }
   } catch (_) {}
   __tripMaps.delete(elId);
 }
 
+/** Identity of a sample list, so a pinned selection never carries over to another trip. */
+function tripKeyOf(points) {
+  if (!points || !points.length) return '';
+  return `${points[0].recorded_at || ''}|${points[points.length - 1].recorded_at || ''}|${points.length}`;
+}
+
+/**
+ * Blank the route while the next trip loads. The page reuses this map when only the
+ * trip id changes; without this the previous trip's route stayed on screen.
+ */
+export function clearTripMap(elId) {
+  const entry = __tripMaps.get(elId);
+  if (!entry) return;
+  entry.points = [];
+  entry.stopFeatures = [];
+  entry.selection = null;
+  entry._tripKey = '';
+  entry._lineFc = emptyFc();
+  entry._arrowsFc = emptyFc();
+  entry._stopsFc = emptyFc();
+  const map = entry.map;
+  if (!map || !map.isStyleLoaded()) return;
+  for (const id of ['trip', 'trip-arrows', 'trip-stops', 'trip-selection']) {
+    const src = map.getSource(id);
+    if (src) src.setData(emptyFc());
+  }
+  try { entry.popup && entry.popup.remove(); } catch (_) {}
+  try { entry.stopPopup && entry.stopPopup.remove(); } catch (_) {}
+  setSelectionClearVisible(false);
+  updateSpeedLegend(null, null, false);
+}
+
 /** Tear down MapLibre instance when the Leptos map component unmounts. */
 export function disposeTripMap(elId) {
+  __pendingTripMaps.delete(elId);
   const entry = __tripMaps.get(elId);
   if (!entry) return;
   destroyTripMapEntry(elId, entry);
@@ -999,8 +1281,19 @@ export function disposeTripMap(elId) {
 }
 
 export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
+  if (!window.maplibregl) {
+    __pendingTripMaps.set(elId, [geojson, pointsJson, trafficJson]);
+    loadMapLibre()
+      .then(() => {
+        const args = __pendingTripMaps.get(elId);
+        __pendingTripMaps.delete(elId);
+        if (args) renderTripMap(elId, ...args);
+      })
+      .catch((err) => console.error('MapLibre failed to load', err));
+    return;
+  }
   const el = document.getElementById(elId);
-  if (!el || !window.maplibregl) return;
+  if (!el) return;
 
   let points = [];
   try {
@@ -1025,8 +1318,8 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     coordinates = geojson.coordinates;
   }
 
-  const speedBuilt = buildSpeedLineFeatures(points, coordinates);
-  const usedTraffic = applyTrafficColors(speedBuilt.features, trafficFrames);
+  const speedBuilt = buildSpeedLineFeatures(points, coordinates, trafficFrames);
+  const usedTraffic = speedBuilt.usedTraffic;
   const lineFc = { type: 'FeatureCollection', features: speedBuilt.features };
   const stopFeatures = buildStopFeatures(points);
   const stopsFc = { type: 'FeatureCollection', features: stopFeatures };
@@ -1045,12 +1338,13 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     const minEl = document.getElementById('trip-speed-min');
     const maxEl = document.getElementById('trip-speed-max');
     const bar = document.getElementById('trip-speed-bar');
-    if (minEl) minEl.textContent = 'Free';
-    if (maxEl) maxEl.textContent = 'Jam';
+    if (minEl) minEl.textContent = tt('js.map.free', 'Free');
+    if (maxEl) maxEl.textContent = tt('js.map.jam', 'Jam');
     if (bar) {
       bar.classList.remove('is-empty');
-      bar.style.background = 'linear-gradient(90deg,#2ecc71,#a8e063,#f1c40f,#e67e22,#e74c3c)';
+      bar.style.background = trafficRampCss();
     }
+    renderTrafficLegend(true);
   } else {
     updateSpeedLegend(speedBuilt.minSpeed, speedBuilt.maxSpeed, speedBuilt.hasSpeed);
   }
@@ -1067,6 +1361,9 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
   if (existing) {
     existing._elId = elId;
     existing.container = el;
+    const tripKey = tripKeyOf(points);
+    if (existing._tripKey !== tripKey) existing.selection = null;
+    existing._tripKey = tripKey;
     existing.points = points;
     existing.stopFeatures = stopFeatures;
     existing._lineFc = lineFc;
@@ -1133,6 +1430,7 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     points,
     stopFeatures,
     selection: null,
+    _tripKey: tripKeyOf(points),
     bound: false,
     overStop: false,
     overRoute: false,
@@ -1180,7 +1478,9 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
 extern "C" {
     fn renderTripMap(el_id: &str, geojson: &JsValue, points_json: &str, traffic_json: &str);
     fn setTripMapSpeedUnit(unit: &str);
+    fn setTripMapHighlights(el_id: &str, json: &str);
     fn disposeTripMap(el_id: &str);
+    fn clearTripMap(el_id: &str);
 }
 
 #[component]
@@ -1191,7 +1491,7 @@ pub fn TripMap(
 ) -> impl IntoView {
     let id = "trip-map";
     let prefs = crate::units::use_unit_prefs();
-    let traffic_frames = traffic_frames.unwrap_or_else(|| Signal::derive(|| Vec::new()));
+    let traffic_frames = traffic_frames.unwrap_or_else(|| Signal::derive(Vec::new));
 
     // Always tear down MapLibre when this component leaves the tree so a remount
     // does not reuse a map bound to a disposed DOM node / reactive scope.
@@ -1214,6 +1514,7 @@ pub fn TripMap(
         let frames = traffic_frames.try_get().unwrap_or_default();
         // Need either a line payload or enough points to draw.
         if gj.is_none() && pts.len() < 2 {
+            clearTripMap(id);
             return;
         }
         let gj_val = gj.unwrap_or_else(|| {
@@ -1232,12 +1533,74 @@ pub fn TripMap(
     view! { <div id=id class="map"></div> }
 }
 
+/// Mark points on the trip map (speeding spots, #125): `(lon, lat, label)`.
+/// An empty list clears them.
+pub fn set_trip_map_highlights(points: &[(f64, f64, String)]) {
+    let fc = serde_json::json!({
+        "type": "FeatureCollection",
+        "features": points.iter().map(|(lon, lat, label)| serde_json::json!({
+            "type": "Feature",
+            "properties": { "label": label },
+            "geometry": { "type": "Point", "coordinates": [lon, lat] },
+        })).collect::<Vec<_>>(),
+    });
+    setTripMapHighlights("trip-map", &fc.to_string());
+}
+
 fn serde_wasm_bindgen_compat(v: &serde_json::Value) -> Result<JsValue, String> {
     let s = serde_json::to_string(v).map_err(|e| e.to_string())?;
     js_sys::JSON::parse(&s).map_err(|e| format!("{e:?}"))
 }
 
 #[wasm_bindgen(inline_js = r#"
+/** UI text published by the app (src/i18n.rs) for the current language. */
+function tt(key, fallback) {
+  const table = window.__ctpI18n;
+  return (table && table[key]) || fallback;
+}
+
+/**
+ * Load a self-hosted vendor script on first use instead of blocking <head>.
+ * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
+ * shared on `window`, so every snippet that needs the library waits on one fetch.
+ */
+function loadVendorScript(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[src]) {
+    loads[src] = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => (window[globalName] ? resolve() : reject(new Error(`${src} loaded without ${globalName}`)));
+      s.onerror = () => {
+        delete loads[src];
+        reject(new Error(`failed to load ${src}`));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return loads[src];
+}
+/** Stylesheet counterpart of loadVendorScript; resolves once applied (errors too). */
+function loadVendorCss(href) {
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[href]) {
+    loads[href] = new Promise((resolve) => {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = href;
+      // A missing stylesheet degrades the controls, not the map: never block on it.
+      l.onload = l.onerror = () => resolve();
+      document.head.appendChild(l);
+    });
+  }
+  return loads[href];
+}
+
+/** Latest mount request while MapLibre is still loading. */
+let __routeOptPending = null;
+
 const ROUTE_OPT_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 // Saturated solid colors for *your* recorded path variants.
 const VARIANT_COLORS = ['#0077ff', '#00c853', '#ffd600', '#00e5ff', '#304ffe', '#76ff03'];
@@ -1285,10 +1648,10 @@ function routeOptDisplayLabel(props) {
   if (!props) return '';
   const raw = props.label || '';
   if (props.kind === 'ors') {
-    const name = raw.replace(/^ORS\s+/i, '') || 'alternative';
-    return 'Router · ' + name;
+    const name = raw.replace(/^ORS\s+/i, '') || tt('js.route.alternative', 'alternative');
+    return tt('js.route.router_prefix', 'Router ·') + ' ' + name;
   }
-  return 'Variant · ' + (raw || 'path');
+  return tt('js.route.variant_prefix', 'Variant ·') + ' ' + (raw || tt('js.route.path', 'path'));
 }
 
 function routeOptColorFor(props) {
@@ -1307,7 +1670,7 @@ function enrichRouteOptGeojson(data) {
   const out = features.map((f) => {
     const props = Object.assign({}, f.properties || {});
     props.display_label = routeOptDisplayLabel(props);
-    props.kind_label = props.kind === 'ors' ? 'OpenRouteService' : 'Your path';
+    props.kind_label = props.kind === 'ors' ? 'OpenRouteService' : tt('js.route.your_path', 'Your path');
     props.route_color = routeOptColorFor(props);
     return {
       type: 'Feature',
@@ -1319,6 +1682,7 @@ function enrichRouteOptGeojson(data) {
 }
 
 export function disposeRouteOptMap() {
+  __routeOptPending = null;
   try {
     if (__routeOptPopup) {
       __routeOptPopup.remove();
@@ -1446,11 +1810,13 @@ function ensureRouteOptLayers(map) {
     map.getCanvas().style.cursor = 'pointer';
     const f = e.features[0];
     const props = f.properties || {};
-    const kind = props.kind === 'ors' ? 'OpenRouteService alternative' : 'Your path variant';
+    const kind = props.kind === 'ors'
+      ? tt('js.route.ors_alt', 'OpenRouteService alternative')
+      : tt('js.route.variant_kind', 'Your path variant');
     const name = props.label || '';
     const title = props.kind === 'ors'
-      ? (name.replace(/^ORS\s+/i, '') || 'Router alt')
-      : (name || 'Variant');
+      ? (name.replace(/^ORS\s+/i, '') || tt('js.route.router_alt', 'Router alt'))
+      : (name || tt('js.route.variant', 'Variant'));
     const html =
       '<div class="route-opt-popup-inner">' +
       '<span class="route-opt-popup-kind ' + (props.kind === 'ors' ? 'is-ors' : 'is-variant') + '">' +
@@ -1458,7 +1824,9 @@ function ensureRouteOptLayers(map) {
       '</span>' +
       '<strong>' + title + '</strong>' +
       '<span class="route-opt-popup-style">' +
-      (props.kind === 'ors' ? 'Dashed line · router estimate' : 'Solid line · recorded trips') +
+      (props.kind === 'ors'
+        ? tt('js.route.dashed', 'Dashed line · router estimate')
+        : tt('js.route.solid', 'Solid line · recorded trips')) +
       '</span></div>';
     __routeOptPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
   });
@@ -1469,7 +1837,21 @@ function ensureRouteOptLayers(map) {
 }
 
 export function mountRouteOptMap(host, geojson) {
-  if (!host || typeof maplibregl === 'undefined') return;
+  if (!host) return;
+  if (typeof window.maplibregl === 'undefined') {
+    __routeOptPending = { host, geojson };
+    Promise.all([
+      loadVendorCss('/vendor/maplibre-gl.css'),
+      loadVendorScript('/vendor/maplibre-gl.js', 'maplibregl'),
+    ])
+      .then(() => {
+        const p = __routeOptPending;
+        __routeOptPending = null;
+        if (p && p.host.isConnected) mountRouteOptMap(p.host, p.geojson);
+      })
+      .catch((err) => console.error('MapLibre failed to load', err));
+    return;
+  }
   if (__routeOptMap && __routeOptHost !== host) {
     disposeRouteOptMap();
   }

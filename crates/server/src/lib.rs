@@ -1,3 +1,5 @@
+pub mod account;
+pub mod alerts;
 pub mod analysis;
 pub mod analytics;
 pub mod audit;
@@ -8,11 +10,21 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod devices;
+pub mod digest;
+pub mod driving;
+pub mod email;
 pub mod error;
+pub mod garage;
+pub mod geofences;
+pub mod health;
 pub mod http_client;
 pub mod ingest;
+pub mod jobs;
+pub mod live;
+pub mod maintenance;
 pub mod mcp;
 pub mod middleware;
+pub mod notifications;
 pub mod route_opt;
 pub mod shares;
 pub mod state;
@@ -28,7 +40,8 @@ use axum::middleware as axum_mw;
 use tower_http::trace::TraceLayer;
 
 use crate::middleware::{
-    inline_script_csp_hashes_from_dist, rate_limit_middleware, security_headers_layer,
+    csrf_middleware, inline_script_csp_hashes_from_dist, rate_limit_middleware,
+    security_headers_layer,
 };
 use crate::state::AppState;
 
@@ -42,10 +55,14 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
     // can allow that exact script without script-src 'unsafe-inline'.
     let dist = std::env::var("WEB_DIST").unwrap_or_else(|_| "crates/web/dist".into());
     let script_hashes = inline_script_csp_hashes_from_dist(std::path::Path::new(&dist));
+    let extra_hosts = std::env::var("CSP_EXTRA_HOSTS")
+        .map(|v| crate::middleware::parse_extra_hosts(&v))
+        .unwrap_or_default();
     let (nosniff, referrer, frame, csp, permissions, hsts) = security_headers_layer(
         enable_hsts,
         &script_hashes,
         state.config.csp_cloudflare_analytics,
+        &extra_hosts,
     );
 
     let photo_routes = Router::new()
@@ -54,10 +71,19 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
 
     let mut app = Router::new()
         .merge(ingest::router())
+        .merge(account::router())
         .merge(auth::router())
         .merge(mcp::settings_router())
         .merge(mcp::router(state.clone()))
+        .merge(live::router())
+        .merge(notifications::router())
         .merge(cars::router())
+        .merge(garage::router())
+        .merge(maintenance::router())
+        .merge(alerts::router())
+        .merge(geofences::router())
+        .merge(driving::router())
+        .merge(health::router())
         .merge(photo_routes)
         .merge(devices::router())
         .merge(shares::router())
@@ -69,6 +95,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(vault::router())
         .merge(web::spa_router())
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
+        .layer(axum_mw::from_fn_with_state(state.clone(), csrf_middleware))
         .layer(axum_mw::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,

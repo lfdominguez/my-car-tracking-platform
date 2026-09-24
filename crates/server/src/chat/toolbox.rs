@@ -111,6 +111,38 @@ impl ai::ChatToolbox for CarDataToolbox {
                 let id = parse_uuid(&a.corridor_id, "corridor_id")?;
                 to_json(tools::get_route_corridor(&ctx, id).await)
             }
+            "compare_trips" => {
+                let a: CompareTripsArgs = parse_required_args(arguments)?;
+                let ids = a
+                    .trip_ids
+                    .iter()
+                    .map(|id| parse_uuid(id, "trip_ids"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                to_json(tools::compare_trips(&ctx, &ids).await)
+            }
+            "get_fuel_economy_trend" => {
+                let a: EconomyTrendArgs = parse_args(arguments)?;
+                let car_id = self
+                    .car_or_focus(parse_opt_uuid(&a.car_id, "car_id")?)
+                    .ok_or("car_id is required: a trend covers exactly one car")?;
+                let from = parse_opt_dt(&a.from, "from")?;
+                let to = parse_opt_dt(&a.to, "to")?;
+                let bucket =
+                    tools::TrendBucket::parse(a.bucket.as_deref()).map_err(|e| e.to_string())?;
+                to_json(tools::get_fuel_economy_trend(&ctx, car_id, from, to, bucket).await)
+            }
+            "get_trip_point_window" => {
+                let a: PointWindowArgs = parse_required_args(arguments)?;
+                let id = parse_uuid(&a.trip_id, "trip_id")?;
+                let start = parse_opt_dt(&Some(a.start), "start")?.ok_or("start is required")?;
+                let end = parse_opt_dt(&Some(a.end), "end")?.ok_or("end is required")?;
+                let limit = a.limit.map(|l| l.clamp(1, 100) as usize);
+                to_json(tools::get_trip_point_window(&ctx, id, start, end, limit).await)
+            }
+            "get_energy_stats" => {
+                let id = trip_id(arguments)?;
+                to_json(tools::get_energy_stats(&ctx, id).await)
+            }
             other => Err(format!(
                 "unknown tool: {other}. Call one of the tools listed in the schema."
             )),
@@ -128,11 +160,7 @@ fn to_json<T: serde::Serialize>(result: Result<T, AppError>) -> Result<String, S
         Ok(value) => serde_json::to_string(&value).map_err(|e| format!("serialize: {e}")),
         // Not-found and forbidden are the same answer to the model: it cannot see it.
         // Keeping them distinct would let a chat turn probe for other users' ids.
-        Err(AppError::NotFound) | Err(AppError::Forbidden) => Err(
-            "not found, or not visible to this user (it may belong to someone else, \
-             or be sealed in the vault)"
-                .into(),
-        ),
+        Err(AppError::NotFound) | Err(AppError::Forbidden) => Err(tools::NOT_VISIBLE.into()),
         Err(AppError::BadRequest(msg)) => Err(msg),
         Err(other) => {
             tracing::error!(error = %other, "chat tool failed");
@@ -178,6 +206,32 @@ struct DashboardArgs {
     from: Option<String>,
     #[serde(default)]
     to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompareTripsArgs {
+    trip_ids: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct EconomyTrendArgs {
+    #[serde(default)]
+    car_id: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    bucket: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PointWindowArgs {
+    trip_id: String,
+    start: String,
+    end: String,
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -289,7 +343,7 @@ fn no_params() -> Value {
     json!({})
 }
 
-/// The 13 read-only tools, in the order a model should reach for them.
+/// The 17 read-only tools, in the order a model should reach for them.
 pub fn definitions() -> Vec<Value> {
     let trip_id = || json!({ "trip_id": str_prop("Trip id (uuid) from list_trips.") });
     let car_filter =
@@ -403,6 +457,62 @@ pub fn definitions() -> Vec<Value> {
             json!({ "corridor_id": str_prop("Corridor id (uuid) from list_route_corridors.") }),
             &["corridor_id"],
         ),
+        tool(
+            "compare_trips",
+            "Compare 2 to 10 trips side by side: distance, duration, speeds, fuel or energy \
+             used and economy, with each trip's fuel_class. same_fuel_class=false means \
+             liters and kWh are not comparable.",
+            json!({
+                "trip_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 2,
+                    "maxItems": 10,
+                    "description": "Trip ids (uuid) from list_trips.",
+                },
+            }),
+            &["trip_ids"],
+        ),
+        tool(
+            "get_fuel_economy_trend",
+            "Fuel economy (L/100km or mpg; kWh per 100 for electric) per week or month for \
+             ONE car. Use for 'is my consumption getting worse' questions.",
+            json!({
+                "car_id": str_prop("Car id (uuid). Required unless the conversation is pinned to a car."),
+                "from": from_filter(),
+                "to": to_filter(),
+                "bucket": {
+                    "type": "string",
+                    "enum": ["week", "month"],
+                    "description": "Period length (default month).",
+                },
+            }),
+            &[],
+        ),
+        tool(
+            "get_trip_point_window",
+            "Summarize one trip's telemetry between two timestamps: min/avg/max per signal \
+             plus a few anchor samples. For drilling into a moment (a stop, a hard brake); \
+             use the per-trip stats tools for whole-trip figures.",
+            json!({
+                "trip_id": str_prop("Trip id (uuid) from list_trips."),
+                "start": str_prop("Window start, RFC3339."),
+                "end": str_prop("Window end, RFC3339."),
+                "limit": {
+                    "type": "integer",
+                    "description": "Anchor samples to return (default 5, max 8).",
+                },
+            }),
+            &["trip_id", "start", "end"],
+        ),
+        tool(
+            "get_energy_stats",
+            "Battery energy for a HYBRID or FULL_ELECTRIC trip: state of charge, kWh used, \
+             kWh per 100, battery power and (hybrid) engine-on share. applicable=false for \
+             combustion-only cars.",
+            trip_id(),
+            &["trip_id"],
+        ),
     ]
 }
 
@@ -415,7 +525,7 @@ mod tests {
         let defs = definitions();
         assert_eq!(
             defs.len(),
-            13,
+            17,
             "tool count changed; update the plan doc too"
         );
         for def in &defs {

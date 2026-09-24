@@ -8,6 +8,17 @@ use server::{build_router, db};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `server healthcheck` is the container HEALTHCHECK, so the runtime image needs
+    // no curl.
+    match std::env::args().nth(1).as_deref() {
+        Some("healthcheck") => std::process::exit(if healthcheck() { 0 } else { 1 }),
+        Some("vapid-keygen") => {
+            server::notifications::print_vapid_keygen();
+            return Ok(());
+        }
+        _ => {}
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -47,8 +58,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listen_addr = config.listen_addr;
     let upload_dir = config.upload_dir.clone();
+    let shutdown_pool = pool.clone();
     let state = AppState::new(pool, config);
     server::trips::spawn_stale_finish_loop(state.clone());
+    server::analysis::spawn_ai_job_reaper(state.clone());
+    server::middleware::spawn_rate_limit_pruner(state.rate_limits.clone());
+    server::maintenance::spawn(state.pool.clone());
+    server::alerts::spawn_periodic(state.pool.clone());
+    server::jobs::spawn_worker(server::jobs::JobCtx::new(
+        &state.pool,
+        &state.keyring,
+        &state.config.overpass_url,
+    ));
 
     let app = build_router(state, upload_dir);
 
@@ -58,6 +79,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
+
+    // In-flight requests have finished; let background jobs wrap up (or hand them
+    // back to the queue) before the process exits.
+    tracing::info!("shutting down: draining background jobs");
+    server::jobs::drain(&shutdown_pool, std::time::Duration::from_secs(20)).await;
     Ok(())
+}
+
+/// Resolves on Ctrl-C or SIGTERM (what `docker stop` sends).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("shutdown signal received");
+}
+
+/// GET /health on the local listener; true on a 200 within five seconds.
+fn healthcheck() -> bool {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    let port = std::env::var("LISTEN_ADDR")
+        .ok()
+        .and_then(|a| a.parse::<SocketAddr>().ok())
+        .map(|a| a.port())
+        .unwrap_or(8080);
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let timeout = Duration::from_secs(5);
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, timeout) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut head = [0u8; 16];
+    matches!(stream.read(&mut head), Ok(n) if head[..n].starts_with(b"HTTP/1.1 200"))
 }

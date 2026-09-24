@@ -28,6 +28,8 @@ web-sys = { version = "0.3", features = [
     "HtmlCanvasElement",
     "HtmlSelectElement",
     "Blob",
+    "BlobPropertyBag",
+    "Url",
     "File",
     "FileList",
     "FormData",

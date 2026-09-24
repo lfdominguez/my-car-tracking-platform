@@ -158,6 +158,12 @@ async fn mcp_token_rotate_revoke_and_bearer_gate() {
         .await
         .expect("unauth mcp");
     assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let challenge = unauth
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(challenge.starts_with("Bearer"), "challenge {challenge:?}");
 
     // Valid bearer → not 401 (initialize should be accepted by MCP layer)
     let auth = ctx

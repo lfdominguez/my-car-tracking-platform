@@ -12,14 +12,23 @@ mod math;
 mod openrouter;
 mod prompt;
 mod report;
+#[cfg(test)]
+mod test_http;
 mod tools;
 
 pub use agent::analyze_trip;
 pub use chat::{
     ChatEvent, ChatOptions, ChatSink, ChatToolbox, ChatTurnResult, MAX_CHAT_TURNS, NullSink,
-    ToolInvocation, run_chat,
+    TURN_CHAR_BUDGET, ToolInvocation, run_chat,
 };
 pub use context::*;
-pub use error::AiError;
-pub use prompt::{ChatCarBrief, chat_system_prompt};
+pub use error::{AiError, user_facing_error};
+pub use prompt::{ChatCarBrief, chat_system_prompt, quoted_user_text, sanitize_user_text};
 pub use report::*;
+pub use tools::{
+    DEFAULT_POINT_WINDOW_ANCHORS, MAX_POINT_WINDOW_ANCHORS, build_point_window_payload,
+};
+
+/// Model used when a user has not picked one. The single definition: the server's
+/// fallbacks read this rather than repeating the id.
+pub const DEFAULT_MODEL: &str = "anthropic/claude-3.7-sonnet";

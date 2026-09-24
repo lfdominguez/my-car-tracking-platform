@@ -48,54 +48,112 @@ pub fn despike_speed_rpm(points: &mut [SpeedRpmPoint]) {
     isolated_spike_pass(points);
 }
 
+/// Consecutive rejected samples that must agree with each other before the
+/// filter treats them as the new truth instead of as a glitch.
+const REACQUIRE_AFTER: usize = 2;
+
 fn hold_last_good_pass(points: &mut [SpeedRpmPoint]) {
-    let mut last_speed: Option<f64> = None;
-    let mut last_speed_t: Option<DateTime<Utc>> = None;
-    let mut last_rpm: Option<f64> = None;
-    let mut last_rpm_t: Option<DateTime<Utc>> = None;
-    for p in points.iter_mut() {
-        p.speed_kph = accept(
-            p.speed_kph,
-            p.t,
-            last_speed,
-            last_speed_t,
-            MAX_SPEED_KPH,
-            MAX_SPEED_DELTA_KPH_S,
-        );
-        p.rpm = accept(p.rpm, p.t, last_rpm, last_rpm_t, MAX_RPM, MAX_RPM_DELTA_S);
-        if p.speed_kph.is_some() {
-            last_speed = p.speed_kph;
-            last_speed_t = Some(p.t);
-        }
-        if p.rpm.is_some() {
-            last_rpm = p.rpm;
-            last_rpm_t = Some(p.t);
-        }
+    let mut speed = HoldLastGood::new(MAX_SPEED_KPH, MAX_SPEED_DELTA_KPH_S);
+    let mut rpm = HoldLastGood::new(MAX_RPM, MAX_RPM_DELTA_S);
+    for i in 0..points.len() {
+        let t = points[i].t;
+        let raw = points[i].speed_kph;
+        speed.step(points, i, t, raw, |p, v| p.speed_kph = v);
+        let raw = points[i].rpm;
+        rpm.step(points, i, t, raw, |p, v| p.rpm = v);
     }
 }
 
-fn accept(
-    next: Option<f64>,
-    t: DateTime<Utc>,
-    prev: Option<f64>,
-    prev_t: Option<DateTime<Utc>>,
+/// Hold-last-good state for one channel.
+///
+/// A rejected sample outputs the last good value but does **not** move the
+/// reference time forward, so the allowed step grows with the gap and the
+/// filter cannot lock onto one bad reading. A run of rejected samples that
+/// agree with each other is taken as real (the reference itself was the glitch)
+/// and written back over the held values.
+struct HoldLastGood {
     max_abs: f64,
     max_delta_per_s: f64,
-) -> Option<f64> {
-    let v = next?;
-    if !v.is_finite() || v < 0.0 || v > max_abs {
-        return prev;
-    }
-    if let (Some(p), Some(pt)) = (prev, prev_t) {
-        let dt = (t - pt).num_milliseconds() as f64 / 1000.0;
-        if dt > 0.0 && dt <= 8.0 {
-            let rate = (v - p).abs() / dt;
-            if rate > max_delta_per_s {
-                return prev;
-            }
+    last: Option<(f64, DateTime<Utc>)>,
+    /// Indices and raw values of the current run of rejected samples.
+    pending: Vec<(usize, f64, DateTime<Utc>)>,
+}
+
+impl HoldLastGood {
+    fn new(max_abs: f64, max_delta_per_s: f64) -> Self {
+        Self {
+            max_abs,
+            max_delta_per_s,
+            last: None,
+            pending: Vec::new(),
         }
     }
-    Some(v)
+
+    fn within_rate(&self, a: (f64, DateTime<Utc>), b: (f64, DateTime<Utc>)) -> bool {
+        let dt = (b.1 - a.1).num_milliseconds() as f64 / 1000.0;
+        // Beyond 8 s the gap says nothing about plausibility; accept.
+        if dt <= 0.0 || dt > 8.0 {
+            return true;
+        }
+        (b.0 - a.0).abs() / dt <= self.max_delta_per_s
+    }
+
+    fn step(
+        &mut self,
+        points: &mut [SpeedRpmPoint],
+        i: usize,
+        t: DateTime<Utc>,
+        raw: Option<f64>,
+        set: impl Fn(&mut SpeedRpmPoint, Option<f64>),
+    ) {
+        let Some(v) = raw else {
+            return;
+        };
+        if !v.is_finite() || v < 0.0 || v > self.max_abs {
+            set(&mut points[i], self.last.map(|(lv, _)| lv));
+            return;
+        }
+        let accepted = match self.last {
+            None => true,
+            Some(last) => self.within_rate(last, (v, t)),
+        };
+        if accepted {
+            // The held run bridged a real transition if it joins the new value.
+            if let Some(&(_, pv, pt)) = self.pending.last()
+                && self.within_rate((pv, pt), (v, t))
+            {
+                self.backfill(points, &set);
+            }
+            self.pending.clear();
+            self.last = Some((v, t));
+            return;
+        }
+        let agrees = self
+            .pending
+            .last()
+            .is_none_or(|&(_, pv, pt)| self.within_rate((pv, pt), (v, t)));
+        if !agrees {
+            self.pending.clear();
+        }
+        self.pending.push((i, v, t));
+        if self.pending.len() >= REACQUIRE_AFTER {
+            self.backfill(points, &set);
+            self.pending.clear();
+            self.last = Some((v, t));
+        } else {
+            set(&mut points[i], self.last.map(|(lv, _)| lv));
+        }
+    }
+
+    fn backfill(
+        &self,
+        points: &mut [SpeedRpmPoint],
+        set: &impl Fn(&mut SpeedRpmPoint, Option<f64>),
+    ) {
+        for &(j, pv, _) in &self.pending {
+            set(&mut points[j], Some(pv));
+        }
+    }
 }
 
 fn isolated_spike_pass(points: &mut [SpeedRpmPoint]) {
@@ -198,6 +256,43 @@ mod tests {
         ];
         sanitize_speed_rpm(&mut pts);
         assert_eq!(pts[2].speed_kph, Some(80.0));
+    }
+
+    fn speeds(values: &[f64]) -> Vec<SpeedRpmPoint> {
+        values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| SpeedRpmPoint {
+                t: t(i as i64),
+                speed_kph: Some(*v),
+                rpm: None,
+            })
+            .collect()
+    }
+
+    fn out(pts: &[SpeedRpmPoint]) -> Vec<f64> {
+        pts.iter().map(|p| p.speed_kph.unwrap()).collect()
+    }
+
+    #[test]
+    fn bad_first_sample_does_not_hide_the_cruise() {
+        let mut pts = speeds(&[0.0, 90.0, 90.0, 91.0, 92.0, 90.0, 60.0, 30.0]);
+        sanitize_speed_rpm(&mut pts);
+        assert_eq!(out(&pts)[1..6], [90.0, 90.0, 91.0, 92.0, 90.0]);
+    }
+
+    #[test]
+    fn hard_stop_reaches_zero() {
+        let mut pts = speeds(&[50.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        sanitize_speed_rpm(&mut pts);
+        assert_eq!(out(&pts)[2..], [0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn single_glitch_is_still_held() {
+        let mut pts = speeds(&[80.0, 80.0, 0.0, 81.0, 82.0]);
+        sanitize_speed_rpm(&mut pts);
+        assert_eq!(out(&pts)[2], 80.0);
     }
 
     #[test]

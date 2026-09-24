@@ -10,6 +10,12 @@
 //! Transport note: reqwest's Display for body failures is often just
 //! `"error decoding response body"` while the real cause (timeout, reset, incomplete
 //! chunk) lives in the source chain — we surface the full chain and retry transients.
+//!
+//! Timeouts are deliberately *not* one budget for the whole request. A slow
+//! reasoning model can legitimately stream for many minutes, while a stalled
+//! connection should fail fast; so there is a connect timeout, a bound on waiting
+//! for response headers, and an idle timeout between body chunks. The overall cap
+//! on a job lives with the job (see the server's job supervisor).
 
 use std::collections::BTreeMap;
 use std::error::Error as StdError;
@@ -23,16 +29,24 @@ use tracing::{debug, warn};
 use crate::error::AiError;
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+/// Overrides the API base (e.g. `https://openrouter.ai/api/v1`) for an
+/// OpenAI-compatible gateway, or for a local mock in tests.
+const BASE_URL_ENV: &str = "OPENROUTER_BASE_URL";
 const MAX_BODY_LOG: usize = 800;
 /// Connect budget only (DNS/TLS/TCP).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-/// Full request budget including model generation. Slow reasoning models + tools
-/// regularly exceed 60s; that used to surface as a vague body-decode error.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(240);
+/// Wait for response headers. Non-streaming requests only send headers once the
+/// provider has started answering, so this is generous.
+const RESPONSE_HEADERS_TIMEOUT: Duration = Duration::from_secs(180);
+/// Longest silence tolerated between body chunks. OpenRouter sends keepalive
+/// comments while a model thinks, so a quiet connection this long is dead.
+const IDLE_CHUNK_TIMEOUT: Duration = Duration::from_secs(90);
 /// Extra attempts after the first try for transient transport failures.
-/// Keep modest: each attempt may run up to REQUEST_TIMEOUT (worst case ~3 × timeout + backoff).
 const MAX_TRANSIENT_RETRIES: u32 = 2;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(1000);
+/// Longest `Retry-After` worth waiting for inside a request. Beyond this the caller
+/// is better served by a clear "rate limited" error than by a silent stall.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct ToolCall {
@@ -53,21 +67,76 @@ pub struct AssistantTurn {
 pub struct OpenRouterClient {
     http: reqwest::Client,
     api_key: String,
+    endpoint: String,
+}
+
+/// The chat-completions endpoint, honouring [`BASE_URL_ENV`].
+fn endpoint_from_env() -> String {
+    match std::env::var(BASE_URL_ENV) {
+        Ok(base) if !base.trim().is_empty() => {
+            format!("{}/chat/completions", base.trim().trim_end_matches('/'))
+        }
+        _ => OPENROUTER_URL.to_string(),
+    }
 }
 
 impl OpenRouterClient {
     pub fn new(api_key: impl Into<String>) -> Result<Self, AiError> {
+        Self::with_endpoint(api_key, endpoint_from_env())
+    }
+
+    pub(crate) fn with_endpoint(
+        api_key: impl Into<String>,
+        endpoint: impl Into<String>,
+    ) -> Result<Self, AiError> {
         let http = reqwest::Client::builder()
             .user_agent("car-tracking-platform-ai/0.1")
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
             .pool_max_idle_per_host(2)
             .build()
             .map_err(|e| AiError::Agent(format!("http client: {e}")))?;
         Ok(Self {
             http,
             api_key: api_key.into(),
+            endpoint: endpoint.into(),
         })
+    }
+
+    fn request(&self, body: &Value, stream: bool) -> reqwest::RequestBuilder {
+        let mut req = self
+            .http
+            .post(&self.endpoint)
+            .bearer_auth(&self.api_key)
+            .header("Content-Type", "application/json")
+            // OpenRouter optional ranking headers
+            .header(
+                "HTTP-Referer",
+                "https://github.com/lfdominguez/my-car-tracking-platform",
+            )
+            .header("X-Title", "Car Tracking Platform");
+        if stream {
+            req = req.header("Accept", "text/event-stream");
+        }
+        req.json(body)
+    }
+
+    /// Send and wait for headers, bounded by [`RESPONSE_HEADERS_TIMEOUT`].
+    async fn send(
+        &self,
+        body: &Value,
+        stream: bool,
+        what: &str,
+    ) -> Result<reqwest::Response, TransportErr> {
+        match tokio::time::timeout(RESPONSE_HEADERS_TIMEOUT, self.request(body, stream).send())
+            .await
+        {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => Err(TransportErr::from_reqwest(what, e)),
+            Err(_) => Err(TransportErr::timeout(format!(
+                "{what}: no response headers within {}s",
+                RESPONSE_HEADERS_TIMEOUT.as_secs()
+            ))),
+        }
     }
 
     /// OpenAI-compatible chat completion. `messages` and `tools` are raw JSON values.
@@ -90,56 +159,19 @@ impl OpenRouterClient {
             body["tool_choice"] = json!("auto");
         }
 
-        let attempts = 1 + MAX_TRANSIENT_RETRIES;
-        let mut last_err = None;
-
-        for attempt in 1..=attempts {
-            match self.chat_completion_once(&body).await {
-                Ok(turn) => return Ok(turn),
-                Err(err) => {
-                    let retryable = err.transient;
-                    let msg = err.message;
-                    if retryable && attempt < attempts {
-                        let delay = RETRY_BASE_DELAY.saturating_mul(attempt);
-                        warn!(
-                            attempt,
-                            attempts,
-                            delay_ms = delay.as_millis() as u64,
-                            error = %msg,
-                            "openrouter transient failure; retrying"
-                        );
-                        tokio::time::sleep(delay).await;
-                        last_err = Some(msg);
-                        continue;
-                    }
-                    return Err(AiError::Agent(msg));
-                }
-            }
-        }
-
-        Err(AiError::Agent(last_err.unwrap_or_else(|| {
-            "openrouter request failed after retries".into()
-        })))
+        with_retries(
+            "openrouter request",
+            || self.chat_completion_once(&body),
+            || true,
+        )
+        .await
     }
 
     async fn chat_completion_once(&self, body: &Value) -> Result<AssistantTurn, TransportErr> {
-        let response = self
-            .http
-            .post(OPENROUTER_URL)
-            .bearer_auth(&self.api_key)
-            .header("Content-Type", "application/json")
-            // OpenRouter optional ranking headers
-            .header(
-                "HTTP-Referer",
-                "https://github.com/lfdominguez/my-car-tracking-platform",
-            )
-            .header("X-Title", "Car Tracking Platform")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| TransportErr::from_reqwest("openrouter request failed", e))?;
+        let response = self.send(body, false, "openrouter request failed").await?;
 
         let status = response.status();
+        let retry_after = retry_after(response.headers());
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -148,10 +180,7 @@ impl OpenRouterClient {
             .to_string();
         let content_length = response.content_length();
 
-        let text = response
-            .text()
-            .await
-            .map_err(|e| TransportErr::from_reqwest("openrouter read body", e))?;
+        let text = read_body(response, "openrouter read body").await?;
 
         if text.trim().is_empty() {
             return Err(TransportErr {
@@ -160,18 +189,91 @@ impl OpenRouterClient {
                 ),
                 // Empty body on success is unusual; treat as transient (proxy glitch).
                 transient: status.is_success() || status.is_server_error(),
+                kind: ErrKind::for_status(status, ""),
+                retry_after,
             });
         }
 
-        parse_chat_response(status, &text).map_err(|e| TransportErr {
-            message: e.to_string().replacen("openrouter/agent error: ", "", 1),
-            // 429 / 5xx already folded into AiError strings; allow retry on rate limits.
-            transient: status.as_u16() == 429
-                || status.is_server_error()
-                || status == StatusCode::REQUEST_TIMEOUT
-                || status == StatusCode::GATEWAY_TIMEOUT,
+        parse_chat_response(status, &text).map_err(|e| {
+            let message = e.to_string().replacen("openrouter/agent error: ", "", 1);
+            TransportErr::http(status, message, retry_after)
         })
     }
+}
+
+/// Run `attempt` with the retry policy shared by both request shapes.
+///
+/// `may_retry` is consulted after a failure: the streaming path uses it to refuse a
+/// replay once anything reached the user.
+async fn with_retries<T, F, Fut>(
+    what: &str,
+    mut attempt: F,
+    mut may_retry: impl FnMut() -> bool,
+) -> Result<T, AiError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, TransportErr>>,
+{
+    let attempts = 1 + MAX_TRANSIENT_RETRIES;
+    let mut n = 1;
+    loop {
+        let err = match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(err) => err,
+        };
+        if !(err.transient && n < attempts && may_retry()) {
+            return Err(err.into_ai_error());
+        }
+        let delay = match err.retry_after {
+            // The server said when; waiting less just burns an attempt.
+            Some(after) if after > MAX_RETRY_AFTER => return Err(err.into_ai_error()),
+            Some(after) => after,
+            None => RETRY_BASE_DELAY.saturating_mul(n),
+        };
+        warn!(
+            attempt = n,
+            attempts,
+            delay_ms = delay.as_millis() as u64,
+            error = %err.message,
+            "{what}: transient failure; retrying"
+        );
+        tokio::time::sleep(delay).await;
+        n += 1;
+    }
+}
+
+/// Read a whole body, failing if the connection goes quiet for too long.
+async fn read_body(response: reqwest::Response, what: &str) -> Result<String, TransportErr> {
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = next_chunk(&mut stream, what).await? {
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The next body chunk, bounded by [`IDLE_CHUNK_TIMEOUT`].
+async fn next_chunk<S, B>(stream: &mut S, what: &str) -> Result<Option<B>, TransportErr>
+where
+    S: futures::Stream<Item = Result<B, reqwest::Error>> + Unpin,
+{
+    match tokio::time::timeout(IDLE_CHUNK_TIMEOUT, stream.next()).await {
+        Ok(Some(Ok(chunk))) => Ok(Some(chunk)),
+        Ok(Some(Err(e))) => Err(TransportErr::from_reqwest(what, e)),
+        Ok(None) => Ok(None),
+        Err(_) => Err(TransportErr::timeout(format!(
+            "{what}: no data for {}s",
+            IDLE_CHUNK_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
+/// Seconds from a `Retry-After` header. HTTP-date values are ignored (OpenRouter
+/// sends seconds); the caller then falls back to its own backoff.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let secs: f64 = raw.trim().parse().ok()?;
+    (secs.is_finite() && secs >= 0.0).then(|| Duration::from_secs_f64(secs))
 }
 
 /// A fragment emitted while an assistant turn streams in.
@@ -213,112 +315,59 @@ impl OpenRouterClient {
             body["tool_choice"] = json!("auto");
         }
 
-        let attempts = 1 + MAX_TRANSIENT_RETRIES;
-        let mut last_err: Option<String> = None;
-
-        for attempt in 1..=attempts {
-            let mut emitted = false;
-            match self
-                .chat_completion_stream_once(&body, &mut on_delta, &mut emitted)
-                .await
-            {
-                Ok(turn) => return Ok(turn),
-                Err(err) => {
-                    // Anything already on screen makes a replay worse than an error.
-                    let retryable = err.transient && !emitted;
-                    let msg = err.message;
-                    if retryable && attempt < attempts {
-                        let delay = RETRY_BASE_DELAY.saturating_mul(attempt);
-                        warn!(
-                            attempt,
-                            attempts,
-                            delay_ms = delay.as_millis() as u64,
-                            error = %msg,
-                            "openrouter transient stream failure; retrying"
-                        );
-                        tokio::time::sleep(delay).await;
-                        last_err = Some(msg);
-                        continue;
+        let emitted = std::sync::atomic::AtomicBool::new(false);
+        let on_delta = std::sync::Mutex::new(&mut on_delta);
+        with_retries(
+            "openrouter stream",
+            || async {
+                let mut sink = |d: StreamDelta| {
+                    emitted.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if let Ok(mut f) = on_delta.lock() {
+                        (*f)(d);
                     }
-                    return Err(AiError::Agent(msg));
-                }
-            }
-        }
-
-        Err(AiError::Agent(last_err.unwrap_or_else(|| {
-            "openrouter stream failed after retries".into()
-        })))
+                };
+                self.chat_completion_stream_once(&body, &mut sink).await
+            },
+            // Anything already on screen makes a replay worse than an error.
+            || !emitted.load(std::sync::atomic::Ordering::Relaxed),
+        )
+        .await
     }
 
     async fn chat_completion_stream_once<F>(
         &self,
         body: &Value,
         on_delta: &mut F,
-        emitted: &mut bool,
     ) -> Result<AssistantTurn, TransportErr>
     where
-        F: FnMut(StreamDelta) + Send,
+        F: FnMut(StreamDelta),
     {
         let response = self
-            .http
-            .post(OPENROUTER_URL)
-            .bearer_auth(&self.api_key)
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
-            .header(
-                "HTTP-Referer",
-                "https://github.com/lfdominguez/my-car-tracking-platform",
-            )
-            .header("X-Title", "Car Tracking Platform")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| TransportErr::from_reqwest("openrouter stream request failed", e))?;
+            .send(body, true, "openrouter stream request failed")
+            .await?;
 
         let status = response.status();
         if !status.is_success() {
+            let retry_after = retry_after(response.headers());
             // Errors come back as a normal JSON body even when streaming was requested.
-            let text = response
-                .text()
-                .await
-                .map_err(|e| TransportErr::from_reqwest("openrouter read error body", e))?;
+            let text = read_body(response, "openrouter read error body").await?;
             let message = parse_chat_response(status, &text)
                 .err()
                 .map(|e| e.to_string().replacen("openrouter/agent error: ", "", 1))
                 .unwrap_or_else(|| format!("openrouter HTTP {status}"));
-            return Err(TransportErr {
-                message,
-                transient: status.as_u16() == 429
-                    || status.is_server_error()
-                    || status == StatusCode::REQUEST_TIMEOUT
-                    || status == StatusCode::GATEWAY_TIMEOUT,
-            });
+            return Err(TransportErr::http(status, message, retry_after));
         }
 
         let mut acc = StreamAccumulator::default();
-        let mut buf = String::new();
+        let mut lines = SseLineBuffer::default();
         let mut stream = response.bytes_stream();
 
-        while let Some(chunk) = stream.next().await {
-            let chunk =
-                chunk.map_err(|e| TransportErr::from_reqwest("openrouter stream chunk", e))?;
-            buf.push_str(&String::from_utf8_lossy(&chunk));
-
-            // SSE frames are newline-delimited; keep any trailing partial line.
-            while let Some(nl) = buf.find('\n') {
-                let line: String = buf.drain(..=nl).collect();
-                match acc.push_line(line.trim_end_matches(['\r', '\n'])) {
-                    Ok(deltas) => {
-                        for d in deltas {
-                            *emitted = true;
-                            on_delta(d);
-                        }
-                    }
+        while let Some(chunk) = next_chunk(&mut stream, "openrouter stream chunk").await? {
+            for line in lines.push(&chunk) {
+                match acc.push_line(&line) {
+                    Ok(deltas) => deltas.into_iter().for_each(&mut *on_delta),
                     Err(msg) => {
-                        return Err(TransportErr {
-                            message: msg,
-                            transient: false,
-                        });
+                        return Err(TransportErr::fatal(msg));
                     }
                 }
                 if acc.done {
@@ -329,11 +378,65 @@ impl OpenRouterClient {
                 break;
             }
         }
+        if !acc.done
+            && let Some(line) = lines.take_rest()
+            && let Ok(deltas) = acc.push_line(&line)
+        {
+            deltas.into_iter().for_each(&mut *on_delta);
+        }
 
-        acc.finish().map_err(|e| TransportErr {
-            message: e.to_string().replacen("openrouter/agent error: ", "", 1),
-            transient: false,
+        acc.finish().map_err(|e| match e {
+            // A mid-stream error payload carries the provider's own classification.
+            AiError::Agent(msg) => {
+                let kind = ErrKind::from_message(&msg);
+                TransportErr {
+                    message: msg.replacen("openrouter/agent error: ", "", 1),
+                    transient: false,
+                    kind,
+                    retry_after: None,
+                }
+            }
+            other => TransportErr::fatal(other.to_string()),
         })
+    }
+}
+
+/// Splits a byte stream into SSE lines, decoding only **complete** lines.
+///
+/// Network chunks cut wherever they like, including through the middle of a
+/// multi-byte UTF-8 character. Decoding each chunk on its own turned both halves of
+/// such a character into U+FFFD, corrupting e.g. every `ñ` or `é` that happened to
+/// straddle a chunk boundary. A newline byte never occurs inside a multi-byte
+/// sequence, so splitting the raw bytes on `\n` first is always safe.
+#[derive(Default)]
+pub(crate) struct SseLineBuffer {
+    pending: Vec<u8>,
+}
+
+impl SseLineBuffer {
+    /// Append a chunk and return every line it completed, without terminators.
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.pending.extend_from_slice(chunk);
+        let mut out = Vec::new();
+        let mut start = 0;
+        while let Some(pos) = self.pending[start..].iter().position(|b| *b == b'\n') {
+            let end = start + pos;
+            let mut line = &self.pending[start..end];
+            if let Some(stripped) = line.strip_suffix(b"\r") {
+                line = stripped;
+            }
+            out.push(String::from_utf8_lossy(line).into_owned());
+            start = end + 1;
+        }
+        self.pending.drain(..start);
+        out
+    }
+
+    /// The unterminated last line, if the stream ended without a final newline.
+    pub(crate) fn take_rest(&mut self) -> Option<String> {
+        let rest = std::mem::take(&mut self.pending);
+        let rest = rest.strip_suffix(b"\r").unwrap_or(&rest);
+        (!rest.is_empty()).then(|| String::from_utf8_lossy(rest).into_owned())
     }
 }
 
@@ -522,17 +625,117 @@ impl StreamAccumulator {
     }
 }
 
+/// What a failed request means for the user, beyond "it failed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ErrKind {
+    Other,
+    InvalidApiKey,
+    InsufficientCredits,
+    ModelNotFound,
+    RateLimited,
+    Timeout,
+}
+
+impl ErrKind {
+    fn for_status(status: StatusCode, message: &str) -> Self {
+        match status.as_u16() {
+            401 => Self::InvalidApiKey,
+            402 => Self::InsufficientCredits,
+            404 => Self::ModelNotFound,
+            429 => Self::RateLimited,
+            408 | 504 => Self::Timeout,
+            _ => Self::from_message(message),
+        }
+    }
+
+    /// Classify from the provider's text when the HTTP status says nothing (a 400
+    /// for a bad model id, or an error payload in the middle of a 200 stream).
+    fn from_message(message: &str) -> Self {
+        let m = message.to_ascii_lowercase();
+        if m.contains("(code 401)")
+            || m.contains("no auth credentials")
+            || m.contains("invalid api key")
+        {
+            Self::InvalidApiKey
+        } else if m.contains("(code 402)") || m.contains("insufficient credits") {
+            Self::InsufficientCredits
+        } else if m.contains("not a valid model")
+            || m.contains("model not found")
+            || m.contains("no endpoints found")
+        {
+            Self::ModelNotFound
+        } else if m.contains("(code 429)") || m.contains("rate limit") {
+            Self::RateLimited
+        } else {
+            Self::Other
+        }
+    }
+}
+
 struct TransportErr {
     message: String,
     transient: bool,
+    kind: ErrKind,
+    /// Server-requested wait before retrying (HTTP `Retry-After`).
+    retry_after: Option<Duration>,
 }
 
 impl TransportErr {
     fn from_reqwest(prefix: &str, e: reqwest::Error) -> Self {
         let transient = is_transient_reqwest(&e);
+        let kind = if e.is_timeout() {
+            ErrKind::Timeout
+        } else {
+            ErrKind::Other
+        };
         Self {
             message: format!("{prefix}: {}", format_reqwest_error(&e)),
             transient,
+            kind,
+            retry_after: None,
+        }
+    }
+
+    fn timeout(message: String) -> Self {
+        Self {
+            message,
+            transient: true,
+            kind: ErrKind::Timeout,
+            retry_after: None,
+        }
+    }
+
+    fn fatal(message: String) -> Self {
+        Self {
+            message,
+            transient: false,
+            kind: ErrKind::Other,
+            retry_after: None,
+        }
+    }
+
+    /// An HTTP error response. Rate limits, timeouts and 5xx are worth another try;
+    /// a bad key, missing credits or an unknown model will fail the same way again.
+    fn http(status: StatusCode, message: String, retry_after: Option<Duration>) -> Self {
+        Self {
+            transient: status.as_u16() == 429
+                || status.is_server_error()
+                || status == StatusCode::REQUEST_TIMEOUT
+                || status == StatusCode::GATEWAY_TIMEOUT,
+            kind: ErrKind::for_status(status, &message),
+            message,
+            retry_after,
+        }
+    }
+
+    fn into_ai_error(self) -> AiError {
+        match self.kind {
+            ErrKind::InvalidApiKey => AiError::InvalidApiKey(self.message),
+            ErrKind::InsufficientCredits => AiError::InsufficientCredits(self.message),
+            ErrKind::ModelNotFound => AiError::ModelNotFound(self.message),
+            ErrKind::RateLimited => AiError::RateLimited(self.message),
+            ErrKind::Timeout => AiError::Timeout(self.message),
+            ErrKind::Other => AiError::Agent(self.message),
         }
     }
 }
@@ -890,8 +1093,9 @@ mod tests {
     #[test]
     #[allow(clippy::assertions_on_constants)]
     fn retry_and_timeout_constants_are_sane() {
-        // Documented resilience knobs for slow OpenRouter body reads.
-        assert!(REQUEST_TIMEOUT.as_secs() >= 180);
+        // Slow reasoning models stream for minutes; only silence should time out.
+        assert!(IDLE_CHUNK_TIMEOUT.as_secs() >= 60);
+        assert!(RESPONSE_HEADERS_TIMEOUT >= IDLE_CHUNK_TIMEOUT);
         assert!(MAX_TRANSIENT_RETRIES >= 2);
         assert_eq!(1 + MAX_TRANSIENT_RETRIES, 3);
     }
@@ -1047,6 +1251,197 @@ mod tests {
             ],
         );
         assert_eq!(acc.finish().unwrap().content.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn sse_lines_survive_a_multibyte_char_split_across_chunks() {
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"año\"}}]}\n";
+        let bytes = frame.as_bytes();
+        // Cut inside the two-byte `ñ` (0xC3 0xB1).
+        let cut = frame.find('ñ').unwrap() + 1;
+        let mut buf = SseLineBuffer::default();
+        assert!(buf.push(&bytes[..cut]).is_empty());
+        let lines = buf.push(&bytes[cut..]);
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].contains('\u{FFFD}'), "{}", lines[0]);
+
+        let mut acc = StreamAccumulator::default();
+        acc.push_line(&lines[0]).unwrap();
+        assert_eq!(acc.finish().unwrap().content.as_deref(), Some("año"));
+    }
+
+    #[test]
+    fn sse_lines_split_byte_by_byte_and_strip_crlf() {
+        let text = "data: 1\r\n: keepalive\n\ndata: é\n";
+        let mut buf = SseLineBuffer::default();
+        let mut lines = Vec::new();
+        for b in text.as_bytes() {
+            lines.extend(buf.push(std::slice::from_ref(b)));
+        }
+        assert_eq!(lines, vec!["data: 1", ": keepalive", "", "data: é"]);
+    }
+
+    #[test]
+    fn sse_keeps_an_unterminated_tail_for_the_next_chunk() {
+        let mut buf = SseLineBuffer::default();
+        assert_eq!(buf.push(b"data: a\ndata: b"), vec!["data: a"]);
+        assert_eq!(buf.push(b"c\n"), vec!["data: bc"]);
+        assert_eq!(buf.push(b"data: [DONE]"), Vec::<String>::new());
+        assert_eq!(buf.take_rest().as_deref(), Some("data: [DONE]"));
+        assert_eq!(buf.take_rest(), None);
+    }
+
+    use crate::test_http::{Scripted, serve};
+
+    const OK_BODY: &str = r#"{"model":"m","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}"#;
+
+    async fn complete(endpoint: &str) -> Result<AssistantTurn, AiError> {
+        let client = OpenRouterClient::with_endpoint("sk-test", endpoint).unwrap();
+        client
+            .chat_completion("m", &[json!({"role":"user","content":"q"})], &[], 64)
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_429_waits_for_retry_after_then_succeeds() {
+        let mock = serve(vec![
+            Scripted::json(429, r#"{"error":{"message":"slow down","code":429}}"#)
+                .header("Retry-After", "1"),
+            Scripted::json(200, OK_BODY),
+        ])
+        .await;
+        let started = std::time::Instant::now();
+        let turn = complete(&mock.endpoint).await.expect("retried");
+        assert_eq!(turn.content.as_deref(), Some("hi"));
+        assert_eq!(mock.hits(), 2);
+        assert!(
+            started.elapsed() >= Duration::from_millis(950),
+            "did not honour Retry-After"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_retry_after_fails_fast_as_rate_limited() {
+        let mock = serve(vec![
+            Scripted::json(429, r#"{"error":{"message":"slow down","code":429}}"#)
+                .header("Retry-After", "600"),
+        ])
+        .await;
+        let err = complete(&mock.endpoint).await.unwrap_err();
+        assert!(matches!(err, AiError::RateLimited(_)), "{err:?}");
+        assert_eq!(mock.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_bad_key_is_typed_and_never_retried() {
+        let mock = serve(vec![Scripted::json(
+            401,
+            r#"{"error":{"message":"No auth credentials found","code":401}}"#,
+        )])
+        .await;
+        let err = complete(&mock.endpoint).await.unwrap_err();
+        assert!(matches!(err, AiError::InvalidApiKey(_)), "{err:?}");
+        let sent = mock.bodies().await;
+        assert_eq!(sent[0]["model"], "m");
+        assert_eq!(sent[0]["stream"], false);
+        assert!(
+            crate::user_facing_error(&err.to_string())
+                .unwrap()
+                .contains("API key")
+        );
+        assert_eq!(mock.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn missing_credits_and_unknown_models_are_typed() {
+        let mock = serve(vec![Scripted::json(
+            402,
+            r#"{"error":{"message":"Insufficient credits","code":402}}"#,
+        )])
+        .await;
+        let err = complete(&mock.endpoint).await.unwrap_err();
+        assert!(matches!(err, AiError::InsufficientCredits(_)), "{err:?}");
+
+        let mock = serve(vec![Scripted::json(
+            400,
+            r#"{"error":{"message":"foo/bar is not a valid model ID","code":400}}"#,
+        )])
+        .await;
+        let err = complete(&mock.endpoint).await.unwrap_err();
+        assert!(matches!(err, AiError::ModelNotFound(_)), "{err:?}");
+        assert_eq!(mock.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_5xx_is_retried() {
+        let mock = serve(vec![
+            Scripted::json(502, r#"{"error":{"message":"bad gateway","code":502}}"#)
+                .header("Retry-After", "0"),
+            Scripted::json(200, OK_BODY),
+        ])
+        .await;
+        complete(&mock.endpoint).await.expect("retried");
+        assert_eq!(mock.hits(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_mid_stream_error_payload_is_typed_and_not_replayed() {
+        let mock = serve(vec![Scripted::sse(&[
+            "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n",
+            "data: {\"error\":{\"message\":\"Insufficient credits\",\"code\":402}}\n\n",
+        ])])
+        .await;
+        let client = OpenRouterClient::with_endpoint("sk-test", mock.endpoint.clone()).unwrap();
+        let mut seen = String::new();
+        let err = client
+            .chat_completion_stream("m", &[json!({"role":"user","content":"q"})], &[], 64, |d| {
+                if let StreamDelta::Text(t) = d {
+                    seen.push_str(&t);
+                }
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AiError::InsufficientCredits(_)), "{err:?}");
+        assert_eq!(seen, "par");
+        assert_eq!(mock.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_stream_failure_before_any_output_is_retried() {
+        let mock = serve(vec![
+            Scripted::json(503, r#"{"error":{"message":"overloaded","code":503}}"#)
+                .header("Retry-After", "0"),
+            Scripted::sse(&[
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n",
+            ]),
+        ])
+        .await;
+        let client = OpenRouterClient::with_endpoint("sk-test", mock.endpoint.clone()).unwrap();
+        let turn = client
+            .chat_completion_stream(
+                "m",
+                &[json!({"role":"user","content":"q"})],
+                &[],
+                64,
+                |_| {},
+            )
+            .await
+            .expect("retried");
+        assert_eq!(turn.content.as_deref(), Some("ok"));
+        assert_eq!(mock.hits(), 2);
+    }
+
+    #[test]
+    fn retry_after_parses_seconds_only() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(reqwest::header::RETRY_AFTER, "3".parse().unwrap());
+        assert_eq!(retry_after(&h), Some(Duration::from_secs(3)));
+        h.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2015 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(retry_after(&h), None);
     }
 
     #[test]

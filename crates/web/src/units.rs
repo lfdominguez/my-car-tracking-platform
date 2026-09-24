@@ -6,7 +6,8 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Me, UnitLabelsDto};
+use crate::api::{Me, Trip, TripPoint, UnitLabelsDto};
+use crate::i18n::num;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -117,30 +118,101 @@ pub fn use_unit_prefs() -> UnitPrefsSignal {
     expect_context::<UnitPrefsSignal>()
 }
 
+/// Metres per international mile (same constant as the server's `units`).
+pub const METERS_PER_MILE: f64 = 1609.344;
+/// km/h per mph, and km per mile.
+pub const KM_PER_MILE: f64 = 1.609_344;
+/// Litres per US liquid gallon.
+pub const LITERS_PER_US_GALLON: f64 = 3.785_411_784;
+
+/// Divisors that take an SI value to what the server sends for `system`:
+/// `(distance_m, speed_kph / odometer_km, fuel_l / fuel_rate_lph)`.
+///
+/// Metric distances stay in metres — the formatters divide by 1000 themselves.
+fn si_divisors(system: UnitSystem) -> (f64, f64, f64) {
+    match system {
+        UnitSystem::Metric => (1.0, 1.0, 1.0),
+        UnitSystem::Us => (METERS_PER_MILE, KM_PER_MILE, LITERS_PER_US_GALLON),
+    }
+}
+
+fn scale_trip(t: &mut Trip, dist: f64, speed: f64, fuel: f64) {
+    let scale = |v: &mut Option<f64>, f: f64| {
+        if let Some(x) = v {
+            *x *= f;
+        }
+    };
+    scale(&mut t.distance_m, dist);
+    scale(&mut t.economy_distance_m, dist);
+    scale(&mut t.avg_speed_kph, speed);
+    scale(&mut t.max_speed_kph, speed);
+    scale(&mut t.fuel_used_l, fuel);
+    scale(&mut t.fuel_used_moving_l, fuel);
+    scale(&mut t.fuel_from_level_l, fuel);
+}
+
+fn scale_point(p: &mut TripPoint, speed: f64, fuel: f64) {
+    let scale = |v: &mut Option<f64>, f: f64| {
+        if let Some(x) = v {
+            *x *= f;
+        }
+    };
+    scale(&mut p.vehicle_speed_kph, speed);
+    scale(&mut p.engine_vel, speed);
+    scale(&mut p.odometer_value_km, speed);
+    scale(&mut p.fuel_consumption_rate, fuel);
+}
+
+/// Convert an SI trip summary (vault-decrypted) into display units, matching the
+/// conversion the server applies to plaintext trips (`apply_trip_summary_units`).
+pub fn trip_si_to_display(t: &mut Trip, system: UnitSystem) {
+    let (d, s, f) = si_divisors(system);
+    scale_trip(t, 1.0 / d, 1.0 / s, 1.0 / f);
+}
+
+/// Inverse of [`trip_si_to_display`]: display-unit API values back to SI.
+pub fn trip_display_to_si(t: &mut Trip, system: UnitSystem) {
+    let (d, s, f) = si_divisors(system);
+    scale_trip(t, d, s, f);
+}
+
+/// Convert an SI sample (vault-decrypted) into display units, matching the server's
+/// `apply_trip_point_units`.
+pub fn point_si_to_display(p: &mut TripPoint, system: UnitSystem) {
+    let (_, s, f) = si_divisors(system);
+    scale_point(p, 1.0 / s, 1.0 / f);
+}
+
+/// Inverse of [`point_si_to_display`].
+pub fn point_display_to_si(p: &mut TripPoint, system: UnitSystem) {
+    let (_, s, f) = si_divisors(system);
+    scale_point(p, s, f);
+}
+
 /// Format trip/dashboard distance field.
 /// Metric API: meters. US API: miles.
 pub fn fmt_distance(distance_m: Option<f64>, prefs: &UnitPrefs) -> String {
     let v = distance_m.unwrap_or(0.0);
     match prefs.system {
-        UnitSystem::Metric => format!("{:.1} {}", v / 1000.0, prefs.labels.distance),
-        UnitSystem::Us => format!("{:.1} {}", v, prefs.labels.distance),
+        UnitSystem::Metric => format!("{} {}", num(v / 1000.0, 1), prefs.labels.distance),
+        UnitSystem::Us => format!("{} {}", num(v, 1), prefs.labels.distance),
     }
 }
 
 pub fn fmt_distance_value(distance_m: f64, prefs: &UnitPrefs) -> String {
     match prefs.system {
-        UnitSystem::Metric => format!("{:.1}", distance_m / 1000.0),
-        UnitSystem::Us => format!("{:.1}", distance_m),
+        UnitSystem::Metric => num(distance_m / 1000.0, 1),
+        UnitSystem::Us => num(distance_m, 1),
     }
 }
 
 pub fn fmt_speed(v: Option<f64>, prefs: &UnitPrefs) -> String {
-    format!("{:.0} {}", v.unwrap_or(0.0), prefs.labels.speed)
+    format!("{} {}", num(v.unwrap_or(0.0), 0), prefs.labels.speed)
 }
 
 pub fn fmt_fuel(v: Option<f64>, prefs: &UnitPrefs) -> String {
     match v {
-        Some(f) if f > 0.0 => format!("{f:.2} {}", prefs.labels.fuel_volume),
+        Some(f) if f > 0.0 => format!("{} {}", num(f, 2), prefs.labels.fuel_volume),
         _ => "—".into(),
     }
 }
@@ -148,7 +220,7 @@ pub fn fmt_fuel(v: Option<f64>, prefs: &UnitPrefs) -> String {
 #[allow(dead_code)]
 pub fn fmt_odometer_delta(delta: Option<f64>, prefs: &UnitPrefs) -> String {
     match delta {
-        Some(d) => format!("{d:.1} {}", prefs.labels.odometer),
+        Some(d) => format!("{} {}", num(d, 1), prefs.labels.odometer),
         None => "—".into(),
     }
 }
@@ -180,7 +252,7 @@ pub fn avg_economy(fuel: Option<f64>, distance_m: Option<f64>, prefs: &UnitPrefs
 pub fn fmt_economy(v: Option<f64>, prefs: &UnitPrefs) -> String {
     match v {
         Some(x) if x.is_finite() && x > 0.0 => {
-            format!("{x:.1} {}", prefs.labels.fuel_economy)
+            format!("{} {}", num(x, 1), prefs.labels.fuel_economy)
         }
         _ => "—".into(),
     }
@@ -356,6 +428,91 @@ pub fn integrated_economy(samples: &[EconomySample], system: UnitSystem) -> Opti
     economy_from_totals(fuel, dist, system)
 }
 
+// --- SI <-> display for garage values ------------------------------------------
+//
+// The garage endpoints (maintenance, odometer, fuel log) take and return SI —
+// km, litres, price per litre — whatever the user's unit system, so the UI
+// converts both ways here.
+
+/// km → km or miles.
+pub fn km_to_display(km: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => km,
+        UnitSystem::Us => km / KM_PER_MILE,
+    }
+}
+
+/// km or miles → km.
+pub fn display_to_km(v: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => v,
+        UnitSystem::Us => v * KM_PER_MILE,
+    }
+}
+
+/// Litres → litres or US gallons.
+pub fn litres_to_display(l: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => l,
+        UnitSystem::Us => l / LITERS_PER_US_GALLON,
+    }
+}
+
+/// Litres or US gallons → litres.
+pub fn display_to_litres(v: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => v,
+        UnitSystem::Us => v * LITERS_PER_US_GALLON,
+    }
+}
+
+/// Price per litre → price per litre or per US gallon.
+pub fn price_per_litre_to_display(p: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => p,
+        UnitSystem::Us => p * LITERS_PER_US_GALLON,
+    }
+}
+
+/// Price per litre or per US gallon → price per litre.
+pub fn display_to_price_per_litre(p: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => p,
+        UnitSystem::Us => p / LITERS_PER_US_GALLON,
+    }
+}
+
+/// L/100 km → L/100 km or mpg (US).
+pub fn l_per_100km_to_display(v: f64, system: UnitSystem) -> Option<f64> {
+    match system {
+        UnitSystem::Metric => (v > 0.0).then_some(v),
+        UnitSystem::Us => (v > 0.0).then(|| 100.0 * LITERS_PER_US_GALLON / KM_PER_MILE / v),
+    }
+}
+
+/// An SI distance in km with the user's distance label, no decimals.
+pub fn fmt_km(km: Option<f64>, prefs: &UnitPrefs) -> String {
+    match km {
+        Some(v) if v.is_finite() => format!(
+            "{} {}",
+            num(km_to_display(v, prefs.system), 0),
+            prefs.labels.distance
+        ),
+        _ => "—".into(),
+    }
+}
+
+/// Money with an optional currency code (`12.50 EUR`).
+pub fn fmt_money(v: Option<f64>, currency: Option<&str>) -> String {
+    match v {
+        Some(x) if x.is_finite() => match currency.filter(|c| !c.trim().is_empty()) {
+            Some(c) => format!("{} {c}", num(x, 2)),
+            None => num(x, 2),
+        },
+        _ => "—".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +658,192 @@ mod tests {
             return None;
         }
         Some(vals.iter().sum::<f64>() / vals.len() as f64)
+    }
+}
+
+/// Formatting and SI ↔ display conversion (#137).
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    fn metric() -> UnitPrefs {
+        UnitPrefs::default()
+    }
+
+    fn us() -> UnitPrefs {
+        UnitPrefs {
+            system: UnitSystem::Us,
+            labels: UnitLabels::us(),
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    fn si_trip() -> Trip {
+        serde_json::from_value(serde_json::json!({
+            "id": "t", "car_id": "c", "car_name": "Car", "started_at": "2026-01-01T08:00:00Z",
+            "finished_at": null, "finished": true, "fuel_type_snapshot": "E10",
+            "point_count": 2,
+            "distance_m": 16093.44, "economy_distance_m": 16093.44, "duration_s": 600.0,
+            "avg_speed_kph": 96.56064, "max_speed_kph": 160.9344,
+            "fuel_used_l": 3.785411784, "fuel_used_moving_l": 3.785411784,
+            "fuel_from_level_l": 7.570823568
+        }))
+        .unwrap()
+    }
+
+    fn si_point() -> TripPoint {
+        serde_json::from_value(serde_json::json!({
+            "recorded_at": "2026-01-01T08:00:00Z", "lat": 40.0, "lon": -3.7, "gps_acc_m": 5.0,
+            "vehicle_speed_kph": 80.4672, "vehicle_engine_rpm": 2000.0, "engine_rpm": null,
+            "engine_vel": 80.4672, "fuel_consumption_rate": 7.570823568, "engine_load_pct": 40.0,
+            "absolute_engine_load_pct": null, "short_term_fuel_trim_pct": null,
+            "long_term_fuel_trim_pct": null, "fuel_level_pct": 50.0,
+            "accelerator_pedal_pct": null, "ambient_air_temp_c": 20.0,
+            "odometer_value_km": 1609.344, "engine_coolant_temp_c": 90.0,
+            "manifold_absolute_pressure_kpa": null, "control_module_voltage": 14.1,
+            "engine_on_time": null, "lambda_cmd": null, "atmospheric_pressure": null,
+            "intake_air_temperature": null, "mass_air_flow": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn distance_is_km_from_metres_or_miles_as_sent() {
+        assert_eq!(fmt_distance(Some(12_345.0), &metric()), "12.3 km");
+        assert_eq!(fmt_distance(Some(7.66), &us()), "7.7 mi");
+        assert_eq!(fmt_distance(None, &metric()), "0.0 km");
+        assert_eq!(fmt_distance_value(1500.0, &metric()), "1.5");
+        assert_eq!(fmt_distance_value(1500.0, &us()), "1500.0");
+    }
+
+    #[test]
+    fn speed_and_fuel_carry_their_unit() {
+        assert_eq!(fmt_speed(Some(88.4), &metric()), "88 km/h");
+        assert_eq!(fmt_speed(Some(55.0), &us()), "55 mph");
+        assert_eq!(fmt_fuel(Some(3.456), &metric()), "3.46 L");
+        assert_eq!(fmt_fuel(Some(1.25), &us()), "1.25 gal");
+        assert_eq!(fmt_fuel(Some(0.0), &metric()), "—");
+        assert_eq!(fmt_fuel(None, &us()), "—");
+    }
+
+    #[test]
+    fn economy_is_l_per_100km_or_mpg() {
+        // 6 L over 100 km.
+        let l100 = avg_economy(Some(6.0), Some(100_000.0), &metric()).unwrap();
+        assert!(close(l100, 6.0));
+        assert_eq!(fmt_economy(Some(l100), &metric()), "6.0 L/100km");
+        // 2 gal over 60 mi.
+        let mpg = avg_economy(Some(2.0), Some(60.0), &us()).unwrap();
+        assert!(close(mpg, 30.0));
+        assert_eq!(fmt_economy(Some(mpg), &us()), "30.0 mpg");
+        // Too short to mean anything.
+        assert_eq!(avg_economy(Some(0.1), Some(10.0), &metric()), None);
+        assert_eq!(fmt_economy(None, &us()), "—");
+        // 7.84 L/100 km ≈ 30 mpg.
+        let converted = l_per_100km_to_display(7.84, UnitSystem::Us).unwrap();
+        assert!((converted - 30.0).abs() < 0.05, "{converted}");
+        assert_eq!(l_per_100km_to_display(7.84, UnitSystem::Metric), Some(7.84));
+        assert_eq!(l_per_100km_to_display(0.0, UnitSystem::Us), None);
+    }
+
+    #[test]
+    fn vault_trip_si_converts_to_imperial_and_back() {
+        let mut t = si_trip();
+        trip_si_to_display(&mut t, UnitSystem::Us);
+        assert!(close(t.distance_m.unwrap(), 10.0), "miles");
+        assert!(close(t.economy_distance_m.unwrap(), 10.0));
+        assert!(close(t.avg_speed_kph.unwrap(), 60.0), "mph");
+        assert!(close(t.max_speed_kph.unwrap(), 100.0));
+        assert!(close(t.fuel_used_l.unwrap(), 1.0), "gallons");
+        assert!(close(t.fuel_from_level_l.unwrap(), 2.0));
+        assert_eq!(
+            fmt_economy(avg_economy(t.fuel_used_l, t.distance_m, &us()), &us()),
+            "10.0 mpg"
+        );
+        trip_display_to_si(&mut t, UnitSystem::Us);
+        let orig = si_trip();
+        assert!(close(t.distance_m.unwrap(), orig.distance_m.unwrap()));
+        assert!(close(t.fuel_used_l.unwrap(), orig.fuel_used_l.unwrap()));
+
+        // Metric keeps metres and litres untouched.
+        let mut m = si_trip();
+        trip_si_to_display(&mut m, UnitSystem::Metric);
+        assert_eq!(m, si_trip());
+    }
+
+    #[test]
+    fn vault_point_si_converts_to_imperial_and_back() {
+        let mut p = si_point();
+        point_si_to_display(&mut p, UnitSystem::Us);
+        assert!(close(p.vehicle_speed_kph.unwrap(), 50.0), "mph");
+        assert!(close(p.engine_vel.unwrap(), 50.0));
+        assert!(
+            close(p.odometer_value_km.unwrap(), 1000.0),
+            "odometer miles"
+        );
+        assert!(close(p.fuel_consumption_rate.unwrap(), 2.0), "gal/h");
+        // Not unit-bearing: left alone.
+        assert_eq!(p.engine_coolant_temp_c, Some(90.0));
+        assert_eq!(p.vehicle_engine_rpm, Some(2000.0));
+        point_display_to_si(&mut p, UnitSystem::Us);
+        assert!(close(p.vehicle_speed_kph.unwrap(), 80.4672));
+        assert!(close(p.fuel_consumption_rate.unwrap(), 7.570823568));
+    }
+
+    #[test]
+    fn garage_helpers_round_trip() {
+        assert!(close(km_to_display(160.9344, UnitSystem::Us), 100.0));
+        assert!(close(display_to_km(100.0, UnitSystem::Us), 160.9344));
+        assert!(close(
+            litres_to_display(LITERS_PER_US_GALLON, UnitSystem::Us),
+            1.0
+        ));
+        assert!(close(
+            display_to_litres(1.0, UnitSystem::Us),
+            LITERS_PER_US_GALLON
+        ));
+        // 1.50 per litre is ~5.68 per gallon.
+        let per_gal = price_per_litre_to_display(1.5, UnitSystem::Us);
+        assert!(close(per_gal, 1.5 * LITERS_PER_US_GALLON));
+        assert!(close(
+            display_to_price_per_litre(per_gal, UnitSystem::Us),
+            1.5
+        ));
+        assert_eq!(fmt_km(Some(1609.344), &us()), "1000 mi");
+        assert_eq!(fmt_km(Some(15_000.0), &metric()), "15000 km");
+        assert_eq!(fmt_km(None, &metric()), "—");
+        assert_eq!(fmt_money(Some(12.5), Some("EUR")), "12.50 EUR");
+        assert_eq!(fmt_money(Some(3.0), None), "3.00");
+        assert_eq!(fmt_money(None, Some("EUR")), "—");
+    }
+
+    #[test]
+    fn spanish_uses_decimal_comma_and_period_thousands() {
+        use crate::i18n::{Locale, with_locale};
+        with_locale(Locale::Es, || {
+            assert_eq!(fmt_economy(Some(11.8), &metric()), "11,8 L/100km");
+            assert_eq!(fmt_distance(Some(1_234_500.0), &metric()), "1.234,5 km");
+            assert_eq!(fmt_distance(Some(12_345.0), &metric()), "12,3 km");
+            assert_eq!(fmt_distance_value(1500.0, &us()), "1.500,0");
+            assert_eq!(fmt_speed(Some(88.4), &metric()), "88 km/h");
+            assert_eq!(fmt_fuel(Some(3.456), &metric()), "3,46 L");
+            assert_eq!(fmt_economy(Some(30.0), &us()), "30,0 mpg");
+            assert_eq!(fmt_km(Some(15_000.0), &metric()), "15.000 km");
+            assert_eq!(fmt_km(Some(1609.344), &us()), "1.000 mi");
+            assert_eq!(fmt_money(Some(1234.5), Some("EUR")), "1.234,50 EUR");
+            assert_eq!(fmt_odometer_delta(Some(42.26), &metric()), "42,3 km");
+            assert_eq!(fmt_fuel(None, &metric()), "—");
+        });
+    }
+
+    #[test]
+    fn unit_system_parses_loosely() {
+        assert_eq!(UnitSystem::parse("imperial"), UnitSystem::Us);
+        assert_eq!(UnitSystem::parse(" US "), UnitSystem::Us);
+        assert_eq!(UnitSystem::parse("metric"), UnitSystem::Metric);
+        assert_eq!(UnitSystem::parse("anything"), UnitSystem::Metric);
     }
 }

@@ -46,12 +46,14 @@ governor = "0.10"
 rmcp = { version = "3.1", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
 schemars = "1"
 http = "1"
+web-push-native = "0.5"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 serde_json = { workspace = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "cookies"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "multipart", "stream"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
 base64 = "0.23"

@@ -18,7 +18,7 @@ use crate::audit::{self, AuditEvent, actions};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::middleware::client_ip;
-use crate::shares::access::{can_edit_car, can_read_car};
+use crate::shares::access::{CarAccess, can_edit_car, can_read_car};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -88,7 +88,7 @@ async fn create_device(
     headers: HeaderMap,
     Json(body): Json<CreateDeviceRequest>,
 ) -> AppResult<Json<CreateDeviceResponse>> {
-    can_edit_car(&state.pool, user.id, car_id).await?;
+    let access = can_edit_car(&state.pool, user.id, car_id).await?;
     let plaintext = issue_plaintext_token();
     let token_hash = hash_token(&plaintext, &state.config.device_token_pepper);
     let token_prefix = plaintext.chars().take(8).collect::<String>();
@@ -97,8 +97,8 @@ async fn create_device(
 
     let device = sqlx::query_as::<_, DeviceRow>(
         r#"
-        INSERT INTO devices (id, car_id, name, token_hash, token_prefix)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO devices (id, car_id, name, token_hash, token_prefix, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id, car_id, name, token_prefix, created_at, last_seen_at, revoked_at
         "#,
     )
@@ -107,6 +107,8 @@ async fn create_device(
     .bind(&name)
     .bind(&token_hash)
     .bind(&token_prefix)
+    // NULL means "the owner's"; see migrations/021_device_created_by.sql.
+    .bind((access != CarAccess::Owner).then_some(user.id))
     .fetch_one(&state.pool)
     .await?;
 
@@ -136,6 +138,8 @@ async fn create_device(
     )
     .await;
 
+    notify_owner_of_device_change(&state.pool, car_id, user.id, &user.email, &name, "added").await;
+
     Ok(Json(CreateDeviceResponse {
         device,
         token: plaintext,
@@ -149,7 +153,23 @@ async fn revoke_device(
     connect_info: ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> AppResult<Json<serde_json::Value>> {
-    can_edit_car(&state.pool, user.id, car_id).await?;
+    let access = can_edit_car(&state.pool, user.id, car_id).await?;
+
+    // An editor may only revoke tokens they created; the owner's phone is not theirs
+    // to switch off.
+    if access != CarAccess::Owner {
+        let created_by: Option<Option<Uuid>> =
+            sqlx::query_scalar("SELECT created_by FROM devices WHERE id = $1 AND car_id = $2")
+                .bind(device_id)
+                .bind(car_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        match created_by {
+            None => return Err(AppError::NotFound),
+            Some(creator) if creator != Some(user.id) => return Err(AppError::Forbidden),
+            Some(_) => {}
+        }
+    }
 
     // Idempotent: already-revoked devices still return ok so the UI can refresh cleanly.
     let updated = sqlx::query(
@@ -188,6 +208,19 @@ async fn revoke_device(
                 user_agent,
                 meta: serde_json::json!({ "car_id": car_id_str }),
             },
+        )
+        .await;
+        let device_name: String = sqlx::query_scalar("SELECT name FROM devices WHERE id = $1")
+            .bind(device_id)
+            .fetch_one(&state.pool)
+            .await?;
+        notify_owner_of_device_change(
+            &state.pool,
+            car_id,
+            user.id,
+            &user.email,
+            &device_name,
+            "revoked",
         )
         .await;
         return Ok(Json(
@@ -342,10 +375,16 @@ pub async fn authenticate_device_token(
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query("UPDATE devices SET last_seen_at = NOW() WHERE id = $1")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
+    // At most one write a minute: at 1 Hz ingest an unconditional update doubled
+    // the writes of every /api/track/sample call for no visible difference.
+    sqlx::query(
+        "UPDATE devices SET last_seen_at = NOW()
+         WHERE id = $1
+           AND (last_seen_at IS NULL OR last_seen_at < NOW() - interval '60 seconds')",
+    )
+    .bind(device_id)
+    .execute(pool)
+    .await?;
 
     Ok(DeviceAuth { device_id, car_id })
 }
@@ -374,6 +413,55 @@ fn parse_basic_token(header: &str) -> Option<String> {
         return Some(rest.to_string());
     }
     None
+}
+
+/// A device token lets its holder write trips into the car, so the owner hears
+/// about any added or revoked by someone else.
+async fn notify_owner_of_device_change(
+    pool: &sqlx::PgPool,
+    car_id: Uuid,
+    actor_id: Uuid,
+    actor_email: &str,
+    device_name: &str,
+    verb: &str,
+) {
+    let owner: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT owner_user_id, name FROM cars WHERE id = $1")
+            .bind(car_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    if let Some((owner, car)) = owner
+        && owner != actor_id
+    {
+        crate::notifications::security_notice(
+            pool,
+            owner,
+            format!("Tracker {verb} on {car}"),
+            format!("{actor_email} {verb} the device \"{device_name}\"."),
+        )
+        .await;
+    }
+}
+
+/// Revoke every live device token `user_id` created on `car_id`. Called when their
+/// share ends or drops to viewer, so the access they held cannot outlive it through
+/// a token. Returns how many were revoked.
+pub async fn revoke_devices_created_by(
+    pool: &sqlx::PgPool,
+    car_id: Uuid,
+    user_id: Uuid,
+) -> AppResult<u64> {
+    let res = sqlx::query(
+        "UPDATE devices SET revoked_at = NOW()
+         WHERE car_id = $1 AND created_by = $2 AND revoked_at IS NULL",
+    )
+    .bind(car_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
 }
 
 #[cfg(test)]

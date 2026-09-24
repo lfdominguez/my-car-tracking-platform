@@ -17,3 +17,14 @@ pub fn outbound_client_long() -> reqwest::Result<reqwest::Client> {
         .timeout(Duration::from_secs(60))
         .build()
 }
+
+/// Client for credential exchanges (OAuth token and userinfo calls). It never
+/// follows redirects, so a redirect cannot carry an authorization code or bearer
+/// token to another host.
+pub fn outbound_client_no_redirect() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}

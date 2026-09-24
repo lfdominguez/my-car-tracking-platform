@@ -39,6 +39,16 @@ pub struct Me {
     pub mcp_token_set: bool,
     #[serde(default)]
     pub mcp_token_hint: Option<String>,
+    /// IANA timezone used to bucket days and hours (`UTC` until set).
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    /// `en`, `es`, or unset (follow the browser).
+    #[serde(default)]
+    pub locale: Option<String>,
+}
+
+fn default_timezone() -> String {
+    "UTC".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -81,6 +91,26 @@ pub struct Car {
     pub role: String,
     #[serde(default)]
     pub vault_sealed: bool,
+    /// Whether people this car is shared with may see its live position. Absent
+    /// when the server does not report it.
+    #[serde(default)]
+    pub share_live_position: Option<bool>,
+    /// Days of per-second samples kept; `None` keeps everything.
+    #[serde(default)]
+    pub raw_retention_days: Option<i32>,
+}
+
+/// Owner only: keep raw samples for `days` (at least 30) or, with `None`, forever.
+/// Returns the stored value.
+pub async fn set_car_retention(car_id: &str, days: Option<i32>) -> Result<Option<i32>, ApiError> {
+    let v: serde_json::Value = send_json_body(
+        Request::put(&format!("/api/cars/{car_id}/retention")),
+        &serde_json::json!({ "raw_retention_days": days }),
+    )
+    .await?;
+    Ok(v.get("raw_retention_days")
+        .and_then(|d| d.as_i64())
+        .map(|d| d as i32))
 }
 
 /// Authenticated photo URL (same-origin cookie). `cache_bust` optional query.
@@ -127,6 +157,9 @@ pub struct Trip {
     pub finished_at: Option<String>,
     pub finished: bool,
     pub fuel_type_snapshot: String,
+    /// GASOLINE / DIESEL / HYBRID / FULL_ELECTRIC at the time of the trip.
+    #[serde(default)]
+    pub fuel_class_snapshot: String,
     pub point_count: i64,
     pub distance_m: Option<f64>,
     #[serde(default)]
@@ -154,6 +187,28 @@ pub struct Trip {
     pub last_point_at: Option<String>,
     #[serde(default)]
     pub traffic: Option<TripTrafficSummary>,
+    /// `business`, `personal`, or unset.
+    #[serde(default)]
+    pub purpose: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Names of the user's places the trip started / ended in (#111).
+    #[serde(default)]
+    pub start_place: Option<String>,
+    #[serde(default)]
+    pub end_place: Option<String>,
+}
+
+impl Trip {
+    /// "Home → Office", "Home → …", or `None` when neither end is a place.
+    pub fn places_label(&self) -> Option<String> {
+        match (self.start_place.as_deref(), self.end_place.as_deref()) {
+            (None, None) => None,
+            (a, b) => Some(format!("{} → {}", a.unwrap_or("…"), b.unwrap_or("…"))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -250,6 +305,10 @@ pub struct TripPoint {
     pub accel_rms_mps2: Option<f64>,
     #[serde(default)]
     pub device_tilt_delta_deg: Option<f64>,
+    #[serde(default)]
+    pub battery_soc_pct: Option<f64>,
+    #[serde(default)]
+    pub battery_power_kw: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -315,7 +374,7 @@ pub enum ApiError {
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unauthorized => write!(f, "unauthorized"),
+            Self::Unauthorized => write!(f, "{}", crate::i18n::t("api.unauthorized")),
             Self::Message(m) => write!(f, "{m}"),
         }
     }
@@ -323,43 +382,157 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// sessionStorage key carrying the page to return to after signing in again.
+///
+/// The Google OAuth callback always lands on `/app` (server side), so `?next=`
+/// cannot ride through it; the login page parks it here and the app shell picks
+/// it up once `/api/me` succeeds.
+const LOGIN_NEXT_KEY: &str = "ctp-login-next";
+
+/// Only same-origin app paths are honoured, so `?next=` cannot become an open
+/// redirect (`//evil.example`, `https://…`, `/\evil`).
+fn safe_next(next: &str) -> Option<&str> {
+    (next.starts_with("/app") && !next.contains("//") && !next.contains('\\')).then_some(next)
+}
+
+/// Remember where to go after signing in (from the login page's `?next=`).
+pub fn remember_login_next(next: &str) {
+    let Some(next) = safe_next(next) else {
+        return;
+    };
+    if let Some(Ok(Some(storage))) = web_sys::window().map(|w| w.session_storage()) {
+        let _ = storage.set_item(LOGIN_NEXT_KEY, next);
+    }
+}
+
+/// Take (and clear) the remembered post-login destination.
+pub fn take_login_next() -> Option<String> {
+    let storage = web_sys::window()?.session_storage().ok()??;
+    let next = storage.get_item(LOGIN_NEXT_KEY).ok()??;
+    let _ = storage.remove_item(LOGIN_NEXT_KEY);
+    safe_next(&next).map(str::to_string)
+}
+
+/// A 401 from any API call: the session is gone. Inside the app shell, send the
+/// user to `/login?next=<where they were>` once (several requests usually fail
+/// together); the landing and login pages probe `/api/me` themselves and handle a
+/// 401 as "not signed in", so they are left alone.
+fn unauthorized() -> ApiError {
+    static REDIRECTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if let Some(win) = web_sys::window() {
+        let loc = win.location();
+        let path = loc.pathname().unwrap_or_default();
+        if path.starts_with("/app") && !REDIRECTING.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let here = format!("{path}{}", loc.search().unwrap_or_default());
+            let next = String::from(js_sys::encode_uri_component(&here));
+            let _ = loc.set_href(&format!("/login?next={next}"));
+        }
+    }
+    ApiError::Unauthorized
+}
+
+/// Transport failure (offline, DNS, connection reset) before any HTTP status.
+fn network_error(e: gloo_net::Error) -> ApiError {
+    web_sys::console::warn_1(&format!("request failed: {e}").into());
+    ApiError::Message(crate::i18n::t("api.network").into())
+}
+
+/// A body that did not parse as the expected JSON (usually a proxy error page).
+fn decode_error(e: gloo_net::Error) -> ApiError {
+    web_sys::console::warn_1(&format!("unexpected response body: {e}").into());
+    ApiError::Message(crate::i18n::t("api.bad_response").into())
+}
+
+/// User-facing text for a non-2xx response instead of the raw `"500: <body>"`.
+///
+/// 4xx responses keep the server's own `{"error": "..."}` message when it sent one:
+/// those are written for people (validation, "already in progress", missing API
+/// key) — in the server's language, which is English. 5xx bodies are internal
+/// detail, so they go to the console and the user gets a generic retry message.
+fn status_error(status: u16, body: &str) -> ApiError {
+    let server_msg = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .or_else(|| v.get("message"))
+                .and_then(|m| m.as_str())
+                .map(|m| m.trim().to_string())
+        })
+        .filter(|m| !m.is_empty())
+        .or_else(|| {
+            // Plain-text error bodies are fine to show when short and not HTML.
+            let t = body.trim();
+            (!t.is_empty() && t.len() <= 200 && !t.starts_with('<')).then(|| t.to_string())
+        });
+    if status >= 500 {
+        web_sys::console::warn_1(&format!("server error {status}: {body}").into());
+        return ApiError::Message(crate::i18n::t("api.server_error").into());
+    }
+    let fallback = crate::i18n::t(match status {
+        403 => "api.forbidden",
+        404 => "api.not_found",
+        408 => "api.timeout",
+        409 => "api.conflict",
+        413 => "api.too_large",
+        429 => "api.rate_limited",
+        _ => "api.failed",
+    });
+    ApiError::Message(match (status, server_msg) {
+        // Rate limits read the same whatever the server wording.
+        (429, _) => fallback.to_string(),
+        (_, Some(m)) => m,
+        (_, None) => fallback.to_string(),
+    })
+}
+
+/// Reject a failed response with a friendly [`ApiError`]; 401 also redirects.
+async fn check(resp: gloo_net::http::Response) -> Result<gloo_net::http::Response, ApiError> {
+    if resp.status() == 401 {
+        return Err(unauthorized());
+    }
+    if !resp.ok() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(status_error(resp.status(), &text));
+    }
+    Ok(resp)
+}
+
 async fn send_json<T: DeserializeOwned>(builder: RequestBuilder) -> Result<T, ApiError> {
     let resp = builder
         .credentials(web_sys::RequestCredentials::Include)
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
-    }
-    if !resp.ok() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
-    }
-    resp.json::<T>()
-        .await
-        .map_err(|e| ApiError::Message(e.to_string()))
+        .map_err(network_error)?;
+    check(resp).await?.json::<T>().await.map_err(decode_error)
 }
 
 async fn send_body_json<T: DeserializeOwned>(req: Request) -> Result<T, ApiError> {
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
-    }
-    if !resp.ok() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
-    }
-    resp.json::<T>()
-        .await
-        .map_err(|e| ApiError::Message(e.to_string()))
+    let resp = req.send().await.map_err(network_error)?;
+    check(resp).await?.json::<T>().await.map_err(decode_error)
 }
 
 fn with_creds(builder: RequestBuilder) -> RequestBuilder {
     builder.credentials(web_sys::RequestCredentials::Include)
+}
+
+/// Send `body` as JSON and decode a JSON response.
+async fn send_json_body<T: DeserializeOwned>(
+    builder: RequestBuilder,
+    body: &serde_json::Value,
+) -> Result<T, ApiError> {
+    let req = with_creds(builder)
+        .header("Content-Type", "application/json")
+        .json(body)
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
+}
+
+/// Send a request whose response body does not matter (DELETE and friends).
+async fn send_no_content(builder: RequestBuilder) -> Result<(), ApiError> {
+    let resp = with_creds(builder).send().await.map_err(network_error)?;
+    check(resp).await?;
+    Ok(())
 }
 
 pub async fn get_me() -> Result<Me, ApiError> {
@@ -383,6 +556,13 @@ pub async fn update_me_preferences(body: serde_json::Value) -> Result<Me, ApiErr
     send_body_json(req).await
 }
 
+/// Erase the account. `confirm_email` must match the signed-in email.
+pub async fn delete_my_account(confirm_email: &str) -> Result<(), ApiError> {
+    let body = serde_json::json!({ "confirm_email": confirm_email });
+    let _: serde_json::Value = send_json_body(Request::delete("/api/me"), &body).await?;
+    Ok(())
+}
+
 pub async fn rotate_mcp_token() -> Result<McpTokenResponse, ApiError> {
     let req = with_creds(Request::post("/api/me/mcp-token"))
         .header("Content-Type", "application/json")
@@ -392,18 +572,7 @@ pub async fn rotate_mcp_token() -> Result<McpTokenResponse, ApiError> {
 }
 
 pub async fn revoke_mcp_token() -> Result<(), ApiError> {
-    let resp = with_creds(Request::delete("/api/me/mcp-token"))
-        .send()
-        .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
-    }
-    if !resp.ok() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
-    }
-    Ok(())
+    send_no_content(Request::delete("/api/me/mcp-token")).await
 }
 
 pub async fn fetch_trip_analysis(id: &str) -> Result<TripAnalysis, ApiError> {
@@ -417,6 +586,19 @@ pub async fn start_trip_analysis(id: &str) -> Result<AnalyzeAccepted, ApiError> 
         .json(&body)
         .map_err(|e| ApiError::Message(e.to_string()))?;
     send_body_json(req).await
+}
+
+/// Stop a running trip analysis (owner only). The poll then sees it failed.
+pub async fn cancel_trip_analysis(id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::post(&format!("/api/trips/{id}/analysis/cancel"))).await
+}
+
+/// Stop an assistant answer that is still being generated.
+pub async fn cancel_chat_message(message_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::post(&format!(
+        "/api/chat/messages/{message_id}/cancel"
+    )))
+    .await
 }
 
 pub async fn get_public_config() -> Result<PublicConfig, ApiError> {
@@ -473,6 +655,11 @@ pub struct TripListOpts {
     /// Inclusive upper bound on `started_at` (RFC3339 / ISO-8601).
     pub to: Option<String>,
     pub limit: Option<i64>,
+    /// Exclusive upper bound on `started_at`: the last trip of the previous page.
+    pub before: Option<String>,
+    /// `business` or `personal`.
+    pub purpose: Option<String>,
+    pub tag: Option<String>,
 }
 
 pub fn build_trips_list_url(opts: &TripListOpts) -> String {
@@ -489,6 +676,18 @@ pub fn build_trips_list_url(opts: &TripListOpts) -> String {
     if let Some(limit) = opts.limit {
         parts.push(format!("limit={limit}"));
     }
+    if let Some(before) = opts.before.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("before={}", urlencoding_trip_query(before)));
+    }
+    if let Some(purpose) = opts.purpose.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("purpose={}", urlencoding_trip_query(purpose)));
+    }
+    if let Some(tag) = opts.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(format!(
+            "tag={}",
+            urlencoding_trip_query(&tag.to_lowercase())
+        ));
+    }
     if parts.is_empty() {
         "/api/trips".into()
     } else {
@@ -497,7 +696,7 @@ pub fn build_trips_list_url(opts: &TripListOpts) -> String {
 }
 
 /// Minimal query encoding for ISO timestamps and UUIDs (encode reserved chars).
-fn urlencoding_trip_query(raw: &str) -> String {
+pub fn urlencoding_trip_query(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for b in raw.bytes() {
         match b {
@@ -526,7 +725,9 @@ pub async fn get_trip(id: &str) -> Result<Trip, ApiError> {
 
 pub async fn finish_trip(id: &str) -> Result<Trip, ApiError> {
     if id.is_empty() {
-        return Err(ApiError::Message("missing trip id".into()));
+        return Err(ApiError::Message(
+            crate::i18n::t("api.missing_trip_id").into(),
+        ));
     }
     let body = serde_json::json!({});
     let req = with_creds(Request::post(&format!("/api/trips/{id}/finish")))
@@ -538,31 +739,66 @@ pub async fn finish_trip(id: &str) -> Result<Trip, ApiError> {
 
 pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
     if id.is_empty() {
-        return Err(ApiError::Message("missing trip id".into()));
+        return Err(ApiError::Message(
+            crate::i18n::t("api.missing_trip_id").into(),
+        ));
     }
     let url = format!("/api/trips/{id}");
     let resp = with_creds(Request::delete(&url))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if resp.status() == 404 {
-        return Err(ApiError::Message("Trip not found".into()));
+        return Err(ApiError::Message(
+            crate::i18n::t("api.trip_not_found").into(),
+        ));
     }
     if resp.status() == 403 {
-        return Err(ApiError::Message("Not allowed to delete this trip".into()));
+        return Err(ApiError::Message(
+            crate::i18n::t("api.trip_delete_forbidden").into(),
+        ));
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }
 
-pub async fn trip_points(id: &str) -> Result<Vec<TripPoint>, ApiError> {
-    send_json(Request::get(&format!("/api/trips/{id}/points"))).await
+/// Samples of a trip. `max_points` asks the server to thin them to about that many
+/// while keeping each bucket's slowest and fastest sample.
+pub async fn trip_points(id: &str, max_points: Option<usize>) -> Result<Vec<TripPoint>, ApiError> {
+    let url = match max_points {
+        Some(n) => format!("/api/trips/{id}/points?max_points={n}"),
+        None => format!("/api/trips/{id}/points"),
+    };
+    send_json(Request::get(&url)).await
+}
+
+/// Edit a trip's purpose (`business` / `personal` / `""` to clear), notes and tags.
+pub async fn update_trip_meta(
+    id: &str,
+    purpose: &str,
+    notes: &str,
+    tags: &[String],
+) -> Result<Trip, ApiError> {
+    let body = serde_json::json!({ "purpose": purpose, "notes": notes, "tags": tags });
+    send_json_body(Request::patch(&format!("/api/trips/{id}")), &body).await
+}
+
+/// Join consecutive finished trips of one car; returns the merged trip.
+pub async fn merge_trips(ids: &[String]) -> Result<Trip, ApiError> {
+    let body = serde_json::json!({ "trip_ids": ids });
+    send_json_body(Request::post("/api/trips/merge"), &body).await
+}
+
+/// Split a finished trip at `at` (RFC3339); returns the new, later trip.
+pub async fn split_trip(id: &str, at: &str) -> Result<Trip, ApiError> {
+    let body = serde_json::json!({ "at": at });
+    send_json_body(Request::post(&format!("/api/trips/{id}/split")), &body).await
 }
 
 pub async fn trip_traffic_frames(id: &str) -> Result<Vec<TripTrafficFrame>, ApiError> {
@@ -618,26 +854,27 @@ pub async fn provisioning(
 pub async fn revoke_device(car_id: &str, device_id: &str) -> Result<(), ApiError> {
     if car_id.is_empty() || device_id.is_empty() {
         return Err(ApiError::Message(
-            "Cannot revoke device: missing car or device id".into(),
+            crate::i18n::t("api.device_missing_ids").into(),
         ));
     }
     let url = format!("/api/cars/{car_id}/devices/{device_id}");
     let resp = with_creds(Request::delete(&url))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if resp.status() == 404 {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!(
-            "Device not found or already removed ({text})"
+        return Err(ApiError::Message(crate::i18n::tf(
+            "api.device_not_found",
+            &[("detail", &text)],
         )));
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }
@@ -682,7 +919,6 @@ pub async fn list_shares(car_id: &str) -> Result<Vec<Share>, ApiError> {
 pub struct CreateShareResponse {
     pub ok: bool,
     #[serde(default)]
-    pub share: Option<Share>,
     pub message: String,
 }
 
@@ -840,7 +1076,7 @@ pub async fn logout() -> Result<(), ApiError> {
     let resp = with_creds(Request::post("/auth/logout"))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.ok() {
         Ok(())
     } else {
@@ -856,13 +1092,13 @@ pub async fn revoke_session(id: &str) -> Result<(), ApiError> {
     let resp = with_creds(Request::delete(&format!("/api/me/sessions/{id}")))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }
@@ -1109,13 +1345,13 @@ pub async fn delete_chat_conversation(id: &str) -> Result<(), ApiError> {
     let resp = with_creds(Request::delete(&format!("/api/chat/conversations/{id}")))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }
@@ -1138,4 +1374,800 @@ pub async fn post_chat_message(
 /// session cookie without extra configuration.
 pub fn chat_stream_url(message_id: &str) -> String {
     format!("/api/chat/messages/{message_id}/stream")
+}
+
+// --- garage: maintenance, odometer, fuel & charging log (SI in and out) -------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MaintenanceItem {
+    pub id: String,
+    pub car_id: String,
+    pub name: String,
+    pub interval_km: Option<f64>,
+    pub interval_months: Option<i32>,
+    /// `YYYY-MM-DD`.
+    pub last_done_on: Option<String>,
+    pub last_done_km: Option<f64>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MaintenanceLogEntry {
+    pub id: String,
+    pub car_id: String,
+    pub item_id: Option<String>,
+    /// `YYYY-MM-DD`.
+    pub done_on: String,
+    pub odometer_km: Option<f64>,
+    pub title: String,
+    pub cost: Option<f64>,
+    pub currency: Option<String>,
+    pub workshop: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DueItem {
+    pub item_id: String,
+    pub name: String,
+    pub due_on: Option<String>,
+    pub due_km: Option<f64>,
+    pub days_left: Option<i64>,
+    pub km_left: Option<f64>,
+    /// `overdue`, `soon`, `ok` or `unknown`.
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DueResponse {
+    pub odometer_km: Option<f64>,
+    #[serde(default)]
+    pub items: Vec<DueItem>,
+}
+
+impl DueResponse {
+    /// `(overdue, soon)` counts, for badges.
+    pub fn counts(&self) -> (usize, usize) {
+        let n = |s: &str| self.items.iter().filter(|i| i.status == s).count();
+        (n("overdue"), n("soon"))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OdometerReading {
+    pub id: String,
+    pub read_at: String,
+    pub odometer_km: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FuelEntry {
+    pub id: String,
+    pub car_id: String,
+    pub filled_at: String,
+    pub odometer_km: Option<f64>,
+    /// `L` or `kWh`.
+    pub unit: String,
+    pub quantity: f64,
+    pub price_per_unit: Option<f64>,
+    pub total_cost: Option<f64>,
+    pub currency: Option<String>,
+    pub full_tank: bool,
+    pub station: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FuelSummary {
+    #[serde(default)]
+    pub entries: usize,
+    #[serde(default)]
+    pub total_quantity_l: f64,
+    #[serde(default)]
+    pub total_quantity_kwh: f64,
+    #[serde(default)]
+    pub total_cost: f64,
+    pub currency: Option<String>,
+    pub measured_l_per_100km: Option<f64>,
+    pub measured_kwh_per_100km: Option<f64>,
+    pub cost_per_km: Option<f64>,
+    pub latest_price_per_l: Option<f64>,
+    pub latest_price_per_kwh: Option<f64>,
+    pub co2_kg: Option<f64>,
+}
+
+pub async fn list_maintenance_items(car_id: &str) -> Result<Vec<MaintenanceItem>, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/cars/{car_id}/maintenance/items"
+    )))
+    .await
+}
+
+pub async fn create_maintenance_item(
+    car_id: &str,
+    body: &serde_json::Value,
+) -> Result<MaintenanceItem, ApiError> {
+    send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/maintenance/items")),
+        body,
+    )
+    .await
+}
+
+pub async fn update_maintenance_item(
+    car_id: &str,
+    item_id: &str,
+    body: &serde_json::Value,
+) -> Result<MaintenanceItem, ApiError> {
+    send_json_body(
+        Request::patch(&format!("/api/cars/{car_id}/maintenance/items/{item_id}")),
+        body,
+    )
+    .await
+}
+
+pub async fn delete_maintenance_item(car_id: &str, item_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/maintenance/items/{item_id}"
+    )))
+    .await
+}
+
+pub async fn list_maintenance_log(car_id: &str) -> Result<Vec<MaintenanceLogEntry>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/maintenance/log"))).await
+}
+
+pub async fn create_maintenance_log(
+    car_id: &str,
+    body: &serde_json::Value,
+) -> Result<MaintenanceLogEntry, ApiError> {
+    send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/maintenance/log")),
+        body,
+    )
+    .await
+}
+
+pub async fn delete_maintenance_log(car_id: &str, entry_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/maintenance/log/{entry_id}"
+    )))
+    .await
+}
+
+pub async fn maintenance_due(car_id: &str) -> Result<DueResponse, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/maintenance/due"))).await
+}
+
+pub async fn add_odometer(car_id: &str, odometer_km: f64) -> Result<OdometerReading, ApiError> {
+    let body = serde_json::json!({ "odometer_km": odometer_km });
+    send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/odometer")),
+        &body,
+    )
+    .await
+}
+
+pub async fn list_fuel_log(car_id: &str) -> Result<Vec<FuelEntry>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/fuel-log"))).await
+}
+
+pub async fn create_fuel_entry(
+    car_id: &str,
+    body: &serde_json::Value,
+) -> Result<FuelEntry, ApiError> {
+    send_json_body(Request::post(&format!("/api/cars/{car_id}/fuel-log")), body).await
+}
+
+pub async fn delete_fuel_entry(car_id: &str, entry_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/fuel-log/{entry_id}"
+    )))
+    .await
+}
+
+pub async fn fuel_summary(car_id: &str) -> Result<FuelSummary, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/cars/{car_id}/fuel-log/summary"
+    )))
+    .await
+}
+
+// --- live positions (#108) --------------------------------------------------
+
+/// Newest fix of a car's newest trip. SI units.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LivePosition {
+    pub car_id: String,
+    pub track_id: String,
+    /// The trip is still open: the car is being driven.
+    pub trip_open: bool,
+    pub recorded_at: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub speed_kph: Option<f64>,
+    /// Degrees clockwise from north; `None` when parked.
+    pub heading_deg: Option<f64>,
+    pub fuel_level_pct: Option<f64>,
+    pub battery_soc_pct: Option<f64>,
+}
+
+pub async fn list_live_positions() -> Result<Vec<LivePosition>, ApiError> {
+    send_json(Request::get("/api/cars/live")).await
+}
+
+/// SSE feed of positions (`position` events) and `stale` hints to refetch.
+pub const LIVE_STREAM_URL: &str = "/api/cars/live/stream";
+
+/// Owner only: let people the car is shared with see its live position.
+pub async fn set_live_sharing(car_id: &str, enabled: bool) -> Result<bool, ApiError> {
+    let body = serde_json::json!({ "enabled": enabled });
+    let v: serde_json::Value = send_json_body(
+        Request::put(&format!("/api/cars/{car_id}/live-sharing")),
+        &body,
+    )
+    .await?;
+    Ok(v.get("share_live_position")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(enabled))
+}
+
+// --- statistics (#116) ------------------------------------------------------
+
+/// One week / month / year of driving. `distance` and `fuel_used` follow the
+/// trips-list convention: metres and litres (metric) or miles and US gallons.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PeriodStats {
+    /// First day of the bucket (`YYYY-MM-DD`) in the user's timezone.
+    pub period_start: String,
+    pub trips: i64,
+    pub distance: f64,
+    pub duration_s: f64,
+    pub fuel_used: f64,
+    pub co2_kg: f64,
+    pub fuel_cost: Option<f64>,
+}
+
+/// `GET /api/stats/periods`. `bucket` is `week`, `month` or `year`; bounds are
+/// RFC3339.
+pub async fn stats_periods(
+    bucket: &str,
+    car_id: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Vec<PeriodStats>, ApiError> {
+    let mut url = format!(
+        "/api/stats/periods?bucket={}",
+        urlencoding_trip_query(bucket)
+    );
+    if let Some(c) = car_id.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&car_id={}", urlencoding_trip_query(c)));
+    }
+    if let Some(f) = from.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&from={}", urlencoding_trip_query(f)));
+    }
+    if let Some(t) = to.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&to={}", urlencoding_trip_query(t)));
+    }
+    send_json(Request::get(&url)).await
+}
+
+// --- many trips on one map (#120) ------------------------------------------------
+
+/// A trip's simplified route line (GeoJSON LineString, ~10 m tolerance).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TripGeometry {
+    pub id: String,
+    pub car_id: String,
+    pub started_at: String,
+    pub geometry: serde_json::Value,
+}
+
+/// `GET /api/trips/geometries`: newest first, vault cars skipped. Bounds are RFC3339;
+/// purpose and tag filter like the trips list.
+pub async fn trip_geometries(
+    car_id: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    purpose: Option<&str>,
+    tag: Option<&str>,
+    limit: i64,
+) -> Result<Vec<TripGeometry>, ApiError> {
+    let mut url = format!("/api/trips/geometries?limit={limit}");
+    if let Some(p) = purpose.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&purpose={}", urlencoding_trip_query(p)));
+    }
+    if let Some(t) = tag.map(str::trim).filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&tag={}", urlencoding_trip_query(t)));
+    }
+    if let Some(c) = car_id.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&car_id={}", urlencoding_trip_query(c)));
+    }
+    if let Some(f) = from.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&from={}", urlencoding_trip_query(f)));
+    }
+    if let Some(t) = to.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&to={}", urlencoding_trip_query(t)));
+    }
+    send_json(Request::get(&url)).await
+}
+
+// --- share invitations ----------------------------------------------------------
+
+/// A pending invitation to one of the owner's cars.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CarInvite {
+    pub id: String,
+    pub email: String,
+    pub role: String,
+    pub created_at: String,
+}
+
+/// An invitation waiting for the signed-in user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MyInvite {
+    pub id: String,
+    pub car_id: String,
+    pub car_name: String,
+    pub invited_by: Option<String>,
+    pub role: String,
+    pub created_at: String,
+}
+
+pub async fn list_car_invites(car_id: &str) -> Result<Vec<CarInvite>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/share-invites"))).await
+}
+
+pub async fn cancel_car_invite(car_id: &str, invite_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/share-invites/{invite_id}"
+    )))
+    .await
+}
+
+pub async fn my_share_invites() -> Result<Vec<MyInvite>, ApiError> {
+    send_json(Request::get("/api/me/share-invites")).await
+}
+
+/// Accept an invitation; returns the car id now shared with the user.
+pub async fn accept_share_invite(invite_id: &str) -> Result<String, ApiError> {
+    let v: serde_json::Value = send_json_body(
+        Request::post(&format!("/api/me/share-invites/{invite_id}/accept")),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(v.get("car_id")
+        .and_then(|c| c.as_str())
+        .unwrap_or_default()
+        .to_string())
+}
+
+pub async fn decline_share_invite(invite_id: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post(&format!("/api/me/share-invites/{invite_id}/decline")),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Give up access to a car shared with the user.
+pub async fn leave_shared_car(car_id: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/shares/me/leave")),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+// --- notifications & web push (#109, #112) -----------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NotificationItem {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    /// In-app path to open, e.g. `/app/trips/<id>`.
+    pub url: Option<String>,
+    pub created_at: String,
+    pub read_at: Option<String>,
+}
+
+pub async fn list_notifications(
+    unread_only: bool,
+    limit: i64,
+) -> Result<Vec<NotificationItem>, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/notifications?unread={unread_only}&limit={limit}"
+    )))
+    .await
+}
+
+pub async fn unread_notification_count() -> Result<i64, ApiError> {
+    let v: serde_json::Value = send_json(Request::get("/api/notifications/unread-count")).await?;
+    Ok(v.get("unread").and_then(|n| n.as_i64()).unwrap_or(0))
+}
+
+pub async fn mark_notification_read(id: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post(&format!("/api/notifications/{id}/read")),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_all_notifications_read() -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post("/api/notifications/read-all"),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+/// The server's VAPID public key (base64url), or `None` when push is not set up.
+/// What the server can deliver besides the inbox.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PushConfig {
+    #[serde(default)]
+    pub vapid_public_key: Option<String>,
+    /// Email notifications are configured (SMTP) on the server.
+    #[serde(default)]
+    pub email_enabled: bool,
+}
+
+pub async fn push_config() -> Result<PushConfig, ApiError> {
+    let mut c: PushConfig = send_json(Request::get("/api/push/config")).await?;
+    c.vapid_public_key = c.vapid_public_key.filter(|k| !k.is_empty());
+    Ok(c)
+}
+
+/// Delivery preferences. Sent whole on save.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NotificationPrefs {
+    /// Push to subscribed browsers (the inbox always records).
+    #[serde(default = "default_true")]
+    pub push: bool,
+    #[serde(default)]
+    pub email: bool,
+    /// Kinds not to push, e.g. `alert.speeding`.
+    #[serde(default)]
+    pub muted: Vec<String>,
+    /// `off`, `weekly` or `monthly`.
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for NotificationPrefs {
+    fn default() -> Self {
+        Self {
+            push: true,
+            email: false,
+            muted: Vec::new(),
+            digest: None,
+        }
+    }
+}
+
+pub async fn get_notification_prefs() -> Result<NotificationPrefs, ApiError> {
+    send_json(Request::get("/api/me/notification-prefs")).await
+}
+
+pub async fn put_notification_prefs(
+    prefs: &NotificationPrefs,
+) -> Result<NotificationPrefs, ApiError> {
+    let body = serde_json::to_value(prefs).map_err(|e| ApiError::Message(e.to_string()))?;
+    send_json_body(Request::put("/api/me/notification-prefs"), &body).await
+}
+
+/// Register a browser subscription (`PushSubscription.toJSON()`).
+pub async fn push_subscribe(subscription: &serde_json::Value) -> Result<(), ApiError> {
+    let _: serde_json::Value =
+        send_json_body(Request::post("/api/push/subscriptions"), subscription).await?;
+    Ok(())
+}
+
+pub async fn push_unsubscribe(endpoint: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::delete("/api/push/subscriptions"),
+        &serde_json::json!({ "endpoint": endpoint }),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn push_test() -> Result<(), ApiError> {
+    let _: serde_json::Value =
+        send_json_body(Request::post("/api/push/test"), &serde_json::json!({})).await?;
+    Ok(())
+}
+
+// --- alert rules (#110) -------------------------------------------------------------
+
+/// One of the signed-in user's alert rules for a car. `threshold` is SI:
+/// km/h, V, °C, %, days or hours depending on `kind`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AlertRule {
+    pub id: String,
+    pub car_id: String,
+    pub kind: String,
+    pub threshold: f64,
+    pub enabled: bool,
+}
+
+pub async fn list_alert_rules(car_id: &str) -> Result<Vec<AlertRule>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/alert-rules"))).await
+}
+
+/// Create or replace the rule of `kind` (one per kind and car).
+pub async fn upsert_alert_rule(
+    car_id: &str,
+    kind: &str,
+    threshold: f64,
+    enabled: bool,
+) -> Result<AlertRule, ApiError> {
+    let body = serde_json::json!({ "kind": kind, "threshold": threshold, "enabled": enabled });
+    send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/alert-rules")),
+        &body,
+    )
+    .await
+}
+
+pub async fn toggle_alert_rule(car_id: &str, rule_id: &str, enabled: bool) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::patch(&format!("/api/cars/{car_id}/alert-rules/{rule_id}")),
+        &serde_json::json!({ "enabled": enabled }),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_alert_rule(car_id: &str, rule_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/alert-rules/{rule_id}"
+    )))
+    .await
+}
+
+// --- places / geofences (#111) ---------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Geofence {
+    pub id: String,
+    pub car_id: Option<String>,
+    pub name: String,
+    pub center_lat: Option<f64>,
+    pub center_lon: Option<f64>,
+    pub radius_m: Option<f64>,
+    /// `[[lon, lat], ...]`, first vertex not repeated.
+    pub polygon: Option<Vec<[f64; 2]>>,
+    pub notify: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GeofenceEvent {
+    pub id: String,
+    pub car_id: String,
+    pub track_id: Option<String>,
+    /// `enter` or `exit`.
+    pub kind: String,
+    pub at: String,
+}
+
+pub async fn list_geofences() -> Result<Vec<Geofence>, ApiError> {
+    send_json(Request::get("/api/geofences")).await
+}
+
+/// `body`: `{name, car_id?, notify, center_lat, center_lon, radius_m}` or
+/// `{name, car_id?, notify, polygon}`.
+pub async fn create_geofence(body: &serde_json::Value) -> Result<Geofence, ApiError> {
+    send_json_body(Request::post("/api/geofences"), body).await
+}
+
+pub async fn update_geofence(id: &str, body: &serde_json::Value) -> Result<Geofence, ApiError> {
+    send_json_body(Request::patch(&format!("/api/geofences/{id}")), body).await
+}
+
+pub async fn delete_geofence(id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!("/api/geofences/{id}"))).await
+}
+
+pub async fn geofence_events(id: &str) -> Result<Vec<GeofenceEvent>, ApiError> {
+    send_json(Request::get(&format!("/api/geofences/{id}/events"))).await
+}
+
+// --- driving score & speeding (#124, #125) ---------------------------------------------
+
+/// Smoothness / economy score of one trip (SI).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TripScore {
+    /// 0–100, higher is smoother.
+    pub score: f64,
+    pub distance_m: f64,
+    pub harsh_accel: i32,
+    pub harsh_brake: i32,
+    /// Share of engine-on time stationary.
+    pub idle_share: f64,
+    /// Share of engine-on time at high RPM.
+    pub high_rpm_share: f64,
+    /// Share of limit-known distance over the limit; `None` without limits.
+    pub speeding_share: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WeekScore {
+    /// Monday of the week (`YYYY-MM-DD`).
+    pub week: String,
+    pub trips: usize,
+    pub score: f64,
+    pub harsh_events_per_100km: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpeedingSegment {
+    pub t_start: String,
+    pub t_end: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub peak_kph: f64,
+    pub limit_kph: f64,
+    pub distance_m: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpeedingReport {
+    /// False until traffic analysis has matched the trip to speed limits.
+    pub analyzed: bool,
+    pub time_with_limit_s: f64,
+    pub distance_with_limit_m: f64,
+    pub time_over_s: f64,
+    pub distance_over_m: f64,
+    #[serde(default)]
+    pub segments: Vec<SpeedingSegment>,
+}
+
+pub async fn trip_score(id: &str) -> Result<TripScore, ApiError> {
+    send_json(Request::get(&format!("/api/trips/{id}/score"))).await
+}
+
+pub async fn car_weekly_scores(car_id: &str, weeks: u32) -> Result<Vec<WeekScore>, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/cars/{car_id}/score?weeks={weeks}"
+    )))
+    .await
+}
+
+pub async fn trip_speeding(id: &str, tolerance_pct: u32) -> Result<SpeedingReport, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/trips/{id}/speeding?tolerance_pct={tolerance_pct}"
+    )))
+    .await
+}
+
+// --- vehicle health: fault codes, engine flags, battery (#126, #127, #128) ----------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Dtc {
+    pub code: String,
+    pub pending: bool,
+    pub active: bool,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthFlag {
+    pub kind: String,
+    pub message: String,
+    pub track_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CarHealth {
+    #[serde(default)]
+    pub flags: Vec<HealthFlag>,
+    #[serde(default)]
+    pub active_dtcs: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BatteryTrip {
+    pub track_id: String,
+    pub started_at: String,
+    pub distance_m: Option<f64>,
+    pub soc_start_pct: Option<f64>,
+    pub soc_end_pct: Option<f64>,
+    pub energy_out_kwh: Option<f64>,
+    pub energy_regen_kwh: Option<f64>,
+    pub avg_ambient_c: Option<f64>,
+    pub ev_share: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BatteryReport {
+    pub capacity_kwh: Option<f64>,
+    #[serde(default)]
+    pub trips: Vec<BatteryTrip>,
+    /// `(first day of month, usable kWh)`.
+    #[serde(default)]
+    pub capacity_estimates: Vec<(String, f64)>,
+}
+
+pub async fn list_dtcs(car_id: &str) -> Result<Vec<Dtc>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/dtcs"))).await
+}
+
+pub async fn dismiss_dtc(car_id: &str, code: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post(&format!(
+            "/api/cars/{car_id}/dtcs/{}/dismiss",
+            urlencoding_trip_query(code)
+        )),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn car_health(car_id: &str) -> Result<CarHealth, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/health"))).await
+}
+
+pub async fn car_battery(car_id: &str) -> Result<BatteryReport, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/battery"))).await
+}
+
+// --- MCP tokens (many per user) ------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpTokenRow {
+    pub id: String,
+    pub name: String,
+    pub hint: String,
+    /// Cars the token is limited to; `None` = every readable car.
+    pub car_ids: Option<Vec<String>>,
+    pub expires_at: Option<String>,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+    pub revoked_at: Option<String>,
+}
+
+/// A newly issued token; `token` is the only time the plaintext is shown.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpTokenIssued {
+    pub id: String,
+    pub token: String,
+    pub hint: String,
+    pub mcp_url: String,
+}
+
+pub async fn list_mcp_tokens() -> Result<Vec<McpTokenRow>, ApiError> {
+    send_json(Request::get("/api/me/mcp-tokens")).await
+}
+
+pub async fn create_mcp_token(
+    name: &str,
+    car_ids: Option<Vec<String>>,
+    expires_in_days: Option<i64>,
+) -> Result<McpTokenIssued, ApiError> {
+    let body = serde_json::json!({
+        "name": name,
+        "car_ids": car_ids,
+        "expires_in_days": expires_in_days,
+    });
+    send_json_body(Request::post("/api/me/mcp-tokens"), &body).await
+}
+
+pub async fn revoke_mcp_token_by_id(id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!("/api/me/mcp-tokens/{id}"))).await
 }

@@ -53,6 +53,29 @@ impl RateLimited {
     }
 }
 
+impl RateLimited {
+    /// Drop per-IP state that has fully refilled. Keyed limiters otherwise keep one
+    /// entry per address ever seen, so memory grows with every new client.
+    pub fn prune(&self) {
+        for limiter in [&self.global, &self.auth, &self.ingest] {
+            limiter.retain_recent();
+            limiter.shrink_to_fit();
+        }
+    }
+}
+
+/// Periodically prune the rate limiters; see [`RateLimited::prune`].
+pub fn spawn_rate_limit_pruner(limits: Arc<RateLimited>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            limits.prune();
+        }
+    });
+}
+
 impl Default for RateLimited {
     fn default() -> Self {
         Self::new()
@@ -70,15 +93,19 @@ pub fn client_ip(
     connect: Option<SocketAddr>,
     trust_forwarded: bool,
 ) -> IpAddr {
+    // Only values the trusted proxy wrote count. `X-Real-IP` is set (overwritten)
+    // by the proxy. Failing that, the *rightmost* `X-Forwarded-For` entry is the one
+    // the proxy appended; everything to its left came from the client, so trusting
+    // the leftmost entry would let any caller pick its own rate-limit key.
     if trust_forwarded {
-        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
-            && let Some(first) = xff.split(',').next()
-            && let Ok(ip) = first.trim().parse::<IpAddr>()
+        if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok())
+            && let Ok(ip) = real.trim().parse::<IpAddr>()
         {
             return ip;
         }
-        if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok())
-            && let Ok(ip) = real.trim().parse::<IpAddr>()
+        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+            && let Some(last) = xff.rsplit(',').next()
+            && let Ok(ip) = last.trim().parse::<IpAddr>()
         {
             return ip;
         }
@@ -130,16 +157,40 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_trusts_xff_when_enabled() {
+    fn client_ip_uses_the_proxy_appended_xff_entry() {
+        // The client sent "1.2.3.4"; the proxy appended the address it saw.
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-forwarded-for",
-            HeaderValue::from_static("198.51.100.4, 10.0.0.1"),
+            HeaderValue::from_static("1.2.3.4, 198.51.100.4"),
         );
         let addr: SocketAddr = "203.0.113.9:443".parse().unwrap();
         assert_eq!(
             client_ip(&headers, Some(addr), true),
             "198.51.100.4".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn client_ip_prefers_x_real_ip() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("1.2.3.4"));
+        headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.7"));
+        let addr: SocketAddr = "203.0.113.9:443".parse().unwrap();
+        assert_eq!(
+            client_ip(&headers, Some(addr), true),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn client_ip_ignores_forwarded_headers_unless_trusted() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.7"));
+        let addr: SocketAddr = "203.0.113.9:443".parse().unwrap();
+        assert_eq!(
+            client_ip(&headers, Some(addr), false),
+            "203.0.113.9".parse::<IpAddr>().unwrap()
         );
     }
 }

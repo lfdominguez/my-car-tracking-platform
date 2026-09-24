@@ -385,3 +385,83 @@ async fn stats_row_exists(pool: &sqlx::PgPool, track_id: Uuid) -> bool {
         .unwrap()
         > 0
 }
+
+/// A sample that commits while `recompute` is running must not be absorbed into a
+/// row marked fresh. The race itself is hard to schedule from a test, so this pins
+/// the guard: a dirty mark newer than the recompute's start leaves the row stale.
+#[tokio::test]
+async fn a_dirty_mark_during_recompute_keeps_the_row_stale() {
+    let Some(ctx) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let (track_id, _, _) = record_trip(&ctx, 4).await;
+
+    // Stand-in for "mark_stale ran after the recompute's snapshot was taken".
+    sqlx::query("UPDATE tracks SET stats_dirty_at = NOW() + interval '1 hour' WHERE id = $1")
+        .bind(track_id)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    assert!(stats::recompute(&ctx.pool, track_id).await.unwrap());
+
+    let stale: bool = sqlx::query_scalar("SELECT stale FROM track_stats WHERE track_id = $1")
+        .bind(track_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .unwrap();
+    assert!(stale, "a row that may be missing points must stay stale");
+
+    // A dirty mark from before the recompute is already folded in.
+    sqlx::query("UPDATE tracks SET stats_dirty_at = NOW() - interval '1 hour' WHERE id = $1")
+        .bind(track_id)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    assert!(stats::recompute(&ctx.pool, track_id).await.unwrap());
+    let stale: bool = sqlx::query_scalar("SELECT stale FROM track_stats WHERE track_id = $1")
+        .bind(track_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .unwrap();
+    assert!(!stale);
+}
+
+/// A negative fuel rate is adapter noise and must not subtract fuel from the trip,
+/// matching how the AI analysis already treats it.
+#[tokio::test]
+async fn negative_fuel_rates_are_ignored() {
+    let Some(ctx) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let (track_id, started_at, _) = record_trip(&ctx, 12).await;
+    let fuel_with = |rate: Option<f64>| {
+        let pool = ctx.pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE track_points SET fuel_consumption_rate = $3
+                 WHERE track_id = $1 AND recorded_at = $2",
+            )
+            .bind(track_id)
+            .bind(started_at + chrono::Duration::seconds(3))
+            .bind(rate)
+            .execute(&pool)
+            .await
+            .unwrap();
+            stats::recompute(&pool, track_id).await.unwrap();
+            sqlx::query_scalar::<_, Option<f64>>(
+                "SELECT fuel_used_l FROM track_stats WHERE track_id = $1",
+            )
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .unwrap()
+        }
+    };
+    let without = fuel_with(None).await;
+    let negative = fuel_with(Some(-5000.0)).await;
+    assert!(without > 0.0);
+    assert!((without - negative).abs() < 1e-9, "{without} vs {negative}");
+}

@@ -32,6 +32,17 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Every pooled connection busy: a transient overload, not a server bug. A 503
+        // with Retry-After tells the phone to retry rather than drop the batch.
+        if matches!(self, AppError::Db(sqlx::Error::PoolTimedOut)) {
+            tracing::warn!("database pool exhausted");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, "5")],
+                Json(json!({ "error": "Server busy, retry shortly" })),
+            )
+                .into_response();
+        }
         let (status, message) = match &self {
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".into()),

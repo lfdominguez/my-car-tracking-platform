@@ -41,6 +41,8 @@ pub struct ScoredFrame {
     pub frame: TrafficFrame,
     pub v_ff_kph: f64,
     pub osm_way_id: Option<i64>,
+    /// Posted limit of the matched way, when OSM has one.
+    pub maxspeed_kph: Option<f64>,
     pub level: TrafficLevel,
 }
 
@@ -370,6 +372,7 @@ mod tests {
                 frame,
                 v_ff_kph: 50.0,
                 osm_way_id: None,
+                maxspeed_kph: None,
                 level: TrafficLevel::Free,
             })
             .collect();
@@ -399,6 +402,7 @@ mod tests {
                 frame,
                 v_ff_kph: 50.0,
                 osm_way_id: None,
+                maxspeed_kph: None,
                 level: TrafficLevel::Free,
             })
             .collect();

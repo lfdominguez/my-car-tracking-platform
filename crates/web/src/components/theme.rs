@@ -12,6 +12,7 @@
 use leptos::prelude::*;
 
 use crate::components::Icon;
+use crate::i18n::t;
 
 const STORAGE_KEY: &str = "theme";
 
@@ -101,7 +102,7 @@ pub fn ThemeToggle() -> impl IntoView {
         <button
             type="button"
             class="btn icon-btn theme-toggle"
-            aria-label=move || if theme.theme.get() == Theme::Dark { "Switch to light theme" } else { "Switch to dark theme" }
+            aria-label=move || if theme.theme.get() == Theme::Dark { t("theme.to_light") } else { t("theme.to_dark") }
             on:click=move |_| theme.toggle()
         >
             {move || if theme.theme.get() == Theme::Dark {

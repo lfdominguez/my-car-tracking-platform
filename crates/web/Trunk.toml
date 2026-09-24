@@ -1,0 +1,15 @@
+# Stamp the service worker with a per-build id so every deploy ships a
+# byte-different /sw.js: the browser installs it, and its activate handler drops
+# the previous build's cache (hashed web-*.js / *_bg.wasm entries included).
+#
+# The id is a checksum of the staged index.html (which names every hashed asset
+# and its SRI digest) plus the unhashed vendor bundles, so it changes exactly when
+# something the worker caches changed. POSIX sh + cksum only; the hook runs after
+# Trunk has written the staging dir and before it is copied to dist/.
+[[hooks]]
+stage = "post_build"
+command = "sh"
+command_arguments = [
+  "-c",
+  "set -eu; d=\"$TRUNK_STAGING_DIR\"; id=$(cat \"$d/index.html\" \"$d\"/vendor/*.js \"$d\"/vendor/*.css | cksum | cut -d ' ' -f 1); sed \"s/__CTP_BUILD_ID__/$id/\" \"$d/sw.js\" > \"$d/sw.js.tmp\"; mv \"$d/sw.js.tmp\" \"$d/sw.js\"",
+]

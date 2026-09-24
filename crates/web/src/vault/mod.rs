@@ -22,9 +22,14 @@ use zeroize::Zeroize;
 const LS_DEVICE_IDENTITY: &str = "ctp_vault_identity_sk_b64";
 
 /// In-memory unlocked vault keys for the tab session (Send+Sync for Leptos context).
+///
+/// The keys live behind a `Mutex`, which nothing can subscribe to, so the lock state
+/// is mirrored into `unlocked`: views gate on [`VaultSession::unlocked`] and re-render
+/// when any component unlocks or locks the vault.
 #[derive(Clone)]
 pub struct VaultSession {
     inner: Arc<Mutex<Option<UnlockedVault>>>,
+    unlocked: RwSignal<bool>,
 }
 
 pub struct UnlockedVault {
@@ -40,11 +45,26 @@ impl VaultSession {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
+            unlocked: RwSignal::new(false),
         }
     }
 
+    /// Untracked check for async code and event handlers.
     pub fn is_unlocked(&self) -> bool {
         self.inner.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    /// Reactive lock state: read it inside a view or effect to re-run on unlock/lock.
+    pub fn unlocked(&self) -> Signal<bool> {
+        self.unlocked.into()
+    }
+
+    fn set_keys(&self, keys: Option<UnlockedVault>) {
+        let unlocked = keys.is_some();
+        if let Ok(mut g) = self.inner.lock() {
+            *g = keys;
+        }
+        self.unlocked.set(unlocked);
     }
 
     pub fn with_secret<R>(
@@ -59,18 +79,16 @@ impl VaultSession {
         let rk: RecoveryKey = recovery
             .trim()
             .parse()
-            .map_err(|_| "Invalid recovery key".to_string())?;
+            .map_err(|_| crate::i18n::t("vault.invalid_key").to_string())?;
         let secret = identity_from_recovery(&rk);
         let public = public_identity(&secret);
-        if let Some(win) = web_sys::window() {
-            if let Ok(Some(storage)) = win.local_storage() {
-                let b64 = B64.encode(secret.to_bytes());
-                let _ = storage.set_item(LS_DEVICE_IDENTITY, &b64);
-            }
+        if let Some(win) = web_sys::window()
+            && let Ok(Some(storage)) = win.local_storage()
+        {
+            let b64 = B64.encode(secret.to_bytes());
+            let _ = storage.set_item(LS_DEVICE_IDENTITY, &b64);
         }
-        if let Ok(mut g) = self.inner.lock() {
-            *g = Some(UnlockedVault { secret, public });
-        }
+        self.set_keys(Some(UnlockedVault { secret, public }));
         Ok(())
     }
 
@@ -95,16 +113,12 @@ impl VaultSession {
         let secret = IdentitySecret::from_bytes(arr);
         arr.zeroize();
         let public = public_identity(&secret);
-        if let Ok(mut g) = self.inner.lock() {
-            *g = Some(UnlockedVault { secret, public });
-        }
+        self.set_keys(Some(UnlockedVault { secret, public }));
         true
     }
 
     pub fn lock(&self) {
-        if let Ok(mut g) = self.inner.lock() {
-            *g = None;
-        }
+        self.set_keys(None);
     }
 
     pub fn public_b64(&self) -> Option<String> {
@@ -169,7 +183,7 @@ pub fn VaultSettingsCard() -> impl IntoView {
     let busy = RwSignal::new(false);
     let msg = RwSignal::new(Option::<String>::None);
     let err = RwSignal::new(Option::<String>::None);
-    let unlocked = RwSignal::new(use_vault_session().is_unlocked());
+    let unlocked = use_vault_session().unlocked();
     let unlock_input = RwSignal::new(String::new());
 
     Effect::new(move |_| {
@@ -183,25 +197,25 @@ pub fn VaultSettingsCard() -> impl IntoView {
 
     view! {
         <div class="card" style="margin-top:1.25rem">
-            <h2 style="margin-top:0">"Zero-knowledge vault"</h2>
-            <p class="muted">
-                "Optional E2E encryption for trips, car profiles, and AI results. "
-                "Server stores ciphertext only. Lose recovery key + devices ⇒ permanent data loss."
-            </p>
+            <h2 style="margin-top:0">{tr!("vault.title")}</h2>
+            <p class="muted">{tr!("vault.lead")}</p>
             {move || err.get().map(|e| view! { <p class="error">{e}</p> })}
             {move || msg.get().map(|m| view! { <p class="ok">{m}</p> })}
 
             {move || {
                 match status.get() {
-                    None => view! { <p class="muted">"Loading…"</p> }.into_any(),
+                    None => view! { <p class="muted">{tr!("common.loading")}</p> }.into_any(),
                     Some(s) if !s.vault_ui_enabled => view! {
-                        <p class="muted">"Vault UI disabled on this server (VAULT_UI_ENABLED)."</p>
+                        <p class="muted">{tr!("vault.ui_disabled")}</p>
                     }.into_any(),
                     Some(s) => view! {
                         <p>
-                            "Status: "<strong>{s.vault_status.clone()}</strong>
-                            {if s.vault_enabled { " · enabled" } else { "" }}
-                            {format!(" · v{} · {} objects", s.vault_identity_version, s.vault_object_count)}
+                            {tr!("vault.status")}" "<strong>{vault_status_label(&s.vault_status)}</strong>
+                            {if s.vault_enabled { crate::i18n::t("vault.enabled_suffix") } else { "" }}
+                            {crate::i18n::tf(
+                                "vault.objects",
+                                &[("version", &s.vault_identity_version), ("n", &s.vault_object_count)],
+                            )}
                         </p>
                     }.into_any(),
                 }
@@ -220,12 +234,12 @@ pub fn VaultSettingsCard() -> impl IntoView {
                             ack.set(false);
                         }
                     >
-                        "Enable vault…"
+                        {tr!("vault.enable")}
                     </button>
                 </Show>
                 <Show when=move || recovery_shown.get().is_some()>
                     <div style="border:1px solid #c44;padding:1rem;border-radius:8px;margin-top:0.75rem">
-                        <p><strong>"Save this recovery key now (shown once):"</strong></p>
+                        <p><strong>{tr!("vault.save_key")}</strong></p>
                         <pre style="white-space:pre-wrap;word-break:break-all">
                             {move || recovery_shown.get().unwrap_or_default()}
                         </pre>
@@ -244,7 +258,7 @@ pub fn VaultSettingsCard() -> impl IntoView {
                                 }
                             />
                             <span>
-                                "I stored the recovery key. I understand the administrator cannot recover my data."
+                                {tr!("vault.ack")}
                             </span>
                         </label>
                         <button
@@ -267,11 +281,8 @@ pub fn VaultSettingsCard() -> impl IntoView {
                                     match vault_enable(&pk, 1).await {
                                         Ok(s) => {
                                             let _ = sess.unlock_from_recovery(&recovery);
-                                            unlocked.set(sess.is_unlocked());
                                             status.set(Some(s));
-                                            msg.set(Some(
-                                                "Vault migrating. Encrypt data on this device, then Activate.".into(),
-                                            ));
+                                            msg.set(Some(crate::i18n::t("vault.migrating_msg").into()));
                                             recovery_shown.set(None);
                                         }
                                         Err(e) => err.set(Some(e.to_string())),
@@ -280,7 +291,7 @@ pub fn VaultSettingsCard() -> impl IntoView {
                                 });
                             }
                         >
-                            "Confirm and enable"
+                            {tr!("vault.confirm_enable")}
                         </button>
                     </div>
                 </Show>
@@ -288,7 +299,7 @@ pub fn VaultSettingsCard() -> impl IntoView {
 
             <Show when=move || status.get().map(|s| s.vault_status == "migrating").unwrap_or(false)>
                 <p class="muted">
-                    "This browser will encrypt owned cars and trips, clear server plaintext, then activate the vault. Stay unlocked."
+                    {tr!("vault.migrate_lead")}
                 </p>
                 <button
                     type="button"
@@ -296,19 +307,19 @@ pub fn VaultSettingsCard() -> impl IntoView {
                     prop:disabled=move || busy.get() || !unlocked.get()
                     on:click=move |_| {
                         if !unlocked.get() {
-                            err.set(Some("Unlock the vault before migrating.".into()));
+                            err.set(Some(crate::i18n::t("vault.unlock_before_migrating").into()));
                             return;
                         }
                         busy.set(true);
                         err.set(None);
-                        msg.set(Some("Migrating…".into()));
+                        msg.set(Some(crate::i18n::t("vault.migrating").into()));
                         let sess = use_vault_session();
                         leptos::task::spawn_local(async move {
                             match migrate_all_owned(&sess).await {
                                 Ok(m) => match vault_activate().await {
                                     Ok(s) => {
                                         status.set(Some(s));
-                                        msg.set(Some(format!("{m}. Vault activated.")));
+                                        msg.set(Some(crate::i18n::tf("vault.activated", &[("summary", &m)])));
                                     }
                                     Err(e) => err.set(Some(e.to_string())),
                                 },
@@ -318,7 +329,7 @@ pub fn VaultSettingsCard() -> impl IntoView {
                         });
                     }
                 >
-                    "Migrate & activate vault"
+                    {tr!("vault.migrate")}
                 </button>
             </Show>
 
@@ -326,7 +337,7 @@ pub fn VaultSettingsCard() -> impl IntoView {
                 <div style="margin-top:0.75rem">
                     <Show when=move || !unlocked.get()>
                         <label>
-                            "Unlock with recovery key"
+                            {tr!("vault.unlock_with_key")}
                             <input
                                 type="text"
                                 style="width:100%"
@@ -343,28 +354,26 @@ pub fn VaultSettingsCard() -> impl IntoView {
                                 let sess = use_vault_session();
                                 match sess.unlock_from_recovery(&unlock_input.get()) {
                                     Ok(()) => {
-                                        unlocked.set(true);
-                                        msg.set(Some("Vault unlocked on this device.".into()));
+                                        msg.set(Some(crate::i18n::t("vault.unlocked_msg").into()));
                                     }
                                     Err(e) => err.set(Some(e)),
                                 }
                             }
                         >
-                            "Unlock"
+                            {tr!("vault.unlock")}
                         </button>
                     </Show>
                     <Show when=move || unlocked.get()>
-                        <p class="ok">"Unlocked on this device."</p>
+                        <p class="ok">{tr!("vault.unlocked_here")}</p>
                         <button
                             type="button"
                             class="btn ghost"
                             on:click=move |_| {
                                 use_vault_session().lock();
-                                unlocked.set(false);
-                                msg.set(Some("Vault locked on this tab.".into()));
+                                msg.set(Some(crate::i18n::t("vault.locked_msg").into()));
                             }
                         >
-                            "Lock"
+                            {tr!("vault.lock")}
                         </button>
                     </Show>
                 </div>
@@ -373,19 +382,33 @@ pub fn VaultSettingsCard() -> impl IntoView {
     }
 }
 
+/// Server vault state (`disabled` / `migrating` / `active`) as a label.
+fn vault_status_label(raw: &str) -> String {
+    let key = match raw {
+        "disabled" => "vault.state_disabled",
+        "migrating" => "vault.state_migrating",
+        "active" => "vault.state_active",
+        _ => return raw.to_string(),
+    };
+    crate::i18n::t(key).to_string()
+}
+
 /// Unlock gate for vault-sealed list/detail pages.
 #[component]
-pub fn VaultUnlockGate(#[prop(into)] message: String) -> impl IntoView {
+pub fn VaultUnlockGate(
+    /// i18n key of the explanation shown above the recovery-key field.
+    message: &'static str,
+) -> impl IntoView {
     let recovery = RwSignal::new(String::new());
     let error = RwSignal::new(Option::<String>::None);
-    let unlocked = RwSignal::new(use_vault_session().is_unlocked());
+    let unlocked = use_vault_session().unlocked();
 
     view! {
         <div class="card" style="max-width: 32rem; margin: 2rem auto;">
-            <h2>"Unlock zero-knowledge vault"</h2>
-            <p class="muted">{message}</p>
+            <h2>{tr!("vault.gate_title")}</h2>
+            <p class="muted">{move || crate::i18n::t(message)}</p>
             <label>
-                "Recovery key"
+                {tr!("vault.recovery_key")}
                 <textarea
                     prop:value=move || recovery.get()
                     on:input=move |ev| recovery.set(event_target_value(&ev))
@@ -401,16 +424,15 @@ pub fn VaultUnlockGate(#[prop(into)] message: String) -> impl IntoView {
                 style="margin-top:0.75rem"
                 on:click=move |_| {
                     error.set(None);
-                    match use_vault_session().unlock_from_recovery(&recovery.get()) {
-                        Ok(()) => unlocked.set(true),
-                        Err(e) => error.set(Some(e)),
+                    if let Err(e) = use_vault_session().unlock_from_recovery(&recovery.get()) {
+                        error.set(Some(e));
                     }
                 }
             >
-                "Unlock"
+                {tr!("vault.unlock")}
             </button>
             <Show when=move || unlocked.get()>
-                <p class="ok">"Vault unlocked. Continue browsing cars and trips."</p>
+                <p class="ok">{tr!("vault.gate_unlocked")}</p>
             </Show>
         </div>
     }

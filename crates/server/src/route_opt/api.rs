@@ -128,7 +128,7 @@ async fn summary(
     .fetch_all(&state.pool)
     .await?;
 
-    let now = Utc::now();
+    let now = super::job::owner_local_now(&state.pool, q.car_id).await?;
     let mut corridors = Vec::new();
     let mut insights: Vec<InsightDto> = Vec::new();
     for r in corridors_rows {
@@ -371,7 +371,7 @@ async fn corridor_detail(
             .then(a.is_weekend.cmp(&b.is_weekend))
     });
 
-    let now = Utc::now();
+    let now = super::job::owner_local_now(&state.pool, car_id).await?;
     let hour = now.hour() as u8;
     let is_weekend = matches!(now.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun);
     let mut now_best: Option<(Uuid, f64, usize)> = None;

@@ -1,6 +1,9 @@
 //! Trip list/detail/points/map APIs.
 
+mod edit;
+pub mod export;
 mod fuel_stats;
+pub(crate) use fuel_stats::economy_distance_m;
 pub mod stats;
 
 pub use shared::telemetry_sanitize::{SpeedRpmPoint, energy_from_soc_kwh, sanitize_speed_rpm};
@@ -27,9 +30,16 @@ use crate::units::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/trips", get(list_trips))
-        .route("/api/trips/{id}", get(get_trip).delete(delete_trip))
+        .route(
+            "/api/trips/{id}",
+            get(get_trip).delete(delete_trip).patch(edit::update_trip),
+        )
+        .route("/api/trips/merge", post(edit::merge_trips))
+        .route("/api/trips/geometries", get(trip_geometries))
+        .route("/api/trips/{id}/split", post(edit::split_trip))
         .route("/api/trips/{id}/finish", post(finish_trip))
         .route("/api/trips/{id}/points", get(trip_points))
+        .route("/api/trips/{id}/export", get(export::export_trip))
         .route("/api/trips/{id}/map", get(trip_map))
         .route("/api/trips/{id}/traffic/frames", get(trip_traffic_frames))
         .route(
@@ -49,20 +59,6 @@ const STATS_BACKFILL_BATCH: i64 = 200;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FinishTrackResult {
     pub newly_finished: bool,
-    pub purged: bool,
-}
-
-/// Pick `finished_at` when closing a trip (prefer last GPS sample).
-pub fn resolve_finished_at(
-    existing_finished_at: Option<DateTime<Utc>>,
-    last_point_at: Option<DateTime<Utc>>,
-    started_at: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> DateTime<Utc> {
-    existing_finished_at
-        .or(last_point_at)
-        .unwrap_or(started_at)
-        .min(now.max(started_at))
 }
 
 /// True when an unfinished trip has been quiet long enough to auto-close.
@@ -76,8 +72,9 @@ pub fn is_stale_open_trip(
     now.signed_duration_since(activity) >= stale_after
 }
 
-/// Mark track finished, set finished_at from last point when possible, then
-/// purge empty noise trips or spawn traffic + route_opt (same as device `/stop`).
+/// Mark track finished, set finished_at from last point when possible, then queue
+/// the `finalize` job, which later purges the trip if it stays empty or runs
+/// traffic + route_opt (same for device `/stop`, web finish and the sweeper).
 pub async fn finish_track(
     pool: &PgPool,
     keyring: &KeyRing,
@@ -95,7 +92,6 @@ pub async fn finish_track(
     if meta.0 {
         return Ok(FinishTrackResult {
             newly_finished: false,
-            purged: false,
         });
     }
 
@@ -103,11 +99,15 @@ pub async fn finish_track(
         r#"
         UPDATE tracks
         SET finished = true,
-            finished_at = COALESCE(
-                finished_at,
-                (SELECT MAX(recorded_at) FROM track_points WHERE track_id = $1),
-                started_at,
-                NOW()
+            -- Clamped to now: a phone with a fast clock must not end a trip in
+            -- the future.
+            finished_at = LEAST(
+                COALESCE(
+                    finished_at,
+                    (SELECT MAX(recorded_at) FROM track_points WHERE track_id = $1),
+                    started_at
+                ),
+                GREATEST(NOW(), started_at)
             )
         WHERE id = $1 AND finished = false
         "#,
@@ -120,7 +120,6 @@ pub async fn finish_track(
         // Race: another finisher won.
         return Ok(FinishTrackResult {
             newly_finished: false,
-            purged: false,
         });
     }
 
@@ -131,54 +130,22 @@ pub async fn finish_track(
         tracing::warn!(%track_id, error = %e, "track stats precompute failed");
     }
 
-    match is_empty_trip_for_auto_remove(pool, track_id).await {
-        Ok(true) => {
-            if let Err(e) = purge_track(pool, track_id).await {
-                tracing::warn!(%track_id, error = %e, "empty trip purge failed");
-                return Ok(FinishTrackResult {
-                    newly_finished: true,
-                    purged: false,
-                });
-            }
-            Ok(FinishTrackResult {
-                newly_finished: true,
-                purged: true,
-            })
-        }
-        Ok(false) => {
-            spawn_post_finish_jobs(pool, keyring, overpass_url, track_id);
-            Ok(FinishTrackResult {
-                newly_finished: true,
-                purged: false,
-            })
-        }
-        Err(e) => {
-            tracing::warn!(%track_id, error = %e, "empty trip check failed");
-            spawn_post_finish_jobs(pool, keyring, overpass_url, track_id);
-            Ok(FinishTrackResult {
-                newly_finished: true,
-                purged: false,
-            })
-        }
-    }
-}
+    // Deciding between "purge the empty trip" and "run the post-finish analysis" is
+    // deferred to a durable job. A phone may call /stop before its offline queue has
+    // drained, so a trip that looks empty right now may still fill up.
+    let ctx = crate::jobs::JobCtx::new(pool, keyring, overpass_url);
+    crate::jobs::enqueue(
+        pool,
+        &[track_id],
+        crate::jobs::JobKind::Finalize,
+        chrono::Duration::zero(),
+    )
+    .await?;
+    crate::jobs::kick(&ctx, &[track_id]);
 
-fn spawn_post_finish_jobs(pool: &PgPool, keyring: &KeyRing, overpass_url: &str, track_id: Uuid) {
-    let pool_r = pool.clone();
-    let keyring = keyring.clone();
-    let overpass = overpass_url.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = crate::route_opt::process_finished_track(&pool_r, &keyring, track_id).await
-        {
-            tracing::warn!(%track_id, error = %e, "route optimization job failed");
-        }
-    });
-    let pool_t = pool.clone();
-    tokio::spawn(async move {
-        if let Err(e) = crate::traffic::process_finished_track(&pool_t, &overpass, track_id).await {
-            tracing::warn!(%track_id, error = %e, "traffic job failed");
-        }
-    });
+    Ok(FinishTrackResult {
+        newly_finished: true,
+    })
 }
 
 /// Background loop: finish open tracks with no samples for `stale_after_secs`, and
@@ -233,6 +200,7 @@ async fn sweep_track_stats(state: &AppState, limit: i64) -> AppResult<usize> {
         LEFT JOIN track_stats s ON s.track_id = t.id
         WHERE t.finished = true
           AND ou.vault_status <> 'active'
+          AND t.points_pruned_at IS NULL
           AND (s.track_id IS NULL OR s.stale OR s.schema_version <> $1)
         ORDER BY t.started_at DESC
         LIMIT $2
@@ -256,7 +224,9 @@ async fn sweep_track_stats(state: &AppState, limit: i64) -> AppResult<usize> {
     Ok(written)
 }
 
-async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<()> {
+/// Finish open trips whose newest point (or start, when empty) is older than
+/// `stale_secs`: the phone died or lost the /stop. Returns how many it finished.
+pub async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<usize> {
     let ids: Vec<Uuid> = sqlx::query_scalar(
         r#"
         SELECT t.id
@@ -279,7 +249,7 @@ async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<
     .await?;
 
     if ids.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     tracing::info!(
@@ -287,16 +257,18 @@ async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<
         stale_secs,
         "auto-finishing stale open trips"
     );
+    let mut finished = 0;
     for id in ids {
         match finish_track(&state.pool, &state.keyring, &state.config.overpass_url, id).await {
             Ok(r) if r.newly_finished => {
-                tracing::info!(%id, purged = r.purged, "stale trip auto-finished");
+                tracing::info!(%id, "stale trip auto-finished");
+                finished += 1;
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(%id, error = %e, "stale trip finish failed"),
         }
     }
-    Ok(())
+    Ok(finished)
 }
 
 /// Delete vault ciphertext for this track and the track row (cascades points/assignments).
@@ -362,10 +334,6 @@ async fn finish_trip(
 
     let outcome = finish_track(&state.pool, &state.keyring, &state.config.overpass_url, id).await?;
 
-    if outcome.purged {
-        return Err(AppError::NotFound);
-    }
-
     if outcome.newly_finished {
         let id_str = id.to_string();
         let car_str = car_id.to_string();
@@ -429,6 +397,12 @@ pub struct TripListQuery {
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
     pub limit: Option<i64>,
+    /// Exclusive upper bound on `started_at`: pass the last trip of a page to get
+    /// the next one.
+    pub before: Option<DateTime<Utc>>,
+    /// `business` or `personal`.
+    pub purpose: Option<String>,
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -464,6 +438,12 @@ pub struct TripSummary {
     pub vault_sealed: bool,
     /// Latest sample time (for stale / in-progress UI).
     pub last_point_at: Option<DateTime<Utc>>,
+    pub purpose: Option<String>,
+    pub notes: Option<String>,
+    pub tags: Vec<String>,
+    /// Geofence the trip starts / ends in, e.g. "Home" → "Office".
+    pub start_place: Option<String>,
+    pub end_place: Option<String>,
 }
 
 /// Row shape from list/detail SQL before fuel cross-check enrichment.
@@ -495,6 +475,11 @@ struct TripSummaryRow {
     traffic_analyzed: bool,
     vault_sealed: bool,
     last_point_at: Option<DateTime<Utc>>,
+    purpose: Option<String>,
+    notes: Option<String>,
+    tags: Vec<String>,
+    start_place: Option<String>,
+    end_place: Option<String>,
 }
 
 impl TripSummaryRow {
@@ -530,11 +515,16 @@ impl TripSummaryRow {
             traffic_analyzed: self.traffic_analyzed,
             vault_sealed: self.vault_sealed,
             last_point_at: self.last_point_at,
+            purpose: self.purpose,
+            notes: self.notes,
+            tags: self.tags,
+            start_place: self.start_place,
+            end_place: self.end_place,
         }
     }
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Default, Serialize, sqlx::FromRow)]
 pub struct TripPoint {
     pub recorded_at: DateTime<Utc>,
     /// `None` when the sample was recorded without a usable GPS fix.
@@ -734,6 +724,9 @@ async fn list_trips(
             AND ($2::uuid IS NULL OR t.car_id = $2)
             AND ($3::timestamptz IS NULL OR t.started_at >= $3)
             AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+            AND ($6::timestamptz IS NULL OR t.started_at < $6)
+            AND ($7::text IS NULL OR t.purpose = $7)
+            AND ($8::text IS NULL OR $8 = ANY(t.tags))
             ORDER BY t.started_at DESC
             LIMIT $5
         )
@@ -768,7 +761,12 @@ async fn list_trips(
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
             t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed,
-            COALESCE(s.last_point_at, live.last_at) AS last_point_at
+            COALESCE(s.last_point_at, live.last_at) AS last_point_at,
+            t.purpose,
+            t.notes,
+            t.tags,
+            (SELECT name FROM geofences WHERE id = t.start_geofence_id) AS start_place,
+            (SELECT name FROM geofences WHERE id = t.end_geofence_id) AS end_place
         FROM page
         JOIN tracks t ON t.id = page.id
         JOIN cars c ON c.id = t.car_id
@@ -786,6 +784,9 @@ async fn list_trips(
         .bind(q.from)
         .bind(q.to)
         .bind(limit)
+        .bind(q.before)
+        .bind(q.purpose.as_deref())
+        .bind(q.tag.as_deref())
         .fetch_all(&state.pool)
         .await?;
 
@@ -839,7 +840,12 @@ async fn get_trip(
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
             t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed,
-            COALESCE(s.last_point_at, live.last_at) AS last_point_at
+            COALESCE(s.last_point_at, live.last_at) AS last_point_at,
+            t.purpose,
+            t.notes,
+            t.tags,
+            (SELECT name FROM geofences WHERE id = t.start_geofence_id) AS start_place,
+            (SELECT name FROM geofences WHERE id = t.end_geofence_id) AS end_place
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
         JOIN users ou ON ou.id = c.owner_user_id
@@ -934,8 +940,24 @@ async fn start_traffic_analyze(
         return Ok(Json(serde_json::json!({ "status": "ready" })));
     }
 
+    // A 'pending' summary only means work is in flight while a live job backs it.
+    // One left behind by a crash or an error is retried rather than trusted.
     if summary_status.as_deref() == Some("pending") {
-        return Ok(Json(serde_json::json!({ "status": "pending" })));
+        let in_flight: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM track_jobs
+                WHERE track_id = $1 AND kind = 'traffic'
+                  AND (status = 'queued' OR (status = 'running' AND locked_until > NOW()))
+            )
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?;
+        if in_flight {
+            return Ok(Json(serde_json::json!({ "status": "pending" })));
+        }
     }
 
     sqlx::query(
@@ -959,13 +981,17 @@ async fn start_traffic_analyze(
         .execute(&state.pool)
         .await?;
 
-    let pool = state.pool.clone();
-    let overpass = state.config.overpass_url.clone();
-    tokio::spawn(async move {
-        if let Err(e) = crate::traffic::process_finished_track(&pool, &overpass, id).await {
-            tracing::error!(track_id = %id, error = %e, "traffic analyze job failed");
-        }
-    });
+    crate::jobs::enqueue(
+        &state.pool,
+        &[id],
+        crate::jobs::JobKind::Traffic,
+        chrono::Duration::zero(),
+    )
+    .await?;
+    crate::jobs::kick(
+        &crate::jobs::JobCtx::new(&state.pool, &state.keyring, &state.config.overpass_url),
+        &[id],
+    );
 
     Ok(Json(serde_json::json!({ "status": "pending" })))
 }
@@ -1028,10 +1054,94 @@ async fn trip_traffic_frames(
     Ok(Json(out))
 }
 
+#[derive(Debug, Deserialize)]
+struct TripPointsQuery {
+    /// Downsample to about this many points, keeping each bucket's slowest and
+    /// fastest sample so peaks and stops survive. Omit for every point.
+    max_points: Option<usize>,
+    /// Only points at or after this time (for zooming into part of a trip).
+    from: Option<DateTime<Utc>>,
+    /// Only points at or before this time.
+    to: Option<DateTime<Utc>>,
+}
+
+/// Smallest `max_points` honoured; below this the curve stops meaning anything.
+const MIN_DOWNSAMPLE_POINTS: usize = 50;
+
+#[derive(Debug, Deserialize)]
+struct GeometriesQuery {
+    car_id: Option<Uuid>,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    purpose: Option<String>,
+    tag: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct TripGeometry {
+    id: Uuid,
+    car_id: Uuid,
+    started_at: DateTime<Utc>,
+    /// GeoJSON LineString, simplified to roughly 10 m.
+    geometry: serde_json::Value,
+}
+
+/// Simplified route lines of many trips at once, for overlay and heatmap views.
+/// Only fixes are used (fixless samples have no position) and vault cars are
+/// skipped. Trips whose points were pruned by retention use their kept line.
+async fn trip_geometries(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<GeometriesQuery>,
+) -> AppResult<Json<Vec<TripGeometry>>> {
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let rows = sqlx::query_as::<_, TripGeometry>(
+        r#"
+        SELECT t.id, t.car_id, t.started_at,
+               CASE WHEN line.n >= 2
+                    THEN ST_AsGeoJSON(ST_Simplify(line.geom, 0.0001), 6)::jsonb
+                    ELSE t.archived_route
+               END AS geometry
+        FROM tracks t
+        JOIN cars c ON c.id = t.car_id
+        JOIN users ou ON ou.id = c.owner_user_id
+        CROSS JOIN LATERAL (
+            SELECT ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at) AS geom,
+                   COUNT(tp.gps) AS n
+            FROM track_points tp
+            WHERE tp.track_id = t.id AND tp.gps IS NOT NULL
+        ) line
+        WHERE (line.n >= 2 OR t.archived_route IS NOT NULL)
+          AND ou.vault_status <> 'active'
+          AND (c.owner_user_id = $1
+               OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = c.id AND cs.user_id = $1))
+          AND ($2::uuid IS NULL OR t.car_id = $2)
+          AND ($3::timestamptz IS NULL OR t.started_at >= $3)
+          AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+          AND ($6::text IS NULL OR t.purpose = $6)
+          AND ($7::text IS NULL OR $7 = ANY(t.tags))
+        ORDER BY t.started_at DESC
+        LIMIT $5
+        "#,
+    )
+    .bind(user.id)
+    .bind(q.car_id)
+    .bind(q.from)
+    .bind(q.to)
+    .bind(limit)
+    .bind(q.purpose.as_deref().filter(|p| !p.is_empty()))
+    .bind(q.tag.as_deref().filter(|t| !t.is_empty()))
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(rows))
+}
+
 async fn trip_points(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    Query(q): Query<TripPointsQuery>,
 ) -> AppResult<Json<Vec<TripPoint>>> {
     let car_id = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
         .bind(id)
@@ -1048,6 +1158,27 @@ async fn trip_points(
         return Ok(Json(vec![]));
     }
 
+    // Sanitized before thinning, so a spike cannot be picked as a bucket's maximum.
+    let mut rows = load_trip_points(&state.pool, id, q.from, q.to).await?;
+    if let Some(max) = q.max_points {
+        rows = downsample_min_max(rows, max.max(MIN_DOWNSAMPLE_POINTS));
+    }
+    let system = user.unit_system;
+    let rows = rows
+        .into_iter()
+        .map(|p| apply_trip_point_units(p, system))
+        .collect();
+    Ok(Json(rows))
+}
+
+/// Every stored point of a trip, oldest first, with isolated speed/RPM spikes
+/// removed, optionally limited to `[from, to]`. Values are SI; callers convert.
+pub(crate) async fn load_trip_points(
+    pool: &PgPool,
+    id: Uuid,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+) -> AppResult<Vec<TripPoint>> {
     let mut rows = sqlx::query_as::<_, TripPoint>(
         r#"
         SELECT
@@ -1083,19 +1214,64 @@ async fn trip_points(
             device_tilt_delta_deg
         FROM track_points
         WHERE track_id = $1
+          AND ($2::timestamptz IS NULL OR recorded_at >= $2)
+          AND ($3::timestamptz IS NULL OR recorded_at <= $3)
         ORDER BY recorded_at
         "#,
     )
     .bind(id)
-    .fetch_all(&state.pool)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
     .await?;
     sanitize_trip_points(&mut rows);
-    let system = user.unit_system;
-    let rows = rows
-        .into_iter()
-        .map(|p| apply_trip_point_units(p, system))
-        .collect();
-    Ok(Json(rows))
+    Ok(rows)
+}
+
+/// Thin a chronological series to about `max` points: split it into `max / 2`
+/// buckets and keep the slowest and fastest sample of each (in time order), plus
+/// the first and last point. Unlike keeping every Nth sample, this cannot drop a
+/// stop or a top speed.
+fn downsample_min_max(rows: Vec<TripPoint>, max: usize) -> Vec<TripPoint> {
+    let n = rows.len();
+    if n <= max || max < 4 {
+        return rows;
+    }
+    let speed = |p: &TripPoint| p.vehicle_speed_kph.or(p.engine_vel);
+    let buckets = max / 2;
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    for b in 0..buckets {
+        let lo = b * n / buckets;
+        let hi = ((b + 1) * n / buckets).min(n);
+        if lo >= hi {
+            continue;
+        }
+        let with_speed = (lo..hi).filter(|&i| speed(&rows[i]).is_some());
+        let min = with_speed.clone().min_by(|&a, &b| {
+            speed(&rows[a])
+                .partial_cmp(&speed(&rows[b]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let max_i = with_speed.max_by(|&a, &b| {
+            speed(&rows[a])
+                .partial_cmp(&speed(&rows[b]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        match (min, max_i) {
+            (Some(a), Some(b)) => {
+                keep[a] = true;
+                keep[b] = true;
+            }
+            // No speed in this bucket (GPS-only stretch): keep its first point.
+            _ => keep[lo] = true,
+        }
+    }
+    rows.into_iter()
+        .zip(keep)
+        .filter_map(|(p, k)| k.then_some(p))
+        .collect()
 }
 
 fn sanitize_trip_points(rows: &mut [TripPoint]) {
@@ -1155,6 +1331,17 @@ async fn trip_map(
     .fetch_all(&state.pool)
     .await?;
 
+    if coords.is_empty() {
+        // Raw points removed by the car's retention setting: serve the kept line.
+        let archived: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT archived_route FROM tracks WHERE id = $1")
+                .bind(id)
+                .fetch_one(&state.pool)
+                .await?;
+        if let Some(route) = archived {
+            return Ok(Json(route));
+        }
+    }
     let coordinates: Vec<Vec<f64>> = coords
         .into_iter()
         .map(|(lon, lat)| vec![lon, lat])
@@ -1174,8 +1361,8 @@ async fn _unused() {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_TRIP_LIST_LIMIT, MAX_TRIP_LIST_LIMIT, is_stale_open_trip, resolve_finished_at,
-        trip_list_limit,
+        DEFAULT_TRIP_LIST_LIMIT, MAX_TRIP_LIST_LIMIT, TripPoint, downsample_min_max,
+        is_stale_open_trip, trip_list_limit,
     };
     use chrono::{Duration, TimeZone, Utc};
 
@@ -1196,17 +1383,27 @@ mod tests {
     }
 
     #[test]
-    fn resolve_finished_at_prefers_last_point() {
-        let start = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap();
-        let last = start + Duration::minutes(7);
-        let now = start + Duration::hours(1);
-        assert_eq!(resolve_finished_at(None, Some(last), start, now), last);
-        let existing = start + Duration::minutes(5);
-        assert_eq!(
-            resolve_finished_at(Some(existing), Some(last), start, now),
-            existing
-        );
-        assert_eq!(resolve_finished_at(None, None, start, now), start);
+    fn downsampling_keeps_extremes_and_endpoints() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let rows: Vec<TripPoint> = (0..1000)
+            .map(|i| TripPoint {
+                recorded_at: t0 + Duration::seconds(i),
+                vehicle_speed_kph: Some(match i {
+                    537 => 190.0,
+                    800 => 0.0,
+                    _ => 50.0 + (i % 7) as f64,
+                }),
+                ..Default::default()
+            })
+            .collect();
+        let out = downsample_min_max(rows, 100);
+        assert!(out.len() <= 102, "kept {}", out.len());
+        let speeds: Vec<f64> = out.iter().filter_map(|p| p.vehicle_speed_kph).collect();
+        assert!(speeds.contains(&190.0), "lost the top speed");
+        assert!(speeds.contains(&0.0), "lost the stop");
+        assert_eq!(out.first().unwrap().recorded_at, t0);
+        assert_eq!(out.last().unwrap().recorded_at, t0 + Duration::seconds(999));
+        assert!(out.windows(2).all(|w| w[0].recorded_at < w[1].recorded_at));
     }
 
     #[test]

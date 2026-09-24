@@ -4,6 +4,8 @@
 // transport-agnostic, so the in-app chat reuses them instead of duplicating the
 // queries (and, with them, the ownership and vault checks).
 pub(crate) mod auth;
+mod rate_limit;
+mod scope;
 mod server;
 mod settings;
 mod token;

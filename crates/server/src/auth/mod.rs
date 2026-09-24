@@ -6,7 +6,7 @@ mod session;
 
 pub use extractors::{AuthUser, OptionalAuthUser};
 pub use google::google_auth_router;
-pub use session::{create_session, destroy_session};
+pub use session::{clear_session_cookie, create_session, destroy_session};
 
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::HeaderMap;
@@ -52,6 +52,10 @@ pub struct MeResponse {
     pub ors_api_key_hint: Option<String>,
     pub mcp_token_set: bool,
     pub mcp_token_hint: Option<String>,
+    /// IANA timezone used to bucket times of day (route insights, rush hours).
+    pub timezone: String,
+    /// UI language; `None` follows the browser.
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +66,10 @@ pub struct UpdateMeRequest {
     pub openrouter_api_key: Option<String>,
     /// Omit to leave unchanged; empty string clears the stored OpenRouteService key.
     pub ors_api_key: Option<String>,
+    /// IANA timezone name, e.g. `Europe/Madrid`.
+    pub timezone: Option<String>,
+    /// `en`, `es`, or empty to follow the browser.
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,19 +125,25 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
     let row = sqlx::query_as::<_, MeOpenRouterRow>(
         r#"
         SELECT
-            COALESCE(openrouter_model, 'anthropic/claude-3.7-sonnet') AS openrouter_model,
+            COALESCE(openrouter_model, $2) AS openrouter_model,
             (openrouter_api_key_enc IS NOT NULL) AS openrouter_api_key_set,
             openrouter_key_hint,
             (ors_api_key_enc IS NOT NULL) AS ors_api_key_set,
             ors_key_hint,
-            (mcp_token_hash IS NOT NULL) AS mcp_token_set,
-            mcp_token_hint,
-            unit_system
+            EXISTS (SELECT 1 FROM mcp_tokens m WHERE m.user_id = users.id
+                    AND m.revoked_at IS NULL
+                    AND (m.expires_at IS NULL OR m.expires_at > NOW())) AS mcp_token_set,
+            (SELECT m.hint FROM mcp_tokens m WHERE m.user_id = users.id
+               AND m.revoked_at IS NULL ORDER BY m.created_at DESC LIMIT 1) AS mcp_token_hint,
+            unit_system,
+            timezone,
+            locale
         FROM users
         WHERE id = $1
         "#,
     )
     .bind(user.id)
+    .bind(ai::DEFAULT_MODEL)
     .fetch_one(&state.pool)
     .await?;
 
@@ -149,6 +163,8 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
         ors_api_key_hint: row.ors_key_hint,
         mcp_token_set: row.mcp_token_set,
         mcp_token_hint: row.mcp_token_hint,
+        timezone: row.timezone,
+        locale: row.locale,
     })
 }
 
@@ -162,6 +178,8 @@ struct MeOpenRouterRow {
     mcp_token_set: bool,
     mcp_token_hint: Option<String>,
     unit_system: String,
+    timezone: String,
+    locale: Option<String>,
 }
 
 async fn me(State(state): State<AppState>, user: AuthUser) -> AppResult<Json<MeResponse>> {
@@ -179,8 +197,64 @@ async fn update_me(
         && body.openrouter_model.is_none()
         && body.openrouter_api_key.is_none()
         && body.ors_api_key.is_none()
+        && body.timezone.is_none()
+        && body.locale.is_none()
     {
         return Ok(Json(load_me(&state, &user).await?));
+    }
+
+    if let Some(tz) = body.timezone.as_deref() {
+        let tz = tz.trim();
+        // Postgres is the one that has to understand it, so ask Postgres.
+        let known: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)")
+                .bind(tz)
+                .fetch_one(&state.pool)
+                .await?;
+        if !known {
+            return Err(AppError::BadRequest("unknown timezone".into()));
+        }
+        let changed = sqlx::query(
+            "UPDATE users SET timezone = $2 WHERE id = $1 AND timezone IS DISTINCT FROM $2",
+        )
+        .bind(user.id)
+        .bind(tz)
+        .execute(&state.pool)
+        .await?
+        .rows_affected()
+            > 0;
+        if changed {
+            // Route statistics bucket trips by local hour and weekday; re-bucket the
+            // user's history so the insights match the new zone.
+            sqlx::query(
+                r#"
+                UPDATE route_trip_assignments a
+                SET hour_bin = EXTRACT(HOUR FROM a.started_at AT TIME ZONE $2)::int2,
+                    is_weekend = EXTRACT(ISODOW FROM a.started_at AT TIME ZONE $2) IN (6, 7),
+                    month = EXTRACT(MONTH FROM a.started_at AT TIME ZONE $2)::int2
+                FROM route_corridors c
+                JOIN cars car ON car.id = c.car_id
+                WHERE a.corridor_id = c.id AND car.owner_user_id = $1
+                "#,
+            )
+            .bind(user.id)
+            .bind(tz)
+            .execute(&state.pool)
+            .await?;
+        }
+    }
+
+    if let Some(locale) = body.locale.as_deref() {
+        let locale = match locale.trim() {
+            "" => None,
+            l @ ("en" | "es") => Some(l),
+            _ => return Err(AppError::BadRequest("locale must be 'en' or 'es'".into())),
+        };
+        sqlx::query("UPDATE users SET locale = $2 WHERE id = $1")
+            .bind(user.id)
+            .bind(locale)
+            .execute(&state.pool)
+            .await?;
     }
 
     if let Some(raw) = body.unit_system.as_deref() {

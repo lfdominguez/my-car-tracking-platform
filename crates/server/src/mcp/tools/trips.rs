@@ -6,9 +6,9 @@ use crate::error::{AppError, AppResult};
 use crate::mcp::token::clamp_list_limit;
 use crate::shares::access::can_read_car;
 use crate::trips::stats;
-use crate::units::{convert_distance_m, convert_fuel_l, convert_speed_kph};
+use crate::units::{convert_fuel_l, convert_speed_kph};
 
-use super::{ToolCtx, reject_vault};
+use super::{ToolCtx, display_distance, reject_vault};
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct TripRow {
@@ -19,6 +19,10 @@ struct TripRow {
     finished_at: Option<DateTime<Utc>>,
     finished: bool,
     fuel_type_snapshot: String,
+    fuel_class: String,
+    battery_capacity_kwh: Option<f64>,
+    battery_soc_start_pct: Option<f64>,
+    battery_soc_end_pct: Option<f64>,
     point_count: i64,
     distance_m: Option<f64>,
     duration_s: Option<f64>,
@@ -41,8 +45,19 @@ pub struct TripDto {
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub finished: bool,
+    /// Fuel *grade* recorded for the trip (E10, B7, …).
     pub fuel_type: String,
+    /// Powertrain at the time of the trip: GASOLINE / DIESEL / HYBRID / FULL_ELECTRIC.
+    /// FULL_ELECTRIC trips never carry liquid fuel; read `energy_used_kwh` instead.
+    pub fuel_class: String,
+    pub battery_capacity_kwh: Option<f64>,
+    pub battery_soc_start_pct: Option<f64>,
+    pub battery_soc_end_pct: Option<f64>,
+    /// Battery energy from the state-of-charge drop × pack capacity, in kWh. Null when
+    /// the car reports no SoC, the capacity is unknown, or the battery charged.
+    pub energy_used_kwh: Option<f64>,
     pub point_count: i64,
+    /// In `units.distance` (km or mi).
     pub distance: Option<f64>,
     pub duration_s: Option<f64>,
     pub avg_speed: Option<f64>,
@@ -58,7 +73,7 @@ pub struct TripDto {
 
 fn to_dto(mut r: TripRow, system: crate::units::UnitSystem) -> TripDto {
     if let Some(d) = r.distance_m {
-        r.distance_m = Some(convert_distance_m(d, system));
+        r.distance_m = Some(display_distance(d, system));
     }
     if let Some(v) = r.avg_speed_kph {
         r.avg_speed_kph = Some(convert_speed_kph(v, system));
@@ -75,11 +90,20 @@ fn to_dto(mut r: TripRow, system: crate::units::UnitSystem) -> TripDto {
     TripDto {
         id: r.id,
         car_id: r.car_id,
-        car_name: r.car_name,
+        car_name: ai::sanitize_user_text(&r.car_name, 80),
         started_at: r.started_at,
         finished_at: r.finished_at,
         finished: r.finished,
         fuel_type: r.fuel_type_snapshot,
+        energy_used_kwh: crate::trips::energy_from_soc_kwh(
+            r.battery_soc_start_pct,
+            r.battery_soc_end_pct,
+            r.battery_capacity_kwh,
+        ),
+        fuel_class: shared::FuelClass::parse(&r.fuel_class).as_str().to_string(),
+        battery_capacity_kwh: r.battery_capacity_kwh,
+        battery_soc_start_pct: r.battery_soc_start_pct,
+        battery_soc_end_pct: r.battery_soc_end_pct,
         point_count: r.point_count,
         distance: r.distance_m,
         duration_s: r.duration_s,
@@ -112,6 +136,10 @@ fn trip_select() -> String {
             t.finished_at,
             t.finished,
             t.fuel_type_snapshot,
+            COALESCE(NULLIF(t.fuel_class_snapshot, ''), c.fuel_class, 'GASOLINE') AS fuel_class,
+            COALESCE(t.battery_capacity_kwh_snapshot, c.battery_capacity_kwh) AS battery_capacity_kwh,
+            COALESCE(s.battery_soc_start_pct, live.battery_soc_start_pct) AS battery_soc_start_pct,
+            COALESCE(s.battery_soc_end_pct, live.battery_soc_end_pct) AS battery_soc_end_pct,
             COALESCE(s.point_count, live.point_count, 0) AS point_count,
             COALESCE(s.distance_m, live.distance_m) AS distance_m,
             CASE

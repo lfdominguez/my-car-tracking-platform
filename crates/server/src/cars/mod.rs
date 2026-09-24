@@ -13,10 +13,13 @@ use serde::{Deserialize, Serialize};
 use shared::defaults;
 use uuid::Uuid;
 
+use crate::audit::{self, AuditEvent, ClientMeta, actions};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::shares::access::{can_edit_car, can_read_car, require_owner};
 use crate::state::AppState;
+
+mod photo_meta;
 
 const MAX_PHOTO_BYTES: usize = 8 * 1024 * 1024;
 
@@ -89,6 +92,11 @@ fn content_type_for_path(path: &str) -> &'static str {
     }
 }
 
+/// [`resolve_photo_file`] for other modules that clean up photos.
+pub(crate) fn resolve_photo_path(upload_dir: &Path, photo_path: &str) -> AppResult<PathBuf> {
+    resolve_photo_file(upload_dir, photo_path)
+}
+
 /// Ensure stored photo_path stays under upload_dir (no path traversal).
 fn resolve_photo_file(upload_dir: &Path, photo_path: &str) -> AppResult<PathBuf> {
     if photo_path.is_empty() || photo_path.contains("..") || Path::new(photo_path).is_absolute() {
@@ -125,6 +133,9 @@ pub struct CarRow {
     pub notes: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Days of raw telemetry kept; `None` keeps everything.
+    pub raw_retention_days: Option<i32>,
+    pub share_live_position: bool,
     pub role: String,
     /// Owner has active vault; sensitive fields may be placeholders.
     pub vault_sealed: bool,
@@ -164,8 +175,57 @@ pub struct UpdateCarRequest {
     pub density_gl: Option<f64>,
     pub displacement_l: Option<f64>,
     pub ve: Option<f64>,
-    pub battery_capacity_kwh: Option<f64>,
+    /// Absent keeps the stored value; an explicit `null` clears it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub battery_capacity_kwh: Option<Option<f64>>,
     pub notes: Option<String>,
+}
+
+/// Distinguish a missing field (`None`) from an explicit `null` (`Some(None)`).
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// Reject engine and fuel parameters that would turn every fuel figure into NaN,
+/// zero or a negative number.
+fn validate_engine_params(
+    stoich_afr: f64,
+    density_gl: f64,
+    displacement_l: f64,
+    ve: f64,
+    battery_kwh: Option<f64>,
+) -> AppResult<()> {
+    let positive = |v: f64| v.is_finite() && v > 0.0;
+    if !positive(stoich_afr) || stoich_afr > 30.0 {
+        return Err(AppError::BadRequest(
+            "stoich_afr must be between 0 and 30".into(),
+        ));
+    }
+    if !positive(density_gl) || density_gl > 2000.0 {
+        return Err(AppError::BadRequest(
+            "density_gl must be between 0 and 2000".into(),
+        ));
+    }
+    if !positive(displacement_l) || displacement_l > 20.0 {
+        return Err(AppError::BadRequest(
+            "displacement_l must be between 0 and 20".into(),
+        ));
+    }
+    if !positive(ve) || ve > 1.5 {
+        return Err(AppError::BadRequest("ve must be between 0 and 1.5".into()));
+    }
+    if let Some(b) = battery_kwh
+        && (!positive(b) || b > 1000.0)
+    {
+        return Err(AppError::BadRequest(
+            "battery_capacity_kwh must be between 0 and 1000".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<Json<Vec<CarRow>>> {
@@ -173,7 +233,7 @@ async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<J
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
-               c.notes, c.created_at, c.updated_at,
+               c.notes, c.created_at, c.updated_at, c.raw_retention_days, c.share_live_position,
                'owner'::text AS role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
@@ -182,7 +242,7 @@ async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<J
         UNION ALL
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
-               c.notes, c.created_at, c.updated_at,
+               c.notes, c.created_at, c.updated_at, c.raw_retention_days, c.share_live_position,
                cs.role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
@@ -201,6 +261,7 @@ async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<J
 async fn create_car(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Json(body): Json<CreateCarRequest>,
 ) -> AppResult<Json<CarRow>> {
     if body.name.trim().is_empty() {
@@ -217,6 +278,11 @@ async fn create_car(
         .density_gl
         .or_else(|| fuel_type.density_gl())
         .unwrap_or(defaults::FUEL_DENSITY_GL);
+    let displacement = body
+        .displacement_l
+        .unwrap_or(defaults::ENGINE_DISPLACEMENT_L);
+    let ve = body.ve.unwrap_or(defaults::ENGINE_VE);
+    validate_engine_params(stoich, density, displacement, ve, body.battery_capacity_kwh)?;
     let row = sqlx::query_as::<_, CarRow>(
         r#"
         INSERT INTO cars (
@@ -225,7 +291,8 @@ async fn create_car(
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role,
+                  notes, created_at, updated_at, raw_retention_days, share_live_position,
+                  'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,
     )
@@ -238,8 +305,8 @@ async fn create_car(
     .bind(body.battery_capacity_kwh)
     .bind(stoich)
     .bind(density)
-    .bind(body.displacement_l.unwrap_or(defaults::ENGINE_DISPLACEMENT_L))
-    .bind(body.ve.unwrap_or(defaults::ENGINE_VE))
+    .bind(displacement)
+    .bind(ve)
     .bind(body.notes)
     .fetch_one(&state.pool)
     .await?;
@@ -257,7 +324,8 @@ async fn create_car(
             WHERE id = $1
             RETURNING id, owner_user_id, name, make_model, photo_path,
                       fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
-                      notes, created_at, updated_at, 'owner'::text AS role,
+                      notes, created_at, updated_at, raw_retention_days, share_live_position,
+                  'owner'::text AS role,
                       TRUE AS vault_sealed
             "#,
         )
@@ -267,6 +335,21 @@ async fn create_car(
     } else {
         row
     };
+    let car_id = id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::CAR_CREATED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id),
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
+            meta: serde_json::json!({}),
+        },
+    )
+    .await;
     Ok(Json(seal_car_if_vault(row)))
 }
 
@@ -285,7 +368,7 @@ async fn get_car(
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
-               c.notes, c.created_at, c.updated_at, $2::text AS role,
+               c.notes, c.created_at, c.updated_at, c.raw_retention_days, c.share_live_position, $2::text AS role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
         JOIN users u ON u.id = c.owner_user_id
@@ -310,7 +393,7 @@ async fn update_car(
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
-               c.notes, c.created_at, c.updated_at, 'owner'::text AS role,
+               c.notes, c.created_at, c.updated_at, c.raw_retention_days, c.share_live_position, 'owner'::text AS role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
         JOIN users u ON u.id = c.owner_user_id
@@ -321,24 +404,51 @@ async fn update_car(
     .fetch_one(&state.pool)
     .await?;
 
+    let current_class = shared::FuelClass::parse(&current.fuel_class);
+    let current_type = shared::FuelType::parse(&current.fuel_type);
     let (fuel_class, fuel_type) = if body.fuel_class.is_some() || body.fuel_type.is_some() {
+        let class_changed = body
+            .fuel_class
+            .as_deref()
+            .is_some_and(|c| shared::FuelClass::parse(c) != current_class);
         shared::normalize_fuel(
             body.fuel_class
                 .as_deref()
                 .or(Some(current.fuel_class.as_str())),
+            // A new powertrain with no grade takes that powertrain's default grade
+            // rather than inheriting the old one (DIESEL must become B7, not E10).
             body.fuel_type
                 .as_deref()
-                .or(Some(current.fuel_type.as_str())),
+                .or((!class_changed).then_some(current.fuel_type.as_str())),
         )
     } else {
-        (
-            shared::FuelClass::parse(&current.fuel_class),
-            shared::FuelType::parse(&current.fuel_type),
-        )
+        (current_class, current_type.clone())
     };
-    let stoich = body.stoich_afr.unwrap_or(current.stoich_afr);
-    let density = body.density_gl.unwrap_or(current.density_gl);
-    let battery = body.battery_capacity_kwh.or(current.battery_capacity_kwh);
+    // A different grade re-derives its AFR and density unless the caller set them.
+    let grade_changed = fuel_type != current_type;
+    let stoich = body.stoich_afr.unwrap_or(if grade_changed {
+        fuel_type.stoich_afr().unwrap_or(current.stoich_afr)
+    } else {
+        current.stoich_afr
+    });
+    let density = body.density_gl.unwrap_or(if grade_changed {
+        fuel_type.density_gl().unwrap_or(current.density_gl)
+    } else {
+        current.density_gl
+    });
+    let battery = match body.battery_capacity_kwh {
+        Some(v) => v,
+        None => current.battery_capacity_kwh,
+    };
+    let displacement = body.displacement_l.unwrap_or(current.displacement_l);
+    let ve = body.ve.unwrap_or(current.ve);
+    validate_engine_params(stoich, density, displacement, ve, battery)?;
+    let fuel_params_changed = fuel_class != current_class
+        || stoich != current.stoich_afr
+        || density != current.density_gl
+        || displacement != current.displacement_l
+        || ve != current.ve
+        || battery != current.battery_capacity_kwh;
     let row = sqlx::query_as::<_, CarRow>(
         r#"
         UPDATE cars SET
@@ -356,7 +466,8 @@ async fn update_car(
         WHERE id = $1
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role,
+                  notes, created_at, updated_at, raw_retention_days, share_live_position,
+                  'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,
     )
@@ -368,15 +479,19 @@ async fn update_car(
     .bind(battery)
     .bind(stoich)
     .bind(density)
-    .bind(body.displacement_l.unwrap_or(current.displacement_l))
-    .bind(body.ve.unwrap_or(current.ve))
+    .bind(displacement)
+    .bind(ve)
     .bind(body.notes.or(current.notes))
     .fetch_one(&state.pool)
     .await?;
     // A track whose powertrain snapshot is NULL falls back to the car's live values
-    // when its fuel figures are computed, so editing the car changes historical trip
-    // numbers. Invalidate the cached statistics to keep that behaviour.
-    if let Err(e) = crate::trips::stats::mark_stale_for_car(&state.pool, id).await {
+    // when its fuel figures are computed, so editing those values changes historical
+    // trip numbers. Only then are cached statistics invalidated: a rename changes
+    // nothing, and invalidating a car's whole history makes the trips list slow for
+    // hours while the sweeper catches up.
+    if fuel_params_changed
+        && let Err(e) = crate::trips::stats::mark_stale_for_car(&state.pool, id).await
+    {
         tracing::warn!(car_id = %id, error = %e, "marking car track stats stale failed");
     }
 
@@ -388,16 +503,39 @@ async fn update_car(
 async fn delete_car(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     AxumPath(id): AxumPath<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_owner(&state.pool, user.id, id).await?;
-    let res = sqlx::query("DELETE FROM cars WHERE id = $1")
-        .bind(id)
-        .execute(&state.pool)
-        .await?;
-    if res.rows_affected() == 0 {
-        return Err(AppError::NotFound);
+    let photo_path: Option<String> =
+        sqlx::query_scalar("DELETE FROM cars WHERE id = $1 RETURNING photo_path")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    // The row is gone, so nothing would ever serve or clean up the file.
+    if let Some(rel) = photo_path
+        && let Ok(abs) = resolve_photo_file(&state.config.upload_dir, &rel)
+        && let Err(e) = tokio::fs::remove_file(&abs).await
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(car_id = %id, error = %e, "removing car photo failed");
     }
+    let car_id = id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::CAR_DELETED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id),
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
+            meta: serde_json::json!({}),
+        },
+    )
+    .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -443,6 +581,7 @@ async fn get_photo(
 async fn upload_photo(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     AxumPath(id): AxumPath<Uuid>,
     mut multipart: Multipart,
 ) -> AppResult<Json<CarRow>> {
@@ -475,6 +614,10 @@ async fn upload_photo(
     }
     let kind = sniff_image(&bytes)
         .ok_or_else(|| AppError::BadRequest("photo must be a jpeg, png, or webp image".into()))?;
+    // Viewers of a shared car can fetch this file; do not hand them the EXIF GPS
+    // position the phone recorded when the picture was taken.
+    let bytes = photo_meta::strip_metadata(kind, &bytes)
+        .ok_or_else(|| AppError::BadRequest("photo file is damaged or truncated".into()))?;
 
     let rel = format!("cars/{id}.{}", kind.extension());
     // config.upload_dir was created and canonicalized at startup; keep every path
@@ -514,7 +657,8 @@ async fn upload_photo(
         WHERE id = $1
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role,
+                  notes, created_at, updated_at, raw_retention_days, share_live_position,
+                  'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,
     )
@@ -522,6 +666,21 @@ async fn upload_photo(
     .bind(&rel)
     .fetch_one(&state.pool)
     .await?;
+    let car_id = id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::CAR_PHOTO_UPDATED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id),
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
+            meta: serde_json::json!({ "bytes": bytes.len() }),
+        },
+    )
+    .await;
     Ok(Json(seal_car_if_vault(row)))
 }
 

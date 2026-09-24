@@ -3,15 +3,20 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    Car, CreateDeviceResponse, Device, Share, create_car, create_device, create_share, get_car,
-    list_cars, list_devices, list_shares, provisioning, provisioning_payload_json, revoke_device,
-    update_car, upload_car_photo,
+    Car, CreateDeviceResponse, Device, create_car, create_device, get_car, list_cars, list_devices,
+    provisioning, provisioning_payload_json, revoke_device, update_car, upload_car_photo,
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{fuel_class_label, role_label, t, tf};
+use crate::pages::alerts::AlertsSection;
+use crate::pages::driving::CarScoreChart;
+use crate::pages::garage::GarageSection;
+use crate::pages::health::HealthSection;
+use crate::pages::retention::RetentionCard;
+use crate::pages::sharing::SharingCard;
 use crate::vault::{
-    CarProfileV1, VaultUnlockGate, decrypt_car_profile, load_car_dek, put_car_profile,
-    use_vault_session, wrap_and_upload_dek,
+    CarProfileV1, VaultUnlockGate, decrypt_car_profile, put_car_profile, use_vault_session,
 };
 
 fn placeholder_vault_names(sess: &crate::vault::VaultSession, mut c: Vec<Car>) -> Vec<Car> {
@@ -19,9 +24,9 @@ fn placeholder_vault_names(sess: &crate::vault::VaultSession, mut c: Vec<Car>) -
     for car in c.iter_mut() {
         if car.vault_sealed && car.name.is_empty() {
             car.name = if unlocked {
-                "🔒 Vault car".into()
+                t("cars.vault_car").into()
             } else {
-                "🔒 Locked vault car".into()
+                t("cars.locked_vault_car").into()
             };
         }
     }
@@ -60,6 +65,8 @@ pub fn CarsPage() -> impl IntoView {
     Effect::new({
         let vault = vault.clone();
         move |_| {
+            // Reload when the vault is unlocked elsewhere so sealed names decrypt.
+            vault.unlocked().track();
             let sess = vault.clone();
             leptos::task::spawn_local(async move {
                 match list_cars().await {
@@ -84,9 +91,9 @@ pub fn CarsPage() -> impl IntoView {
             <div>
                 <h1 class="section-title">
                     <Icon name="car" color=IconColor::Accent />
-                    "Cars"
+                    {tr!("nav.cars")}
                 </h1>
-                <p class="muted">"Profiles used for fuel math and Android provisioning"</p>
+                <p class="muted">{tr!("cars.lead")}</p>
             </div>
         </div>
 
@@ -98,20 +105,20 @@ pub fn CarsPage() -> impl IntoView {
             <div class="card">
                 <h2 class="section-title">
                     <Icon name="garage" color=IconColor::Accent />
-                    "Your cars"
+                    {tr!("dash.your_cars")}
                 </h2>
                 <Show
                     when=move || !cars.get().is_empty()
                     fallback=move || view! {
                         <div class="empty-state">
                             <Icon name="car" size=IconSize::Xl color=IconColor::Accent />
-                            <div>"No cars yet — add one to start provisioning devices."</div>
+                            <div>{tr!("cars.no_cars")}</div>
                         </div>
                     }
                 >
                     <table class="table">
                         <thead>
-                            <tr><th></th><th>"Name"</th><th>"Model"</th><th>"Fuel"</th><th>"Role"</th><th></th></tr>
+                            <tr><th></th><th>{tr!("common.name")}</th><th>{tr!("cars.model")}</th><th>{tr!("common.fuel")}</th><th>{tr!("cars.role")}</th><th></th></tr>
                         </thead>
                         <tbody>
                             <For
@@ -126,6 +133,8 @@ pub fn CarsPage() -> impl IntoView {
                                     };
                                     let has_photo = c.photo_path.is_some();
                                     let thumb_src = crate::api::car_photo_url(&id, None);
+                                    let (fuel_class, fuel_type) = (c.fuel_class.clone(), c.fuel_type.clone());
+                                    let role = c.role.clone();
                                     view! {
                                         <tr>
                                             <td class="car-list-thumb-cell">
@@ -153,21 +162,21 @@ pub fn CarsPage() -> impl IntoView {
                                             <td>
                                                 <span class="icon-label">
                                                     <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Success />
-                                                    {format!("{} {}", c.fuel_class, c.fuel_type).trim().to_string()}
+                                                    {move || format!("{} {}", fuel_class_label(&fuel_class), fuel_type).trim().to_string()}
                                                 </span>
                                             </td>
                                             <td>
                                                 <span class=format!("badge {}", c.role)>
                                                     <span class="icon-label">
                                                         <Icon name=role_icon size=IconSize::Sm />
-                                                        {c.role.clone()}
+                                                        {move || role_label(&role)}
                                                     </span>
                                                 </span>
                                             </td>
                                             <td>
                                                 <A href=format!("/app/cars/{id}")>
                                                     <span class="icon-label">
-                                                        "Manage"
+                                                        {tr!("cars.manage")}
                                                         <Icon name="caret-right" size=IconSize::Sm />
                                                     </span>
                                                 </A>
@@ -184,14 +193,14 @@ pub fn CarsPage() -> impl IntoView {
             <div class="card">
                 <h2 class="section-title">
                     <Icon name="plus-circle" color=IconColor::Accent />
-                    "Add car"
+                    {tr!("cars.add_car")}
                 </h2>
                 <div class="form-row">
-                    <label>"Name"</label>
+                    <label>{tr!("common.name")}</label>
                     <input prop:value=move || name.get() on:input=move |ev| name.set(event_target_value(&ev))/>
                 </div>
                 <div class="form-row">
-                    <label>"Make / model"</label>
+                    <label>{tr!("cars.make_model")}</label>
                     <input prop:value=move || make_model.get() on:input=move |ev| make_model.set(event_target_value(&ev))/>
                 </div>
                 <button class="btn primary" on:click=move |_| {
@@ -217,12 +226,10 @@ pub fn CarsPage() -> impl IntoView {
                                             notes: created.notes.clone(),
                                         };
                                         if let Err(e) = put_car_profile(&sess, &created.id, &profile).await {
-                                            error.set(Some(format!("Car created but vault seal failed: {e}")));
+                                            error.set(Some(tf("cars.seal_failed", &[("error", &e)])));
                                         }
                                     } else {
-                                        error.set(Some(
-                                            "Car created under vault — unlock and edit to seal profile.".into(),
-                                        ));
+                                        error.set(Some(t("cars.created_unsealed").into()));
                                     }
                                 }
                                 name.set(String::new());
@@ -245,7 +252,7 @@ pub fn CarsPage() -> impl IntoView {
                     });
                 }>
                     <Icon name="plus-circle" />
-                    "Create"
+                    {tr!("cars.create")}
                 </button>
             </div>
         </div>
@@ -257,12 +264,9 @@ pub fn CarDetailPage() -> impl IntoView {
     let params = use_params_map();
     let car = RwSignal::new(Option::<Car>::None);
     let devices = RwSignal::new(Vec::<Device>::new());
-    let shares = RwSignal::new(Vec::<Share>::new());
     let error = RwSignal::new(Option::<String>::None);
     let qr_payload = RwSignal::new(Option::<String>::None);
     let last_token = RwSignal::new(Option::<CreateDeviceResponse>::None);
-    let share_email = RwSignal::new(String::new());
-    let share_role = RwSignal::new("viewer".to_string());
 
     let fuel_class = RwSignal::new("GASOLINE".into());
     let fuel_type = RwSignal::new("E10".into());
@@ -288,6 +292,8 @@ pub fn CarDetailPage() -> impl IntoView {
             if id.is_empty() {
                 return;
             }
+            // Unlocking through the gate below must load the decrypted profile.
+            vault.unlocked().track();
             let id2 = id.clone();
             let sess = vault.clone();
             leptos::task::spawn_local(async move {
@@ -308,7 +314,7 @@ pub fn CarDetailPage() -> impl IntoView {
                                     c.notes = p.notes.clone();
                                 }
                                 Ok(None) => {
-                                    error.set(Some("Vault car has no sealed profile yet.".into()));
+                                    error.set(Some(t("cars.no_sealed_profile").into()));
                                 }
                                 Err(e) => error.set(Some(e)),
                             }
@@ -342,10 +348,6 @@ pub fn CarDetailPage() -> impl IntoView {
                     Ok(d) => devices.set(d),
                     Err(e) => error.set(Some(e.to_string())),
                 }
-                match list_shares(&id2).await {
-                    Ok(s) => shares.set(s),
-                    Err(e) => error.set(Some(e.to_string())),
-                }
             });
         }
     });
@@ -355,14 +357,14 @@ pub fn CarDetailPage() -> impl IntoView {
             <div>
                 <h1 class="section-title">
                     <Icon name="car" color=IconColor::Accent />
-                    {move || car.get().map(|c| c.name).unwrap_or_else(|| "Car".into())}
+                    {move || car.get().map(|c| c.name).unwrap_or_else(|| t("common.car").into())}
                 </h1>
-                <p class="muted">"Fuel settings, devices / QR, and sharing"</p>
+                <p class="muted">{tr!("cars.detail_lead")}</p>
             </div>
             <A href="/app/cars">
                 <span class="icon-label">
                     <Icon name="arrow-left" size=IconSize::Sm />
-                    "Back"
+                    {tr!("common.back")}
                 </span>
             </A>
         </div>
@@ -370,8 +372,8 @@ pub fn CarDetailPage() -> impl IntoView {
         <Show when=move || error.get().is_some()>
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
-        <Show when=move || car.get().map(|c| c.vault_sealed).unwrap_or(false) && !use_vault_session().is_unlocked()>
-            <VaultUnlockGate message="Unlock the vault to view or edit this sealed car profile.".to_string()/>
+        <Show when=move || car.get().map(|c| c.vault_sealed).unwrap_or(false) && !use_vault_session().unlocked().get()>
+            <VaultUnlockGate message="cars.unlock_to_view"/>
         </Show>
 
 
@@ -379,7 +381,7 @@ pub fn CarDetailPage() -> impl IntoView {
             <div class="card stack">
                 <h2 class="section-title">
                     <Icon name="engine" color=IconColor::Warn />
-                    "Profile & fuel"
+                    {tr!("cars.profile_fuel")}
                 </h2>
 
                 <div class="car-photo-editor">
@@ -391,7 +393,7 @@ pub fn CarDetailPage() -> impl IntoView {
                                 Some(car_id) => {
                                     let src = crate::api::car_photo_url(&car_id, Some(rev));
                                     view! {
-                                        <img class="car-photo-preview" src=src alt="Car photo" />
+                                        <img class="car-photo-preview" src=src alt=tr!("cars.photo_alt") />
                                     }
                                     .into_any()
                                 }
@@ -406,12 +408,12 @@ pub fn CarDetailPage() -> impl IntoView {
                     </div>
                     <div class="car-photo-actions stack" style="gap:0.45rem;flex:1;min-width:0">
                         <div class="muted" style="font-size:var(--text-sm);margin:0">
-                            "Car image shown on the dashboard. JPEG, PNG, WebP, or GIF · max 8 MB."
+                            {tr!("cars.photo_hint")}
                         </div>
                         <div class="car-photo-buttons">
                             <label class="btn secondary car-photo-pick">
                                 <Icon name="image" size=IconSize::Sm />
-                                {move || if photo_busy.get() { "Uploading…" } else { "Change image" }}
+                                {move || if photo_busy.get() { t("cars.uploading") } else { t("cars.change_image") }}
                                 <input
                                     type="file"
                                     accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
@@ -448,38 +450,38 @@ pub fn CarDetailPage() -> impl IntoView {
                     </div>
                 </div>
 
-                <div class="form-row"><label>"Name"</label>
+                <div class="form-row"><label>{tr!("common.name")}</label>
                     <input prop:value=move || name.get() on:input=move |ev| name.set(event_target_value(&ev))/></div>
-                <div class="form-row"><label>"Make / model"</label>
+                <div class="form-row"><label>{tr!("cars.make_model")}</label>
                     <input prop:value=move || make_model.get() on:input=move |ev| make_model.set(event_target_value(&ev))/></div>
-                <div class="form-row"><label>"Powertrain"</label>
+                <div class="form-row"><label>{tr!("cars.powertrain")}</label>
                     <select prop:value=move || fuel_class.get() on:change=move |ev| fuel_class.set(event_target_value(&ev))>
-                        <option value="GASOLINE">"Gasoline"</option>
-                        <option value="DIESEL">"Diesel"</option>
-                        <option value="HYBRID">"Hybrid"</option>
-                        <option value="FULL_ELECTRIC">"Full Electric"</option>
+                        <option value="GASOLINE">{tr!("fuel.gasoline")}</option>
+                        <option value="DIESEL">{tr!("fuel.diesel")}</option>
+                        <option value="HYBRID">{tr!("fuel.hybrid")}</option>
+                        <option value="FULL_ELECTRIC">{tr!("fuel.electric")}</option>
                     </select>
                 </div>
-                <div class="form-row"><label>"Fuel grade"</label>
+                <div class="form-row"><label>{tr!("cars.fuel_grade")}</label>
                     <select prop:value=move || fuel_type.get() on:change=move |ev| fuel_type.set(event_target_value(&ev))>
                         <option value="E0">"E0"</option>
                         <option value="E10">"E10"</option>
                         <option value="E27">"E27"</option>
                         <option value="E100">"E100"</option>
-                        <option value="B7">"B7 diesel"</option>
+                        <option value="B7">{tr!("cars.b7_diesel")}</option>
                         <option value="CUSTOM">"CUSTOM"</option>
                     </select>
                 </div>
-                <div class="form-row"><label>"HV battery kWh"</label>
-                    <input prop:value=move || battery_kwh.get() on:input=move |ev| battery_kwh.set(event_target_value(&ev)) placeholder="optional"/>
+                <div class="form-row"><label>{tr!("cars.battery_kwh")}</label>
+                    <input prop:value=move || battery_kwh.get() on:input=move |ev| battery_kwh.set(event_target_value(&ev)) placeholder=tr!("cars.optional")/>
                 </div>
-                <div class="form-row"><label>"Stoich AFR"</label>
+                <div class="form-row"><label>{tr!("cars.stoich")}</label>
                     <input prop:value=move || stoich.get() on:input=move |ev| stoich.set(event_target_value(&ev))/></div>
-                <div class="form-row"><label>"Density g/L"</label>
+                <div class="form-row"><label>{tr!("cars.density")}</label>
                     <input prop:value=move || density.get() on:input=move |ev| density.set(event_target_value(&ev))/></div>
-                <div class="form-row"><label>"Displacement L"</label>
+                <div class="form-row"><label>{tr!("cars.displacement")}</label>
                     <input prop:value=move || displacement.get() on:input=move |ev| displacement.set(event_target_value(&ev))/></div>
-                <div class="form-row"><label>"VE"</label>
+                <div class="form-row"><label>{tr!("cars.ve")}</label>
                     <input prop:value=move || ve.get() on:input=move |ev| ve.set(event_target_value(&ev))/></div>
                 <button class="btn primary" on:click={
                     let vault = vault.clone();
@@ -514,7 +516,7 @@ pub fn CarDetailPage() -> impl IntoView {
                     leptos::task::spawn_local(async move {
                         if sealed {
                             if !sess.is_unlocked() {
-                                error.set(Some("Unlock vault to save sealed car profile.".into()));
+                                error.set(Some(t("cars.unlock_to_save").into()));
                                 return;
                             }
                             if let Err(e) = put_car_profile(&sess, &id, &profile).await {
@@ -554,7 +556,7 @@ pub fn CarDetailPage() -> impl IntoView {
                     });
                 }}>
                     <Icon name="floppy-disk" />
-                    "Save"
+                    {tr!("common.save")}
                 </button>
                 <button class="btn secondary" on:click=move |_| {
                     let id = params.with(|p| p.get("id").unwrap_or_default());
@@ -567,14 +569,14 @@ pub fn CarDetailPage() -> impl IntoView {
                     }
                 }>
                     <Icon name="star" />
-                    {move || if is_default.get() { "Default car ✓" } else { "Set as default" }}
+                    {move || if is_default.get() { t("cars.default_set") } else { t("cars.set_default") }}
                 </button>
             </div>
 
             <div class="card stack">
                 <h2 class="section-title">
                     <Icon name="device-mobile" color=IconColor::Device />
-                    "Devices & QR"
+                    {tr!("cars.devices_qr")}
                 </h2>
                 <button class="btn primary" on:click=move |_| {
                     let id = params.with(|p| p.get("id").unwrap_or_default());
@@ -620,17 +622,18 @@ pub fn CarDetailPage() -> impl IntoView {
                     });
                 }>
                     <Icon name="qr-code" color=IconColor::Default />
-                    "Create device token"
+                    {tr!("cars.create_token")}
                 </button>
 
                 <Show when=move || last_token.get().is_some()>
                     <div class="success stack" style="gap:0.5rem">
                         <div>
-                            "Token (copy now — shown once): "
+                            {tr!("cars.token_once")}
+                            " "
                             <code>{move || last_token.get().map(|t| t.token).unwrap_or_default()}</code>
                         </div>
                         <p class="muted" style="margin:0;font-size:var(--text-sm)">
-                            "Scan the QR below in the Android app Settings to load URLs, token, and fuel profile."
+                            {tr!("cars.scan_qr")}
                         </p>
                     </div>
                 </Show>
@@ -638,7 +641,7 @@ pub fn CarDetailPage() -> impl IntoView {
                 <QrCode payload=qr_payload/>
 
                 <table class="table">
-                    <thead><tr><th>"Name"</th><th>"Prefix"</th><th>"Status"</th><th></th></tr></thead>
+                    <thead><tr><th>{tr!("common.name")}</th><th>{tr!("cars.prefix")}</th><th>{tr!("common.status")}</th><th></th></tr></thead>
                     <tbody>
                         <For
                             each=move || devices.get()
@@ -685,17 +688,17 @@ pub fn CarDetailPage() -> impl IntoView {
                                                             // Optimistic UI: mark revoked immediately so
                                                             // the row updates before the list refetch.
                                                             devices.update(|list| {
-                                                                if let Some(dev) = list.iter_mut().find(|x| x.id == did) {
-                                                                    if dev.revoked_at.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
-                                                                        dev.revoked_at = Some("revoked".into());
-                                                                    }
+                                                                if let Some(dev) = list.iter_mut().find(|x| x.id == did)
+                                                                    && dev.revoked_at.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                                                                {
+                                                                    dev.revoked_at = Some("revoked".into());
                                                                 }
                                                             });
-                                                            if let Some(tok) = last_token.get_untracked() {
-                                                                if tok.device.id == did {
-                                                                    last_token.set(None);
-                                                                    qr_payload.set(None);
-                                                                }
+                                                            if let Some(tok) = last_token.get_untracked()
+                                                                && tok.device.id == did
+                                                            {
+                                                                last_token.set(None);
+                                                                qr_payload.set(None);
                                                             }
                                                             match list_devices(&cid).await {
                                                                 Ok(list) => devices.set(list),
@@ -708,7 +711,7 @@ pub fn CarDetailPage() -> impl IntoView {
                                             }
                                         >
                                             <Icon name="trash" size=IconSize::Sm color=IconColor::Danger />
-                                            "Revoke"
+                                            {tr!("common.revoke")}
                                         </button>
                                     }
                                 });
@@ -721,7 +724,7 @@ pub fn CarDetailPage() -> impl IntoView {
                                             </span>
                                         </td>
                                         <td><code>{d.token_prefix.clone()}</code></td>
-                                        <td>{if is_revoked { "revoked" } else { "active" }}</td>
+                                        <td>{move || if is_revoked { t("cars.revoked") } else { t("cars.active") }}</td>
                                         <td>{revoke_btn}</td>
                                     </tr>
                                 }
@@ -732,115 +735,41 @@ pub fn CarDetailPage() -> impl IntoView {
             </div>
         </div>
 
-        <div class="card" style="margin-top:1rem">
-            <h2 class="section-title">
-                <Icon name="share-network" color=IconColor::Accent />
-                "Sharing"
-            </h2>
-            <div class="row">
-                <input style="max-width:260px" placeholder="user@email.com"
-                    prop:value=move || share_email.get()
-                    on:input=move |ev| share_email.set(event_target_value(&ev))/>
-                <select style="max-width:140px" prop:value=move || share_role.get()
-                    on:change=move |ev| share_role.set(event_target_value(&ev))>
-                    <option value="viewer">"viewer"</option>
-                    <option value="editor">"editor"</option>
-                </select>
-                <button class="btn" on:click={
-                    let vault = vault.clone();
-                    move |_| {
-                    let id = params.with(|p| p.get("id").unwrap_or_default());
-                    let email = share_email.get();
-                    let role = share_role.get();
-                    let sealed = car.get().map(|c| c.vault_sealed).unwrap_or(false);
-                    let sess = vault.clone();
-                    leptos::task::spawn_local(async move {
-                        match create_share(&id, &email, &role).await {
-                            Ok(resp) => {
-                                if sealed {
-                                    if let Some(share) = resp.share.as_ref() {
-                                        if let Some(pk) = share.vault_identity_pubkey_b64.as_ref() {
-                                            if sess.is_unlocked() {
-                                                match load_car_dek(&sess, &id).await {
-                                                    Ok(dek) => {
-                                                        if let Err(e) = wrap_and_upload_dek(
-                                                            &sess,
-                                                            &id,
-                                                            &share.user_id,
-                                                            pk,
-                                                            &dek,
-                                                        )
-                                                        .await
-                                                        {
-                                                            error.set(Some(format!(
-                                                                "Share added but DEK wrap failed: {e}"
-                                                            )));
-                                                        }
-                                                    }
-                                                    Err(e) => error.set(Some(format!(
-                                                        "Share added but could not load DEK: {e}"
-                                                    ))),
-                                                }
-                                            } else {
-                                                error.set(Some(
-                                                    "Share added — unlock vault to wrap the car key for the recipient.".into(),
-                                                ));
-                                            }
-                                        } else {
-                                            error.set(Some(
-                                                "Share added — recipient has no vault pubkey yet (pending wrap).".into(),
-                                            ));
-                                        }
-                                    }
-                                }
-                                share_email.set(String::new());
-                                match list_shares(&id).await {
-                                    Ok(s) => shares.set(s),
-                                    Err(e) => error.set(Some(e.to_string())),
-                                }
-                            }
-                            Err(e) => error.set(Some(e.to_string())),
-                        }
-                    });
-                }}>
-                    <Icon name="user-plus" />
-                    "Invite"
-                </button>
-            </div>
-            <table class="table">
-                <thead><tr><th>"User"</th><th>"Email"</th><th>"Role"</th></tr></thead>
-                <tbody>
-                    <For
-                        each=move || shares.get()
-                        key=|s| format!("{}:{}", s.car_id, s.user_id)
-                        children=move |s| {
-                            let role_icon = match s.role.as_str() {
-                                "editor" => "pencil-simple",
-                                _ => "eye",
-                            };
-                            let vault_hint = if s.vault_has_pubkey {
-                                ""
-                            } else {
-                                " · no vault key"
-                            };
-                            view! {
-                                <tr>
-                                    <td>{s.name.clone()}</td>
-                                    <td>{s.email.clone()}{vault_hint}</td>
-                                    <td>
-                                        <span class=format!("badge {}", s.role)>
-                                            <span class="icon-label">
-                                                <Icon name=role_icon size=IconSize::Sm />
-                                                {s.role.clone()}
-                                            </span>
-                                        </span>
-                                    </td>
-                                </tr>
-                            }
-                        }
-                    />
-                </tbody>
-            </table>
-        </div>
+        <RetentionCard car=car error=error />
+
+        <SharingCard
+            car=car
+            car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
+            error=error
+        />
+
+        <HealthSection
+            car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
+            can_edit=Signal::derive(move || {
+                car.with(|c| c.as_ref().is_some_and(|c| c.role == "owner" || c.role == "editor"))
+            })
+            electrified=Signal::derive(move || {
+                car.with(|c| {
+                    c.as_ref().is_some_and(|c| {
+                        c.fuel_class.eq_ignore_ascii_case("FULL_ELECTRIC")
+                            || c.fuel_class.eq_ignore_ascii_case("HYBRID")
+                    })
+                })
+            })
+        />
+
+        <CarScoreChart car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default())) />
+
+        <AlertsSection car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default())) />
+
+        <GarageSection
+            car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
+            can_edit=Signal::derive(move || {
+                car.with(|c| c.as_ref().is_some_and(|c| c.role == "owner" || c.role == "editor"))
+            })
+            electric=Signal::derive(move || {
+                car.with(|c| c.as_ref().is_some_and(|c| c.fuel_class.eq_ignore_ascii_case("FULL_ELECTRIC")))
+            })
+        />
     }
 }

@@ -39,6 +39,8 @@ services:
     volumes:
       - app-data:/app/data/uploads
     restart: unless-stopped
+    # Longer than the app's 20 s background-job drain on SIGTERM.
+    stop_grace_period: 30s
 
 volumes:
   pgdata:

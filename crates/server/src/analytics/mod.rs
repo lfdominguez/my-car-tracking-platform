@@ -13,8 +13,12 @@ use crate::state::AppState;
 use crate::trips::stats;
 use crate::units::{convert_distance_m, convert_fuel_l, convert_odometer_km, convert_speed_kph};
 
+mod periods;
+
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/dashboard/summary", get(summary))
+    Router::new()
+        .route("/api/dashboard/summary", get(summary))
+        .route("/api/stats/periods", get(periods::periods))
 }
 
 #[derive(Debug, Deserialize)]

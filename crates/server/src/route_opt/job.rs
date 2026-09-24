@@ -159,6 +159,34 @@ pub async fn process_finished_track(
     keyring: &KeyRing,
     track_id: Uuid,
 ) -> Result<(), JobError> {
+    let car_id: Uuid = sqlx::query_scalar("SELECT car_id FROM tracks WHERE id = $1")
+        .bind(track_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(JobError::NotFound)?;
+
+    // One run per car at a time. Corridor matching is check-then-insert, so two
+    // concurrent runs (the job worker and an inline recompute, or two trips of the
+    // same car finishing together) could each create a corridor for the same
+    // origin/destination and split its statistics. The lock is transaction-scoped
+    // on a connection of its own, so it is released even if this task is dropped.
+    // A run interrupted between clearing and re-writing a track's assignments is
+    // repaired by the job queue retrying it.
+    let mut lock = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('route_opt:' || $1::text))")
+        .bind(car_id)
+        .execute(&mut *lock)
+        .await?;
+    let result = process_finished_track_locked(pool, keyring, track_id).await;
+    lock.commit().await?;
+    result
+}
+
+async fn process_finished_track_locked(
+    pool: &PgPool,
+    keyring: &KeyRing,
+    track_id: Uuid,
+) -> Result<(), JobError> {
     let track = sqlx::query(
         r#"
         SELECT id, car_id, finished, started_at, finished_at
@@ -293,12 +321,7 @@ pub async fn process_finished_track(
             continue;
         }
 
-        let hour_bin = leg_start_t.hour() as i16;
-        let is_weekend = matches!(
-            leg_start_t.weekday(),
-            chrono::Weekday::Sat | chrono::Weekday::Sun
-        );
-        let month = leg_start_t.month() as i16;
+        let (hour_bin, is_weekend, month) = local_time_bins(pool, car_id, leg_start_t).await?;
         let stop_secs = stop_time_secs(leg_points, 2.0, 60);
         let poly = downsample_polyline(leg_coords, 200);
 
@@ -401,6 +424,51 @@ pub async fn process_finished_track(
         return Err(JobError::Skipped("no legs assigned"));
     }
     Ok(())
+}
+
+/// The current wall-clock time in the car owner's timezone, tagged as UTC so that
+/// `.hour()` / `.weekday()` read local values. Only for bucketing, never for
+/// arithmetic against real timestamps.
+pub async fn owner_local_now(pool: &PgPool, car_id: Uuid) -> Result<DateTime<Utc>, sqlx::Error> {
+    let local: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
+        "SELECT NOW() AT TIME ZONE u.timezone
+         FROM cars c JOIN users u ON u.id = c.owner_user_id WHERE c.id = $1",
+    )
+    .bind(car_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(local.map(|l| l.and_utc()).unwrap_or_else(Utc::now))
+}
+
+/// Hour of day, weekend flag and month of `at` in the car owner's timezone.
+///
+/// Insights read these back as "fastest around 07:00", so they must be the hours
+/// the driver actually lives by rather than UTC.
+async fn local_time_bins(
+    pool: &PgPool,
+    car_id: Uuid,
+    at: DateTime<Utc>,
+) -> Result<(i16, bool, i16), JobError> {
+    let row: Option<(i16, bool, i16)> = sqlx::query_as(
+        r#"
+        SELECT EXTRACT(HOUR FROM $2 AT TIME ZONE u.timezone)::int2,
+               EXTRACT(ISODOW FROM $2 AT TIME ZONE u.timezone) IN (6, 7),
+               EXTRACT(MONTH FROM $2 AT TIME ZONE u.timezone)::int2
+        FROM cars c JOIN users u ON u.id = c.owner_user_id
+        WHERE c.id = $1
+        "#,
+    )
+    .bind(car_id)
+    .bind(at)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.unwrap_or_else(|| {
+        (
+            at.hour() as i16,
+            matches!(at.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun),
+            at.month() as i16,
+        )
+    }))
 }
 
 fn downsample_polyline(coords: &[LatLon], max_pts: usize) -> serde_json::Value {
@@ -834,7 +902,8 @@ pub async fn rebuild_insights(
         });
     }
 
-    let drafts: Vec<InsightDraft> = build_insights(&labels, &samples, &ors_alts, Utc::now(), 3);
+    let now = owner_local_now(pool, car_id).await?;
+    let drafts: Vec<InsightDraft> = build_insights(&labels, &samples, &ors_alts, now, 3);
 
     sqlx::query(
         r#"

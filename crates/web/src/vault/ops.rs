@@ -5,6 +5,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::speed_events::{self, MotionSample, SpeedEventThresholds, SpeedSample};
+use shared::telemetry_sanitize::{SpeedRpmPoint, sanitize_speed_rpm};
 use uuid::Uuid;
 use vault_crypto::{
     Dek, IdentityPublic, WRAP_ALG_V1, WrappedDek, aad_v1, decrypt_object, encrypt_object,
@@ -18,6 +19,7 @@ use crate::api::{
 };
 
 use super::VaultSession;
+use crate::units::{UnitSystem, point_display_to_si, trip_display_to_si};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CarProfileV1 {
@@ -103,7 +105,7 @@ fn decrypt_obj(dek: &Dek, obj: &VaultObject) -> Result<Vec<u8>, String> {
 /// Load and unwrap the caller's DEK wrap for a car (must be unlocked).
 pub async fn load_car_dek(session: &VaultSession, car_id: &str) -> Result<Dek, String> {
     if !session.is_unlocked() {
-        return Err("Vault is locked".into());
+        return Err(crate::i18n::t("vault.locked").into());
     }
     let me = get_me().await.map_err(|e| e.to_string())?;
     let wraps = vault_list_deks(car_id).await.map_err(|e| e.to_string())?;
@@ -115,7 +117,7 @@ pub async fn load_car_dek(session: &VaultSession, car_id: &str) -> Result<Dek, S
                 .map(|id| id == me.id)
                 .unwrap_or(false)
         })
-        .ok_or_else(|| "No DEK wrap for this account — ask the owner to share keys".to_string())?;
+        .ok_or_else(|| crate::i18n::t("vault.no_wrap").to_string())?;
     let b64 = mine
         .get("wrapped_dek_b64")
         .and_then(|v| v.as_str())
@@ -126,7 +128,7 @@ pub async fn load_car_dek(session: &VaultSession, car_id: &str) -> Result<Dek, S
     let wrapped = WrappedDek::from_blob(blob).map_err(|e| e.to_string())?;
     session
         .with_secret(|secret, _| unwrap_dek(&wrapped, secret).map_err(|e| e.to_string()))
-        .ok_or_else(|| "Vault is locked".to_string())?
+        .ok_or_else(|| crate::i18n::t("vault.locked").to_string())?
 }
 
 /// Wrap `dek` to a recipient X25519 public key (base64) and upload.
@@ -165,7 +167,7 @@ pub async fn ensure_owner_dek(session: &VaultSession, car_id: &str) -> Result<De
             let me = get_me().await.map_err(|e| e.to_string())?;
             let pubkey_b64 = session
                 .public_b64()
-                .ok_or_else(|| "Vault is locked".to_string())?;
+                .ok_or_else(|| crate::i18n::t("vault.locked").to_string())?;
             wrap_and_upload_dek(session, car_id, &me.id, &pubkey_b64, &dek).await?;
             Ok(dek)
         }
@@ -253,22 +255,80 @@ pub async fn seal_ai_report(
     Ok(())
 }
 
-/// Build a minimal AI analysis context from decrypted points (client-prepared bundle).
+/// Nearest-rank percentile over an ascending slice (same rounding as the server's
+/// `analysis::context::percentile`).
+fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted.get(idx.min(sorted.len() - 1)).copied()
+}
+
+/// Build a minimal AI analysis context from decrypted SI points (client-prepared
+/// bundle), shaped like the server's plaintext context.
+///
+/// `profile` is the decrypted car profile when available: it supplies `fuel_class`
+/// (which the analysis contract requires on every overview) and the engine
+/// constants the server would read from the car row.
 pub fn build_analysis_context_json(
     trip: &Trip,
     car_name: &str,
     points: &[TripPoint],
+    profile: Option<&CarProfileV1>,
 ) -> serde_json::Value {
+    // Sanitized speed/RPM for samples and percentiles (what the server shows the
+    // model); harsh-event detection below keeps reading the raw series, as the
+    // server does, because the sanitizer flattens genuine hard stops.
+    let times: Vec<Option<DateTime<Utc>>> = points
+        .iter()
+        .map(|p| {
+            DateTime::parse_from_rfc3339(&p.recorded_at)
+                .ok()
+                .map(|t| t.with_timezone(&Utc))
+        })
+        .collect();
+    let mut clean: Vec<SpeedRpmPoint> = points
+        .iter()
+        .zip(&times)
+        .filter_map(|(p, t)| {
+            Some(SpeedRpmPoint {
+                t: (*t)?,
+                speed_kph: p.vehicle_speed_kph.or(p.engine_vel),
+                // Same precedence as the charts and the server: the vehicle PID first.
+                rpm: p.vehicle_engine_rpm.or(p.engine_rpm),
+            })
+        })
+        .collect();
+    sanitize_speed_rpm(&mut clean);
+    let mut clean_iter = clean.into_iter();
+    let clean_by_point: Vec<(Option<f64>, Option<f64>)> = points
+        .iter()
+        .zip(&times)
+        .map(|(p, t)| match t {
+            Some(_) => clean_iter
+                .next()
+                .map(|c| (c.speed_kph, c.rpm))
+                .unwrap_or((None, None)),
+            None => (
+                p.vehicle_speed_kph.or(p.engine_vel),
+                p.vehicle_engine_rpm.or(p.engine_rpm),
+            ),
+        })
+        .collect();
+
+    let step = (points.len() / 400).max(1);
     let samples: Vec<serde_json::Value> = points
         .iter()
-        .step_by((points.len() / 400).max(1))
-        .map(|p| {
+        .zip(&clean_by_point)
+        .step_by(step)
+        .map(|(p, (speed, rpm))| {
             serde_json::json!({
                 "recorded_at": p.recorded_at,
                 "lat": p.lat,
                 "lon": p.lon,
-                "speed_kph": p.vehicle_speed_kph.or(p.engine_vel),
-                "rpm": p.engine_rpm.or(p.vehicle_engine_rpm),
+                "speed_kph": speed,
+                "rpm": rpm,
                 "engine_load_pct": p.engine_load_pct,
                 "fuel_rate_lph": p.fuel_consumption_rate,
                 "coolant_c": p.engine_coolant_temp_c,
@@ -282,10 +342,17 @@ pub fn build_analysis_context_json(
         })
         .collect();
 
-    let speeds: Vec<f64> = points
+    let mut speeds: Vec<f64> = clean_by_point
         .iter()
-        .filter_map(|p| p.vehicle_speed_kph.or(p.engine_vel))
+        .filter_map(|(s, _)| *s)
+        .filter(|s| s.is_finite())
         .collect();
+    speeds.sort_by(|a, b| a.total_cmp(b));
+    let moving_share = if speeds.is_empty() {
+        None
+    } else {
+        Some(speeds.iter().filter(|s| **s > 2.0).count() as f64 / speeds.len() as f64)
+    };
 
     // Same detector the server runs, so a vault trip is analysed on real numbers
     // instead of the hardcoded zeros this builder used to emit — which read to the
@@ -312,21 +379,27 @@ pub fn build_analysis_context_json(
         .collect();
     let events = speed_events::compute_speed_events(&speed_series, trip.distance_m);
     let thresholds = SpeedEventThresholds::default();
-    let max_speed = speeds.iter().cloned().fold(None, |acc: Option<f64>, v| {
-        Some(acc.map(|a| a.max(v)).unwrap_or(v))
-    });
+    let max_speed = speeds.last().copied();
     let avg_speed = if speeds.is_empty() {
         None
     } else {
         Some(speeds.iter().sum::<f64>() / speeds.len() as f64)
     };
 
+    // Same fallback as the server's `COALESCE(..., 'GASOLINE')`.
+    let fuel_class = profile
+        .map(|p| p.fuel_class.trim().to_ascii_uppercase())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "GASOLINE".to_string());
+
     serde_json::json!({
         "overview": {
             "trip_id": trip.id,
             "car_name": car_name,
-            "make_model": null,
+            "make_model": profile.map(|p| p.make_model.clone()),
             "fuel_type": trip.fuel_type_snapshot,
+            "fuel_class": fuel_class,
+            "battery_capacity_kwh": profile.and_then(|p| p.battery_capacity_kwh),
             "started_at": trip.started_at,
             "finished_at": trip.finished_at,
             "finished": trip.finished,
@@ -337,10 +410,10 @@ pub fn build_analysis_context_json(
             "max_speed_kph": trip.max_speed_kph.or(max_speed),
             "fuel_used_l": trip.fuel_used_l,
             "fuel_used_moving_l": trip.fuel_used_moving_l,
-            "displacement_l": null,
-            "stoich_afr": null,
-            "density_gl": null,
-            "ve": null,
+            "displacement_l": profile.map(|p| p.displacement_l),
+            "stoich_afr": profile.map(|p| p.stoich_afr),
+            "density_gl": profile.map(|p| p.density_gl),
+            "ve": profile.map(|p| p.ve),
         },
         "units": {
             "distance": "km",
@@ -351,9 +424,9 @@ pub fn build_analysis_context_json(
         },
         "speed": {
             "sample_count": speeds.len(),
-            "min_kph": speeds.iter().cloned().fold(None, |a: Option<f64>, v| Some(a.map(|x| x.min(v)).unwrap_or(v))),
-            "p50_kph": avg_speed,
-            "p95_kph": max_speed,
+            "min_kph": speeds.first().copied(),
+            "p50_kph": percentile(&speeds, 0.50),
+            "p95_kph": percentile(&speeds, 0.95),
             "max_kph": max_speed,
             "hard_accel_events": events.hard_accel_events,
             "hard_brake_events": events.hard_brake_events,
@@ -368,7 +441,7 @@ pub fn build_analysis_context_json(
             "undirected_harsh_events": events.undirected_harsh_events,
             "peak_horizontal_mps2": events.peak_horizontal_mps2,
             "motion_rejected_windows": events.motion_rejected_windows,
-            "moving_share": null,
+            "moving_share": moving_share,
         },
         "engine": {},
         "fuel": {},
@@ -422,12 +495,12 @@ const POINTS_CHUNK: usize = 250;
 /// Migrate one owned car: DEK, profile, tracks/points → vault objects, then clear plaintext.
 pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String> {
     if car.role != "owner" {
-        return Err("only owner can migrate".into());
+        return Err(crate::i18n::t("vault.owner_only").into());
     }
     if !session.is_unlocked() {
         // Unlock with the identity we just enabled: device cache should hold secret after enable.
         if !session.try_unlock_from_device_cache() {
-            return Err("Unlock vault before migrating".into());
+            return Err(crate::i18n::t("vault.unlock_before_migrating").into());
         }
     }
 
@@ -435,7 +508,7 @@ pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String
     let me = get_me().await.map_err(|e| e.to_string())?;
     let pubkey_b64 = session
         .public_b64()
-        .ok_or_else(|| "Vault is locked".to_string())?;
+        .ok_or_else(|| crate::i18n::t("vault.locked").to_string())?;
     wrap_and_upload_dek(session, &car.id, &me.id, &pubkey_b64, &dek).await?;
 
     // Fresh plaintext read (still available while status=migrating).
@@ -464,8 +537,12 @@ pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String
     })
     .await
     .map_err(|e| e.to_string())?;
-    for trip in trips {
-        migrate_trip(&dek, car_uuid, &trip).await?;
+    // The plaintext APIs answer in the caller's display units, but sealed objects are
+    // SI (the trip page converts them back on the way out), so undo the conversion.
+    let system = UnitSystem::parse(&me.unit_system);
+    for mut trip in trips {
+        trip_display_to_si(&mut trip, system);
+        migrate_trip(&dek, car_uuid, &trip, system).await?;
     }
 
     vault_migration_clear_car(&car.id)
@@ -474,7 +551,12 @@ pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String
     Ok(())
 }
 
-async fn migrate_trip(dek: &Dek, car_uuid: Uuid, trip: &Trip) -> Result<(), String> {
+async fn migrate_trip(
+    dek: &Dek,
+    car_uuid: Uuid,
+    trip: &Trip,
+    system: UnitSystem,
+) -> Result<(), String> {
     let track_uuid = parse_uuid(&trip.id)?;
     let meta = TrackMetaV1 {
         started_at: Some(trip.started_at.clone()),
@@ -495,7 +577,12 @@ async fn migrate_trip(dek: &Dek, car_uuid: Uuid, trip: &Trip) -> Result<(), Stri
     let body = encrypt_put(dek, car_uuid, "track_meta", track_uuid, None, 1, &plain)?;
     vault_put_object(body).await.map_err(|e| e.to_string())?;
 
-    let points = trip_points(&trip.id).await.map_err(|e| e.to_string())?;
+    let mut points = trip_points(&trip.id, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    for p in &mut points {
+        point_display_to_si(p, system);
+    }
     for (i, chunk) in points.chunks(POINTS_CHUNK).enumerate() {
         let plain = serde_json::to_vec(chunk).map_err(|e| e.to_string())?;
         let body = encrypt_put(
@@ -522,5 +609,5 @@ pub async fn migrate_all_owned(session: &VaultSession) -> Result<String, String>
             .await
             .map_err(|e| format!("car {} ({}/{}): {e}", car.name, i + 1, total))?;
     }
-    Ok(format!("Migrated {total} car(s)"))
+    Ok(crate::i18n::tp("vault.migrated", total as i64))
 }

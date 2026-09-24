@@ -105,6 +105,18 @@ impl FuelType {
         }
     }
 
+    /// Whether this grade can be burnt by `class`. `Custom` fits anything.
+    pub fn fits(&self, class: FuelClass) -> bool {
+        match (self, class) {
+            (Self::Custom, _) => true,
+            (_, FuelClass::FullElectric) => false,
+            (Self::B7, FuelClass::Gasoline) => false,
+            (Self::B7, _) => true,
+            (_, FuelClass::Diesel) => false,
+            _ => true,
+        }
+    }
+
     pub fn default_for(class: FuelClass) -> Self {
         match class {
             FuelClass::Diesel => Self::B7,
@@ -120,6 +132,19 @@ impl FuelType {
             Self::E27 => Some(13.2),
             Self::E100 => Some(9.0),
             Self::B7 => Some(14.5),
+            Self::Custom => None,
+        }
+    }
+
+    /// Tailpipe CO₂ per litre burnt (kg/L). Blends are weighted by volume from
+    /// petrol 2.31, ethanol 1.51, fossil diesel 2.68 and biodiesel 2.50 kg/L.
+    pub fn co2_kg_per_litre(&self) -> Option<f64> {
+        match self {
+            Self::E0 => Some(2.31),
+            Self::E10 => Some(0.9 * 2.31 + 0.1 * 1.51),
+            Self::E27 => Some(0.73 * 2.31 + 0.27 * 1.51),
+            Self::E100 => Some(1.51),
+            Self::B7 => Some(0.93 * 2.68 + 0.07 * 2.50),
             Self::Custom => None,
         }
     }
@@ -147,6 +172,9 @@ pub fn normalize_fuel(class: Option<&str>, grade: Option<&str>) -> (FuelClass, F
         .map(FuelType::parse);
     match (class, grade) {
         (Some(FuelClass::FullElectric), _) => (FuelClass::FullElectric, FuelType::Custom),
+        // A grade the powertrain cannot burn (diesel + E10) is a stale leftover, not
+        // a choice: fall back to the class default (Diesel → B7).
+        (Some(c), Some(g)) if !g.fits(c) => (c, FuelType::default_for(c)),
         (Some(c), Some(g)) => (c, g),
         (Some(c), None) => (c, FuelType::default_for(c)),
         (None, Some(g)) => (g.implied_class(), g),
@@ -161,6 +189,9 @@ fn normalize_token(s: &str) -> String {
 fn default_fuel_class_str() -> String {
     FuelClass::Gasoline.as_str().into()
 }
+
+/// Default grid carbon intensity for charging (g CO₂/kWh), roughly the EU average.
+pub const DEFAULT_GRID_G_CO2_PER_KWH: f64 = 250.0;
 
 /// Default fuel/engine values aligned with Android `AppSettings`.
 pub mod defaults {
@@ -222,6 +253,22 @@ impl ShareRole {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diesel_never_keeps_a_gasoline_grade() {
+        assert_eq!(
+            normalize_fuel(Some("DIESEL"), Some("E10")),
+            (FuelClass::Diesel, FuelType::B7)
+        );
+        assert_eq!(
+            normalize_fuel(Some("GASOLINE"), Some("B7")),
+            (FuelClass::Gasoline, FuelType::E10)
+        );
+        assert_eq!(
+            normalize_fuel(Some("HYBRID"), Some("E27")),
+            (FuelClass::Hybrid, FuelType::E27)
+        );
+    }
 
     #[test]
     fn fuel_type_default_is_e10() {

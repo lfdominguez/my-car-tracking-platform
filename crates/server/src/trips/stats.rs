@@ -17,7 +17,7 @@ use crate::error::AppResult;
 
 /// Bump whenever [`TRACK_POINT_AGGREGATE`] changes meaning. Rows written by an older
 /// version stop being usable immediately and the sweeper recomputes them.
-pub const SCHEMA_VERSION: i16 = 1;
+pub const SCHEMA_VERSION: i16 = 3;
 
 /// The per-trip aggregate over `track_points`, as the body of a correlated subquery.
 ///
@@ -49,6 +49,8 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        -- Negative readings are adapter noise, as in analysis::context.
+                        WHEN tp2.fuel_consumption_rate < 0 THEN NULL
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
@@ -93,6 +95,8 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        -- Negative readings are adapter noise, as in analysis::context.
+                        WHEN tp2.fuel_consumption_rate < 0 THEN NULL
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
@@ -148,8 +152,13 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                   FILTER (WHERE tp.battery_soc_pct IS NOT NULL))[1]::float8 AS battery_soc_end_pct,
                 (array_agg(tp.recorded_at ORDER BY tp.recorded_at DESC)
                   FILTER (WHERE tp.battery_soc_pct IS NOT NULL))[1] AS battery_soc_end_at,
+                -- Fixes worse than 50 m are GPS wander (tunnel exits, garages, cold
+                -- starts) and zig-zag the line, inflating distance. gps_acc_m < 0 is the
+                -- "accuracy unknown" sentinel and is kept.
                 CASE
-                  WHEN COUNT(tp.gps) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
+                  WHEN COUNT(tp.gps) FILTER (WHERE tp.gps_acc_m <= 50 OR tp.gps_acc_m < 0) >= 2
+                  THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)
+                         FILTER (WHERE tp.gps_acc_m <= 50 OR tp.gps_acc_m < 0)::geography)::float8
                   ELSE 0::float8
                 END AS distance_m
 "#;
@@ -182,7 +191,8 @@ pub fn stats_join(alias: &str) -> String {
         "LEFT JOIN track_stats {alias}
                 ON {alias}.track_id = t.id
                AND NOT {alias}.stale
-               AND {alias}.schema_version = {SCHEMA_VERSION}"
+               -- A pruned trip's row is all there is: keep using it after a schema bump.
+               AND ({alias}.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)"
     )
 }
 
@@ -193,7 +203,7 @@ pub fn stats_join_required(alias: &str) -> String {
         "JOIN track_stats {alias}
                 ON {alias}.track_id = t.id
                AND NOT {alias}.stale
-               AND {alias}.schema_version = {SCHEMA_VERSION}"
+               AND ({alias}.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)"
     )
 }
 
@@ -205,7 +215,7 @@ pub fn no_usable_stats() -> String {
                       SELECT 1 FROM track_stats s2
                       WHERE s2.track_id = t.id
                         AND NOT s2.stale
-                        AND s2.schema_version = {SCHEMA_VERSION}
+                        AND (s2.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)
                   )"
     )
 }
@@ -241,6 +251,8 @@ pub async fn recompute(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
         {lateral}
         WHERE t.id = $1
           AND ou.vault_status <> 'active'
+          -- Pruned trips keep the row computed before their points were deleted.
+          AND t.points_pruned_at IS NULL
         ON CONFLICT (track_id) DO UPDATE SET
             point_count = EXCLUDED.point_count,
             first_point_at = EXCLUDED.first_point_at,
@@ -269,6 +281,21 @@ pub async fn recompute(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
         .bind(track_id)
         .execute(pool)
         .await?;
+
+    // The upsert above read the points from a snapshot taken when it started, but
+    // wrote `stale = false` onto whatever the row looked like when it finished. A
+    // sample that committed in between (and its `mark_stale`) would be silently
+    // absorbed. `computed_at` is that statement's start time, so any dirty mark at
+    // or after it means the row may be missing points: put the flag back.
+    sqlx::query(
+        "UPDATE track_stats s SET stale = true
+         FROM tracks t
+         WHERE s.track_id = $1 AND t.id = $1
+           AND t.stats_dirty_at >= s.computed_at AND NOT s.stale",
+    )
+    .bind(track_id)
+    .execute(pool)
+    .await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -282,6 +309,12 @@ pub async fn mark_stale(pool: &PgPool, track_ids: &[Uuid]) -> AppResult<()> {
     if track_ids.is_empty() {
         return Ok(());
     }
+    // The dirty timestamp goes on `tracks` so it is recorded even when no stats row
+    // exists yet; see the check at the end of [`recompute`].
+    sqlx::query("UPDATE tracks SET stats_dirty_at = clock_timestamp() WHERE id = ANY($1)")
+        .bind(track_ids)
+        .execute(pool)
+        .await?;
     sqlx::query("UPDATE track_stats SET stale = true WHERE track_id = ANY($1) AND NOT stale")
         .bind(track_ids)
         .execute(pool)
@@ -289,11 +322,22 @@ pub async fn mark_stale(pool: &PgPool, track_ids: &[Uuid]) -> AppResult<()> {
     Ok(())
 }
 
-/// Mark every stored row belonging to a car stale. See [`mark_stale`].
+/// Mark stale the stored rows of a car's tracks that read fuel parameters through to
+/// the live `cars` row, i.e. those missing a snapshot. See [`mark_stale`].
+///
+/// Tracks recorded since snapshots existed carry their own copy and are unaffected
+/// by editing the car.
 pub async fn mark_stale_for_car(pool: &PgPool, car_id: Uuid) -> AppResult<()> {
     sqlx::query(
         "UPDATE track_stats SET stale = true
-         WHERE track_id IN (SELECT id FROM tracks WHERE car_id = $1) AND NOT stale",
+         WHERE track_id IN (
+             SELECT id FROM tracks
+             WHERE car_id = $1
+               -- The snapshots TRACK_POINT_AGGREGATE reads (with a `cars` fallback).
+               AND (fuel_class_snapshot IS NULL
+                    OR stoich_afr_snapshot IS NULL OR density_gl_snapshot IS NULL
+                    OR displacement_l_snapshot IS NULL OR ve_snapshot IS NULL)
+         ) AND NOT stale",
     )
     .bind(car_id)
     .execute(pool)

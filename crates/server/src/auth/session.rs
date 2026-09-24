@@ -56,13 +56,39 @@ pub fn should_touch_last_seen(
     now >= last_seen + Duration::seconds(60)
 }
 
+/// Public id of a session: the SHA-256 of its cookie token.
+///
+/// `sessions.id` stores this, never the token itself. It is what the sessions list,
+/// the revoke URL and the audit log carry, so none of them hands out a working
+/// cookie, and neither does a leaked database backup or log file.
+pub fn session_public_id(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// Create a session and set its cookie. Returns the session's public id (see
+/// [`session_public_id`]); the token only ever travels in the cookie.
 pub async fn create_session(
     state: &AppState,
     jar: CookieJar,
     user_id: Uuid,
     meta: NewSessionMeta<'_>,
 ) -> AppResult<(CookieJar, String)> {
-    let session_id = generate_session_id();
+    // Signing in again from a browser that still holds a session replaces it,
+    // rather than leaving the old row to linger until it expires.
+    if let Some(old) = jar
+        .get(SESSION_COOKIE)
+        .map(|c| c.value())
+        .filter(|v| !v.is_empty())
+    {
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(session_public_id(old))
+            .execute(&state.pool)
+            .await?;
+    }
+
+    let token = generate_session_id();
+    let session_id = session_public_id(&token);
     let now = Utc::now();
     let expires_at = now + Duration::days(state.config.session_absolute_days);
 
@@ -82,13 +108,14 @@ pub async fn create_session(
     .await?;
 
     let cookie = build_session_cookie(
-        &session_id,
+        &token,
         state.config.public_base_url.starts_with("https"),
         TimeDuration::days(state.config.session_absolute_days),
     );
     Ok((jar.add(cookie), session_id))
 }
 
+/// Delete a session by its public id and clear the cookie.
 pub async fn destroy_session(
     state: &AppState,
     jar: &CookieJar,
@@ -147,10 +174,11 @@ pub async fn revoke_all_sessions(pool: &sqlx::PgPool, user_id: Uuid) -> AppResul
     Ok(res.rows_affected())
 }
 
-pub async fn load_session_user(
-    state: &AppState,
-    session_id: &str,
-) -> AppResult<Option<SessionUser>> {
+/// Resolve the session cookie `token` to its user, expiring it if it is idle or
+/// past its absolute lifetime.
+pub async fn load_session_user(state: &AppState, token: &str) -> AppResult<Option<SessionUser>> {
+    let public_id = session_public_id(token);
+    let session_id = public_id.as_str();
     let row = sqlx::query_as::<_, SessionRow>(
         r#"
         SELECT s.id AS session_id, u.id, u.email, u.name, u.avatar_url, u.unit_system, s.expires_at, s.last_seen_at

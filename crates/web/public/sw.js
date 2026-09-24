@@ -1,8 +1,15 @@
 /* Car Tracking — light shell service worker.
  * Caches static assets on successful fetch; never treats /api as offline truth.
- * Bump CACHE_VERSION when changing SW logic so clients pick up a new worker.
+ *
+ * BUILD_ID is replaced per build by the post_build hook in crates/web/Trunk.toml,
+ * so each deploy ships a new worker whose activate step drops the previous cache.
+ * Without the hook (e.g. a hand-copied dist) the placeholder stays and the
+ * activate-time prune below still evicts hashed assets the live index no longer
+ * references. Bump SW_LOGIC_VERSION when changing this file's logic.
  */
-const CACHE_VERSION = 'ctp-shell-v1';
+const SW_LOGIC_VERSION = 'v2';
+const BUILD_ID = '__CTP_BUILD_ID__';
+const CACHE_VERSION = `ctp-shell-${SW_LOGIC_VERSION}-${BUILD_ID}`;
 const SHELL_CACHE = CACHE_VERSION;
 
 const PRECACHE_URLS = [
@@ -40,6 +47,42 @@ self.addEventListener('install', (event) => {
   );
 });
 
+/**
+ * Trunk output names carry a content hash (`web-1a2b3c4d5e6f7a8b.js`, `..._bg.wasm`,
+ * `style-<hash>.css`), and wasm-bindgen snippets live under a hashed directory
+ * (`/snippets/web-<hash>/inline0.js`).
+ */
+function isHashedAsset(pathname) {
+  return pathname.startsWith('/snippets/') || /-[0-9a-f]{12,}(_bg)?\.(js|wasm|css)$/.test(pathname);
+}
+
+/**
+ * Evict hashed assets the live index.html no longer references. Each deploy adds a
+ * new web-<hash>.js / _bg.wasm pair; under an unchanged cache name they piled up
+ * forever. Best effort: offline or a failed fetch leaves the cache as it is.
+ */
+async function pruneStaleHashedAssets() {
+  let html;
+  try {
+    const res = await fetch('/', { cache: 'no-store' });
+    if (!res.ok) return;
+    html = await res.text();
+  } catch (_) {
+    return;
+  }
+  const cache = await caches.open(SHELL_CACHE);
+  const requests = await cache.keys();
+  await Promise.all(
+    requests.map((req) => {
+      const path = new URL(req.url).pathname;
+      if (isHashedAsset(path) && !html.includes(path)) {
+        return cache.delete(req);
+      }
+      return null;
+    })
+  );
+}
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
@@ -47,6 +90,8 @@ self.addEventListener('activate', (event) => {
       .then((keys) =>
         Promise.all(keys.filter((k) => k !== SHELL_CACHE).map((k) => caches.delete(k)))
       )
+      .then(() => pruneStaleHashedAssets())
+      .catch(() => {})
       .then(() => self.clients.claim())
   );
 });
@@ -140,7 +185,28 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Same-origin static: stale-while-revalidate style (cache then network update).
+  // Hashed build output never changes under its name: cache first, no revalidation.
+  if (isHashedAsset(url.pathname)) {
+    event.respondWith(
+      caches.open(SHELL_CACHE).then(async (cache) => {
+        const cached = await cache.match(request);
+        if (cached) return cached;
+        try {
+          const response = await fetch(request);
+          if (response && response.ok) {
+            cache.put(request, response.clone()).catch(() => {});
+          }
+          return response;
+        } catch (_) {
+          return new Response('Offline', { status: 503, statusText: 'Offline' });
+        }
+      })
+    );
+    return;
+  }
+
+  // Unhashed same-origin static (/vendor, icons, fonts, sw-adjacent files):
+  // stale-while-revalidate — serve the cached copy, refresh it in the background.
   if (isStaticAsset(url)) {
     event.respondWith(
       caches.open(SHELL_CACHE).then(async (cache) => {
@@ -163,4 +229,43 @@ self.addEventListener('fetch', (event) => {
       })
     );
   }
+});
+
+// Web Push: the server (crates/server/src/notifications.rs) sends
+// {id, kind, title, body, url}. Show it, and open `url` when clicked.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (_) {
+    data = { title: event.data ? event.data.text() : '' };
+  }
+  const title = data.title || 'Car Tracking';
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: data.body || '',
+      icon: '/icons/icon-192.png',
+      badge: '/icons/favicon-48.png',
+      tag: data.kind || undefined,
+      data: { url: data.url || '/app', id: data.id || null },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || '/app';
+  // Only in-app paths; a payload must not be able to open another origin.
+  const target = url.startsWith('/') && !url.startsWith('//') ? url : '/app';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
+      for (const w of wins) {
+        if (new URL(w.url).origin === self.location.origin && 'focus' in w) {
+          w.navigate(target);
+          return w.focus();
+        }
+      }
+      return self.clients.openWindow(target);
+    })
+  );
 });
