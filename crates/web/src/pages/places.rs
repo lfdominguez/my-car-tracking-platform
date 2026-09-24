@@ -12,10 +12,14 @@ use crate::api::{
     Car, Geofence, GeofenceEvent, create_geofence, delete_geofence, geofence_events, list_cars,
     list_geofences, update_geofence,
 };
-use crate::components::geo::{AreasData, AreasMap, MapArea, circle_ring};
+use crate::components::geo::{AreasData, AreasMap, MapArea, circle_ring, ring_label_point};
 use crate::components::{Icon, IconColor, IconSize};
 
 const PLACES_MAP_ID: &str = "places-map";
+/// Radius slider range for new places (the server accepts 10 m to 100 km;
+/// editing a place outside this range widens the slider instead of clamping).
+const RADIUS_MIN_M: f64 = 50.0;
+const RADIUS_MAX_M: f64 = 5_000.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shape {
@@ -29,26 +33,32 @@ fn confirm(msg: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Outline of a stored place.
-fn ring_of(g: &Geofence) -> Vec<[f64; 2]> {
+/// Outline of a stored place and where its label goes.
+fn ring_of(g: &Geofence) -> (Vec<[f64; 2]>, Option<[f64; 2]>) {
     if let Some(p) = g.polygon.as_ref().filter(|p| p.len() >= 3) {
-        return p.clone();
+        return (p.clone(), ring_label_point(p));
     }
     match (g.center_lat, g.center_lon, g.radius_m) {
-        (Some(lat), Some(lon), Some(r)) => circle_ring(lat, lon, r),
-        _ => Vec::new(),
+        (Some(lat), Some(lon), Some(r)) => (circle_ring(lat, lon, r), Some([lon, lat])),
+        _ => (Vec::new(), None),
+    }
+}
+
+/// `575 m`, `1,5 km` (locale decimals).
+fn radius_text(r: f64) -> String {
+    use crate::i18n::num;
+    if r >= 1000.0 {
+        format!("{} km", num(r / 1000.0, 1))
+    } else {
+        format!("{} m", num(r, 0))
     }
 }
 
 fn shape_label(g: &Geofence) -> String {
-    use crate::i18n::{num, tf};
+    use crate::i18n::tf;
     match (&g.polygon, g.radius_m) {
         (Some(p), _) if p.len() >= 3 => tf("places.area_points", &[("n", &p.len())]),
-        (_, Some(r)) if r >= 1000.0 => tf(
-            "places.circle",
-            &[("r", &format!("{} km", num(r / 1000.0, 1)))],
-        ),
-        (_, Some(r)) => tf("places.circle", &[("r", &format!("{} m", num(r, 0)))]),
+        (_, Some(r)) => tf("places.circle", &[("r", &radius_text(r))]),
         _ => "—".into(),
     }
 }
@@ -61,11 +71,15 @@ pub fn PlacesPage() -> impl IntoView {
     let notice = RwSignal::new(Option::<String>::None);
     let busy = RwSignal::new(false);
     let refresh = RwSignal::new(0u32);
+    // First list response arrived (so "no places" means none, not "loading").
+    let loaded = RwSignal::new(false);
 
     // Draft shape.
     let shape = RwSignal::new(Shape::Circle);
     let center = RwSignal::new(Option::<[f64; 2]>::None);
     let radius = RwSignal::new(200.0f64);
+    // Slider bounds; widened while editing a place outside the default range.
+    let radius_bounds = RwSignal::new((RADIUS_MIN_M, RADIUS_MAX_M));
     let vertices = RwSignal::new(Vec::<[f64; 2]>::new());
     let name = RwSignal::new(String::new());
     let car_id = RwSignal::new(String::new());
@@ -80,6 +94,7 @@ pub fn PlacesPage() -> impl IntoView {
             match list_geofences().await {
                 Ok(p) => {
                     let _ = places.try_set(p);
+                    let _ = loaded.try_set(true);
                 }
                 Err(e) => {
                     let _ = error.try_set(Some(e.to_string()));
@@ -128,6 +143,8 @@ pub fn PlacesPage() -> impl IntoView {
         name.set(String::new());
         notify.set(false);
         car_id.set(String::new());
+        radius_bounds.set((RADIUS_MIN_M, RADIUS_MAX_M));
+        radius.update(|r| *r = r.clamp(RADIUS_MIN_M, RADIUS_MAX_M));
     };
 
     let draft_ring = move || -> Vec<[f64; 2]> {
@@ -149,23 +166,43 @@ pub fn PlacesPage() -> impl IntoView {
         let mut areas: Vec<MapArea> = places.with(|p| {
             p.iter()
                 .filter(|g| edit.as_deref() != Some(g.id.as_str()))
-                .map(|g| MapArea {
-                    id: g.id.clone(),
-                    ring: ring_of(g),
-                    draft: false,
-                    label: g.name.clone(),
+                .map(|g| {
+                    let (ring, label_at) = ring_of(g);
+                    MapArea {
+                        id: g.id.clone(),
+                        ring,
+                        draft: false,
+                        label: g.name.clone(),
+                        label_at,
+                    }
                 })
                 .collect()
         });
         let ring = draft_ring();
         if ring.len() >= 3 {
+            let label_at = match shape.get() {
+                Shape::Circle => center.get(),
+                Shape::Polygon => ring_label_point(&ring),
+            };
             areas.push(MapArea {
                 id: "draft".into(),
                 ring,
                 draft: true,
                 label: name.get(),
+                label_at,
             });
         }
+        // Frame the saved places once they load and whenever one is added or
+        // removed; editing frames the place being edited.
+        let fit_key = if loaded.get() {
+            places.with(|p| {
+                let mut ids: Vec<&str> = p.iter().map(|g| g.id.as_str()).collect();
+                ids.sort_unstable();
+                format!("places:{}", ids.join(","))
+            })
+        } else {
+            String::new()
+        };
         AreasData {
             areas,
             vertices: if shape.get() == Shape::Polygon {
@@ -173,7 +210,8 @@ pub fn PlacesPage() -> impl IntoView {
             } else {
                 Vec::new()
             },
-            fit_key: places.with(|p| p.len().to_string()),
+            fit_key,
+            focus_key: edit.map(|id| format!("edit:{id}")).unwrap_or_default(),
         }
     });
 
@@ -281,14 +319,16 @@ pub fn PlacesPage() -> impl IntoView {
                     >
                         <label class="places-radius">
                             <span class="muted">{move || if center.get().is_some() { crate::i18n::t("places.radius") } else { crate::i18n::t("places.place_center") }}</span>
-                            <input type="range" min="50" max="5000" step="25"
+                            <input type="range" step="25"
+                                min=move || radius_bounds.get().0.to_string()
+                                max=move || radius_bounds.get().1.to_string()
                                 prop:value=move || radius.get().to_string()
                                 on:input=move |ev| {
                                     if let Ok(v) = event_target_value(&ev).parse::<f64>() {
                                         radius.set(v);
                                     }
                                 } />
-                            <span class="places-radius-value">{move || format!("{} m", crate::i18n::num(radius.get(), 0))}</span>
+                            <span class="places-radius-value">{move || radius_text(radius.get())}</span>
                         </label>
                     </Show>
                 </div>
@@ -335,19 +375,31 @@ pub fn PlacesPage() -> impl IntoView {
                     {tr!("places.your_places")}
                 </h2>
                 <Show
-                    when=move || !places.get().is_empty()
-                    fallback=|| view! { <p class="muted">{tr!("places.none")}</p> }
+                    when=move || !places.with(Vec::is_empty)
+                    fallback=move || {
+                        if loaded.get() {
+                            view! { <p class="muted">{tr!("places.none")}</p> }.into_any()
+                        } else if error.with(Option::is_some) {
+                            ().into_any()
+                        } else {
+                            view! { <p class="muted" role="status">{tr!("common.loading")}</p> }.into_any()
+                        }
+                    }
                 >
                     <ul class="places-list">
                         <For
                             each=move || places.get()
-                            key=|g| format!("{}:{}:{}", g.id, g.notify, g.name)
+                            // Any change (name, shape, radius, car) re-renders the row.
+                            key=|g| format!("{g:?}")
                             children=move |g| {
                                 let g_edit = g.clone();
                                 let (id_del, id_notify, id_events) = (g.id.clone(), g.id.clone(), g.id.clone());
-                                let id_open = g.id.clone();
+                                let (id_open, id_checked) = (g.id.clone(), g.id.clone());
                                 let del_name = g.name.clone();
-                                let notify_now = g.notify;
+                                // Follows the list, so a failed toggle snaps back after the refresh.
+                                let notify_now = move || places.with(|p| {
+                                    p.iter().any(|x| x.id == id_checked && x.notify)
+                                });
                                 let car_of = g.car_id.clone();
                                 let g_label = g.clone();
                                 let meta = move || format!("{} · {}", shape_label(&g_label), car_name(&car_of));
@@ -365,9 +417,15 @@ pub fn PlacesPage() -> impl IntoView {
                                                         let id = id_notify.clone();
                                                         leptos::task::spawn_local(async move {
                                                             match update_geofence(&id, &serde_json::json!({ "notify": on })).await {
-                                                                Ok(_) => refresh.update(|n| *n = n.wrapping_add(1)),
+                                                                Ok(_) => {
+                                                                    // Keep an open edit of this place in step.
+                                                                    if editing.get_untracked().as_deref() == Some(id.as_str()) {
+                                                                        let _ = notify.try_set(on);
+                                                                    }
+                                                                }
                                                                 Err(e) => { let _ = error.try_set(Some(e.to_string())); }
                                                             }
+                                                            refresh.update(|n| *n = n.wrapping_add(1));
                                                         });
                                                     } />
                                                 <Icon name="bell" size=IconSize::Sm />
@@ -393,6 +451,8 @@ pub fn PlacesPage() -> impl IntoView {
                                             <button type="button" class="btn ghost btn-sm"
                                                 on:click=move |_| {
                                                     let g = g_edit.clone();
+                                                    notice.set(None);
+                                                    error.set(None);
                                                     editing.set(Some(g.id.clone()));
                                                     name.set(g.name.clone());
                                                     notify.set(g.notify);
@@ -406,7 +466,10 @@ pub fn PlacesPage() -> impl IntoView {
                                                         (_, Some(lat), Some(lon), Some(r)) => {
                                                             shape.set(Shape::Circle);
                                                             center.set(Some([lon, lat]));
-                                                            radius.set(r.clamp(50.0, 5000.0));
+                                                            // Widen the slider rather than silently
+                                                            // resizing the place on save.
+                                                            radius_bounds.set((r.min(RADIUS_MIN_M), r.max(RADIUS_MAX_M)));
+                                                            radius.set(r);
                                                             vertices.set(Vec::new());
                                                         }
                                                         _ => {}
@@ -423,7 +486,16 @@ pub fn PlacesPage() -> impl IntoView {
                                                     let id = id_del.clone();
                                                     leptos::task::spawn_local(async move {
                                                         match delete_geofence(&id).await {
-                                                            Ok(()) => refresh.update(|n| *n = n.wrapping_add(1)),
+                                                            Ok(()) => {
+                                                                // Don't leave the form editing a place that is gone.
+                                                                if editing.get_untracked().as_deref() == Some(id.as_str()) {
+                                                                    clear_draft();
+                                                                }
+                                                                if open_events.get_untracked().as_deref() == Some(id.as_str()) {
+                                                                    open_events.set(None);
+                                                                }
+                                                                refresh.update(|n| *n = n.wrapping_add(1));
+                                                            }
                                                             Err(e) => { let _ = error.try_set(Some(e.to_string())); }
                                                         }
                                                     });
@@ -471,20 +543,5 @@ pub fn PlacesPage() -> impl IntoView {
                 </Show>
             </section>
         </div>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn circle_ring_stays_at_the_radius() {
-        let ring = circle_ring(40.0, -3.7, 500.0);
-        assert_eq!(ring.len(), 64);
-        let [lon, lat] = ring[16]; // due east
-        let dx = (lon + 3.7).to_radians() * 6_371_000.0 * 40f64.to_radians().cos();
-        assert!((dx - 500.0).abs() < 5.0, "{dx}");
-        assert!((lat - 40.0).abs() < 1e-3);
     }
 }

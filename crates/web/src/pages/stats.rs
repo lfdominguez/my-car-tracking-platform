@@ -195,7 +195,7 @@ pub fn StatsPage() -> impl IntoView {
             .unwrap_or_default(),
     );
     let to = RwSignal::new(String::new());
-    let car_id = RwSignal::new(crate::default_car::load_default_car_id().unwrap_or_default());
+    let car_id = crate::default_car::car_filter(None);
     let cars = RwSignal::new(Vec::<Car>::new());
     let rows = RwSignal::new(Vec::<PeriodStats>::new());
     let loading = RwSignal::new(true);

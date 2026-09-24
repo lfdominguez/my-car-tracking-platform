@@ -45,6 +45,9 @@ pub struct Me {
     /// `en`, `es`, or unset (follow the browser).
     #[serde(default)]
     pub locale: Option<String>,
+    /// Car preselected in filters and on the live map; unset means all cars.
+    #[serde(default)]
+    pub default_car_id: Option<String>,
 }
 
 fn default_timezone() -> String {
@@ -605,8 +608,13 @@ pub async fn get_public_config() -> Result<PublicConfig, ApiError> {
     send_json(Request::get("/api/public-config")).await
 }
 
-pub async fn get_dashboard() -> Result<DashboardSummary, ApiError> {
-    send_json(Request::get("/api/dashboard/summary")).await
+/// Totals and car cards, limited to `car_id` when given.
+pub async fn get_dashboard(car_id: Option<&str>) -> Result<DashboardSummary, ApiError> {
+    let url = match car_id {
+        Some(id) => format!("/api/dashboard/summary?car_id={id}"),
+        None => "/api/dashboard/summary".to_string(),
+    };
+    send_json(Request::get(&url)).await
 }
 
 pub async fn list_cars() -> Result<Vec<Car>, ApiError> {

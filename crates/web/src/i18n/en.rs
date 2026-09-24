@@ -341,6 +341,12 @@ pub const TABLE: &[(&str, &str)] = &[
     ),
     ("cars.default_set", "Default car ✓"),
     ("cars.set_default", "Set as default"),
+    ("cars.default_badge", "Default"),
+    ("cars.default_toggle_aria", "Default car: {name}"),
+    (
+        "cars.default_clear_hint",
+        "Default car. Click to show all cars again",
+    ),
     ("cars.devices_qr", "Devices & QR"),
     ("cars.create_token", "Create device token"),
     ("cars.token_once", "Token (copy now — shown once):"),
@@ -1130,7 +1136,13 @@ pub const TABLE: &[(&str, &str)] = &[
     ("routes.none_cached", "None cached yet"),
     (
         "routes.legend_hint",
-        "Hover a line for the name. Solid = paths you drove · dashed magenta = router estimates.",
+        "Hover a line for the name. Click a variant here, in the table or on the map to highlight it. Solid = paths you drove · dashed magenta = router estimates.",
+    ),
+    ("routes.show_all", "Show all variants"),
+    ("routes.highlight_variant", "Highlight {label} on the map"),
+    (
+        "routes.variants_caption",
+        "Your path variants. Select a row to highlight its line on the map.",
     ),
     ("routes.path_variants", "Path variants"),
     ("routes.variant", "Variant"),

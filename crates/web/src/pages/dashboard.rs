@@ -2,8 +2,8 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 
 use crate::api::{
-    DashboardCarSummary, DashboardSummary, Trip, TripListOpts, get_dashboard, list_dtcs,
-    list_trips, maintenance_due,
+    Car, DashboardCarSummary, DashboardSummary, Trip, TripListOpts, get_dashboard, list_cars,
+    list_dtcs, list_trips, maintenance_due,
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::i18n::{num, t, tf, tp};
@@ -24,21 +24,53 @@ pub fn DashboardPage() -> impl IntoView {
     let summary = RwSignal::new(Option::<DashboardSummary>::None);
     let trips = RwSignal::new(Vec::<Trip>::new());
     let error = RwSignal::new(Option::<String>::None);
+    // Every section below follows this: the default car, or all cars.
+    let car_id = crate::default_car::car_filter(None);
+    let cars = RwSignal::new(Vec::<Car>::new());
+    // Drops answers for a car the user has since switched away from.
+    let fetch_gen = StoredValue::new(0u32);
+
+    leptos::task::spawn_local(async move {
+        if let Ok(c) = list_cars().await {
+            let _ = cars.try_set(c);
+        }
+    });
 
     Effect::new(move |_| {
+        let car = car_id.get();
+        let car = (!car.is_empty()).then_some(car);
+        fetch_gen.update_value(|g| *g += 1);
+        let this_gen = fetch_gen.get_value();
+        let current = move || fetch_gen.try_get_value() == Some(this_gen);
         leptos::task::spawn_local(async move {
-            match get_dashboard().await {
-                Ok(s) => summary.set(Some(s)),
-                Err(e) => error.set(Some(e.to_string())),
+            let s = get_dashboard(car.as_deref()).await;
+            if !current() {
+                return;
             }
-            match list_trips(TripListOpts {
+            match s {
+                Ok(s) => {
+                    let _ = summary.try_set(Some(s));
+                }
+                Err(e) => {
+                    let _ = error.try_set(Some(e.to_string()));
+                }
+            }
+            let t = list_trips(TripListOpts {
+                car_id: car,
                 limit: Some(10),
                 ..Default::default()
             })
-            .await
-            {
-                Ok(t) => trips.set(t),
-                Err(e) => error.set(Some(e.to_string())),
+            .await;
+            if !current() {
+                return;
+            }
+            match t {
+                Ok(t) => {
+                    let _ = trips.try_set(t);
+                }
+                Err(e) => {
+                    let _ = error.try_set(Some(e.to_string()));
+                }
             }
         });
     });
@@ -52,6 +84,24 @@ pub fn DashboardPage() -> impl IntoView {
                 </h1>
                 <p class="muted">{tr!("dash.lead")}</p>
             </div>
+            <Show when=move || { cars.with(|c| c.len() > 1) }>
+                <select
+                    class="trips-car-select"
+                    aria-label=tr!("common.car")
+                    prop:value=move || {
+                        cars.track();
+                        car_id.get()
+                    }
+                    on:change=move |ev| car_id.set(event_target_value(&ev))
+                >
+                    <option value="">{tr!("common.all_cars")}</option>
+                    <For
+                        each=move || cars.get()
+                        key=|c| c.id.clone()
+                        children=move |c| view! { <option value=c.id.clone()>{c.name.clone()}</option> }
+                    />
+                </select>
+            </Show>
         </div>
 
         <Show when=move || error.get().is_some()>
@@ -112,13 +162,12 @@ pub fn DashboardPage() -> impl IntoView {
             </Show>
         </section>
 
-        <LiveCard cars=Signal::derive(move || {
-            summary.with(|s| {
-                s.as_ref()
-                    .map(|s| s.cars.iter().map(|c| (c.car_id.clone(), c.name.clone())).collect())
-                    .unwrap_or_default()
+        <LiveCard
+            cars=Signal::derive(move || {
+                cars.with(|c| c.iter().map(|c| (c.id.clone(), c.name.clone())).collect())
             })
-        }) />
+            car_filter=car_id
+        />
 
         <Show
             when=move || summary.get().is_some() || error.get().is_some()

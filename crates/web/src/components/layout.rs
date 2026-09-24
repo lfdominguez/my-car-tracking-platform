@@ -14,6 +14,7 @@ pub fn AppLayout() -> impl IntoView {
     let me = RwSignal::new(Option::<Me>::None);
     let unit_prefs: UnitPrefsSignal = RwSignal::new(UnitPrefs::default());
     provide_context(unit_prefs);
+    let default_car = crate::default_car::provide_default_car();
     let error = RwSignal::new(Option::<String>::None);
     let avatar_failed = RwSignal::new(false);
     let nav_open = RwSignal::new(false);
@@ -54,6 +55,7 @@ pub fn AppLayout() -> impl IntoView {
                 Ok(user) => {
                     avatar_failed.set(false);
                     unit_prefs.set(UnitPrefs::from_me(&user));
+                    crate::default_car::sync_from_server(default_car, user.default_car_id.clone());
                     crate::i18n::set_locale(crate::i18n::resolve(user.locale.as_deref()));
                     // Accounts start on UTC; adopt the browser's zone once so
                     // statistics and rush hours bucket in local time (#60). Only

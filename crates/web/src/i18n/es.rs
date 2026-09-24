@@ -359,6 +359,15 @@ pub const TABLE: &[(&str, &str)] = &[
     ),
     ("cars.default_set", "Vehículo predeterminado ✓"),
     ("cars.set_default", "Establecer como predeterminado"),
+    ("cars.default_badge", "Predeterminado"),
+    (
+        "cars.default_toggle_aria",
+        "Vehículo predeterminado: {name}",
+    ),
+    (
+        "cars.default_clear_hint",
+        "Vehículo predeterminado. Haz clic para volver a ver todos",
+    ),
     ("cars.devices_qr", "Dispositivos y QR"),
     ("cars.create_token", "Crear token de dispositivo"),
     (
@@ -1220,7 +1229,13 @@ pub const TABLE: &[(&str, &str)] = &[
     ("routes.none_cached", "Aún no hay ninguna guardada"),
     (
         "routes.legend_hint",
-        "Pasa el cursor por una línea para ver su nombre. Continua = trayectos que condujiste · discontinua magenta = estimaciones del enrutador.",
+        "Pasa el cursor por una línea para ver su nombre. Haz clic en una variante aquí, en la tabla o en el mapa para resaltarla. Continua = trayectos que condujiste · discontinua magenta = estimaciones del enrutador.",
+    ),
+    ("routes.show_all", "Mostrar todas las variantes"),
+    ("routes.highlight_variant", "Resaltar {label} en el mapa"),
+    (
+        "routes.variants_caption",
+        "Tus variantes de trayecto. Selecciona una fila para resaltar su línea en el mapa.",
     ),
     ("routes.path_variants", "Variantes de trayecto"),
     ("routes.variant", "Variante"),

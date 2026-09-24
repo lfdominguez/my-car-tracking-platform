@@ -56,6 +56,9 @@ pub struct MeResponse {
     pub timezone: String,
     /// UI language; `None` follows the browser.
     pub locale: Option<String>,
+    /// Car the web app preselects in filters and on the live map. Only reported
+    /// while the user can still read it (a revoked share hides it).
+    pub default_car_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +73,8 @@ pub struct UpdateMeRequest {
     pub timezone: Option<String>,
     /// `en`, `es`, or empty to follow the browser.
     pub locale: Option<String>,
+    /// A car id the user can read, or empty to clear.
+    pub default_car_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -137,7 +142,13 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
                AND m.revoked_at IS NULL ORDER BY m.created_at DESC LIMIT 1) AS mcp_token_hint,
             unit_system,
             timezone,
-            locale
+            locale,
+            (SELECT c.id FROM cars c
+              WHERE c.id = users.default_car_id
+                AND (c.owner_user_id = users.id
+                     OR EXISTS (SELECT 1 FROM car_shares cs
+                                 WHERE cs.car_id = c.id AND cs.user_id = users.id))
+            ) AS default_car_id
         FROM users
         WHERE id = $1
         "#,
@@ -165,6 +176,7 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
         mcp_token_hint: row.mcp_token_hint,
         timezone: row.timezone,
         locale: row.locale,
+        default_car_id: row.default_car_id,
     })
 }
 
@@ -180,6 +192,7 @@ struct MeOpenRouterRow {
     unit_system: String,
     timezone: String,
     locale: Option<String>,
+    default_car_id: Option<Uuid>,
 }
 
 async fn me(State(state): State<AppState>, user: AuthUser) -> AppResult<Json<MeResponse>> {
@@ -199,6 +212,7 @@ async fn update_me(
         && body.ors_api_key.is_none()
         && body.timezone.is_none()
         && body.locale.is_none()
+        && body.default_car_id.is_none()
     {
         return Ok(Json(load_me(&state, &user).await?));
     }
@@ -253,6 +267,25 @@ async fn update_me(
         sqlx::query("UPDATE users SET locale = $2 WHERE id = $1")
             .bind(user.id)
             .bind(locale)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    if let Some(raw) = body.default_car_id.as_deref() {
+        let car_id = match raw.trim() {
+            "" => None,
+            id => {
+                let id = Uuid::parse_str(id)
+                    .map_err(|_| AppError::BadRequest("default_car_id must be a car id".into()))?;
+                // Any car the user may read, own or shared; the same 404 as
+                // everywhere else for one they can't.
+                crate::shares::access::can_read_car(&state.pool, user.id, id).await?;
+                Some(id)
+            }
+        };
+        sqlx::query("UPDATE users SET default_car_id = $2 WHERE id = $1")
+            .bind(user.id)
+            .bind(car_id)
             .execute(&state.pool)
             .await?;
     }
