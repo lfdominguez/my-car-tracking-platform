@@ -6,7 +6,7 @@ use crate::api::{
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{
-    UnitPrefs, avg_economy, fmt_distance, fmt_distance_value, fmt_economy, fmt_fuel,
+    UnitPrefsSignal, avg_economy, fmt_distance, fmt_distance_value, fmt_economy, fmt_fuel,
     fmt_odometer_delta, use_unit_prefs,
 };
 
@@ -91,7 +91,9 @@ pub fn DashboardPage() -> impl IntoView {
                         <div class="card empty-state">
                             <Icon name="car" size=IconSize::Xl color=IconColor::Device />
                             <div>"No cars yet — add one under Cars, then track from the phone."</div>
-                            <A href="/app/cars"><button type="button" class="btn primary">"Manage cars"</button></A>
+                            // A link styled as a button, not a <button> inside <a>
+                            // (nested interactive content, two tab stops).
+                            <A href="/app/cars"><span class="btn primary">"Manage cars"</span></A>
                         </div>
                     }
                 >
@@ -104,10 +106,7 @@ pub fn DashboardPage() -> impl IntoView {
                                     .unwrap_or_default()
                             }
                             key=|c| c.car_id.clone()
-                            children=move |car| {
-                                let p = prefs.get();
-                                view! { <DashCarCard car=car prefs=p /> }
-                            }
+                            children=move |car| view! { <DashCarCard car=car prefs=prefs /> }
                         />
                     </div>
                 </Show>
@@ -198,17 +197,18 @@ pub fn DashboardPage() -> impl IntoView {
                             key=|t| t.id.clone()
                             children=move |t| {
                                 let id = t.id.clone();
-                                let p = prefs.get();
-                                let dist = fmt_distance(t.distance_m, &p);
-                                let fuel = fmt_fuel(t.fuel_used_l, &p);
-                                let moving = fmt_economy(
-                                    avg_economy(
-                                        t.fuel_used_moving_l,
-                                        t.economy_distance_m.or(t.distance_m),
-                                        &p,
-                                    ),
-                                    &p,
-                                );
+                                // `For` children run once per row, so every unit-dependent
+                                // cell reads `prefs` inside its own closure: rows rendered
+                                // before `/api/me` resolves must re-format when it does.
+                                let (distance_m, fuel_l) = (t.distance_m, t.fuel_used_l);
+                                let dist = move || fmt_distance(distance_m, &prefs.get());
+                                let fuel = move || fmt_fuel(fuel_l, &prefs.get());
+                                let (moving_l, economy_m) =
+                                    (t.fuel_used_moving_l, t.economy_distance_m.or(t.distance_m));
+                                let moving = move || {
+                                    let p = prefs.get();
+                                    fmt_economy(avg_economy(moving_l, economy_m, &p), &p)
+                                };
                                 view! {
                                     <tr>
                                         <td data-label="Car">{t.car_name.clone()}</td>
@@ -282,12 +282,13 @@ fn RadialGauge(pct: Option<f64>, label: &'static str, icon: &'static str) -> imp
 }
 
 #[component]
-fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefs) -> impl IntoView {
+fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoView {
     let id = car.car_id.clone();
     let href = format!("/app/trips?car_id={id}");
     let photo = crate::api::car_photo_url(&id, None);
     let has_photo = car.photo_path.is_some();
-    let odo = fmt_odometer_delta(car.odometer, &prefs);
+    let odometer = car.odometer;
+    let odo = move || fmt_odometer_delta(odometer, &prefs.get());
 
     // Full-electric cars show HV battery state of charge; everything else
     // (gasoline/diesel/hybrid) shows the liquid-fuel tank reading.
@@ -304,7 +305,8 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefs) -> impl IntoView {
         "gas-pump"
     };
 
-    let tracked = fmt_distance(Some(car.tracked_distance_m), &prefs);
+    let tracked_m = car.tracked_distance_m;
+    let tracked = move || fmt_distance(Some(tracked_m), &prefs.get());
     let trips_label = if car.trip_count == 1 {
         "1 trip".into()
     } else {

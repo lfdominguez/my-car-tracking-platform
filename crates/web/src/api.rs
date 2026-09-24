@@ -127,6 +127,9 @@ pub struct Trip {
     pub finished_at: Option<String>,
     pub finished: bool,
     pub fuel_type_snapshot: String,
+    /// GASOLINE / DIESEL / HYBRID / FULL_ELECTRIC at the time of the trip.
+    #[serde(default)]
+    pub fuel_class_snapshot: String,
     pub point_count: i64,
     pub distance_m: Option<f64>,
     #[serde(default)]
@@ -323,39 +326,136 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// sessionStorage key carrying the page to return to after signing in again.
+///
+/// The Google OAuth callback always lands on `/app` (server side), so `?next=`
+/// cannot ride through it; the login page parks it here and the app shell picks
+/// it up once `/api/me` succeeds.
+const LOGIN_NEXT_KEY: &str = "ctp-login-next";
+
+/// Only same-origin app paths are honoured, so `?next=` cannot become an open
+/// redirect (`//evil.example`, `https://…`, `/\evil`).
+fn safe_next(next: &str) -> Option<&str> {
+    (next.starts_with("/app") && !next.contains("//") && !next.contains('\\')).then_some(next)
+}
+
+/// Remember where to go after signing in (from the login page's `?next=`).
+pub fn remember_login_next(next: &str) {
+    let Some(next) = safe_next(next) else {
+        return;
+    };
+    if let Some(Ok(Some(storage))) = web_sys::window().map(|w| w.session_storage()) {
+        let _ = storage.set_item(LOGIN_NEXT_KEY, next);
+    }
+}
+
+/// Take (and clear) the remembered post-login destination.
+pub fn take_login_next() -> Option<String> {
+    let storage = web_sys::window()?.session_storage().ok()??;
+    let next = storage.get_item(LOGIN_NEXT_KEY).ok()??;
+    let _ = storage.remove_item(LOGIN_NEXT_KEY);
+    safe_next(&next).map(str::to_string)
+}
+
+/// A 401 from any API call: the session is gone. Inside the app shell, send the
+/// user to `/login?next=<where they were>` once (several requests usually fail
+/// together); the landing and login pages probe `/api/me` themselves and handle a
+/// 401 as "not signed in", so they are left alone.
+fn unauthorized() -> ApiError {
+    static REDIRECTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if let Some(win) = web_sys::window() {
+        let loc = win.location();
+        let path = loc.pathname().unwrap_or_default();
+        if path.starts_with("/app") && !REDIRECTING.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let here = format!("{path}{}", loc.search().unwrap_or_default());
+            let next = String::from(js_sys::encode_uri_component(&here));
+            let _ = loc.set_href(&format!("/login?next={next}"));
+        }
+    }
+    ApiError::Unauthorized
+}
+
+/// Transport failure (offline, DNS, connection reset) before any HTTP status.
+fn network_error(e: gloo_net::Error) -> ApiError {
+    web_sys::console::warn_1(&format!("request failed: {e}").into());
+    ApiError::Message("Can't reach the server. Check your connection and try again.".into())
+}
+
+/// A body that did not parse as the expected JSON (usually a proxy error page).
+fn decode_error(e: gloo_net::Error) -> ApiError {
+    web_sys::console::warn_1(&format!("unexpected response body: {e}").into());
+    ApiError::Message("The server sent an unexpected response. Try again in a moment.".into())
+}
+
+/// User-facing text for a non-2xx response instead of the raw `"500: <body>"`.
+///
+/// 4xx responses keep the server's own `{"error": "..."}` message when it sent one:
+/// those are written for people (validation, "already in progress", missing API
+/// key). 5xx bodies are internal detail, so they go to the console and the user
+/// gets a generic retry message.
+fn status_error(status: u16, body: &str) -> ApiError {
+    let server_msg = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .or_else(|| v.get("message"))
+                .and_then(|m| m.as_str())
+                .map(|m| m.trim().to_string())
+        })
+        .filter(|m| !m.is_empty())
+        .or_else(|| {
+            // Plain-text error bodies are fine to show when short and not HTML.
+            let t = body.trim();
+            (!t.is_empty() && t.len() <= 200 && !t.starts_with('<')).then(|| t.to_string())
+        });
+    if status >= 500 {
+        web_sys::console::warn_1(&format!("server error {status}: {body}").into());
+        return ApiError::Message(
+            "Something went wrong on the server. Try again in a moment.".into(),
+        );
+    }
+    let fallback = match status {
+        403 => "You don't have access to that.",
+        404 => "Not found — it may have been deleted.",
+        408 => "The request timed out. Try again.",
+        409 => "That conflicts with a change made elsewhere. Reload and try again.",
+        413 => "That upload is too large.",
+        429 => "Too many requests — wait a moment and try again.",
+        _ => "The request could not be completed.",
+    };
+    ApiError::Message(match (status, server_msg) {
+        // Rate limits read the same whatever the server wording.
+        (429, _) => fallback.to_string(),
+        (_, Some(m)) => m,
+        (_, None) => fallback.to_string(),
+    })
+}
+
+/// Reject a failed response with a friendly [`ApiError`]; 401 also redirects.
+async fn check(resp: gloo_net::http::Response) -> Result<gloo_net::http::Response, ApiError> {
+    if resp.status() == 401 {
+        return Err(unauthorized());
+    }
+    if !resp.ok() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(status_error(resp.status(), &text));
+    }
+    Ok(resp)
+}
+
 async fn send_json<T: DeserializeOwned>(builder: RequestBuilder) -> Result<T, ApiError> {
     let resp = builder
         .credentials(web_sys::RequestCredentials::Include)
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
-    }
-    if !resp.ok() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
-    }
-    resp.json::<T>()
-        .await
-        .map_err(|e| ApiError::Message(e.to_string()))
+        .map_err(network_error)?;
+    check(resp).await?.json::<T>().await.map_err(decode_error)
 }
 
 async fn send_body_json<T: DeserializeOwned>(req: Request) -> Result<T, ApiError> {
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
-    }
-    if !resp.ok() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
-    }
-    resp.json::<T>()
-        .await
-        .map_err(|e| ApiError::Message(e.to_string()))
+    let resp = req.send().await.map_err(network_error)?;
+    check(resp).await?.json::<T>().await.map_err(decode_error)
 }
 
 fn with_creds(builder: RequestBuilder) -> RequestBuilder {
@@ -395,13 +495,13 @@ pub async fn revoke_mcp_token() -> Result<(), ApiError> {
     let resp = with_creds(Request::delete("/api/me/mcp-token"))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }
@@ -544,9 +644,9 @@ pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
     let resp = with_creds(Request::delete(&url))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if resp.status() == 404 {
         return Err(ApiError::Message("Trip not found".into()));
@@ -556,7 +656,7 @@ pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }
@@ -625,9 +725,9 @@ pub async fn revoke_device(car_id: &str, device_id: &str) -> Result<(), ApiError
     let resp = with_creds(Request::delete(&url))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if resp.status() == 404 {
         let text = resp.text().await.unwrap_or_default();
@@ -637,7 +737,7 @@ pub async fn revoke_device(car_id: &str, device_id: &str) -> Result<(), ApiError
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }
@@ -840,7 +940,7 @@ pub async fn logout() -> Result<(), ApiError> {
     let resp = with_creds(Request::post("/auth/logout"))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.ok() {
         Ok(())
     } else {
@@ -856,13 +956,13 @@ pub async fn revoke_session(id: &str) -> Result<(), ApiError> {
     let resp = with_creds(Request::delete(&format!("/api/me/sessions/{id}")))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }
@@ -1109,13 +1209,13 @@ pub async fn delete_chat_conversation(id: &str) -> Result<(), ApiError> {
     let resp = with_creds(Request::delete(&format!("/api/chat/conversations/{id}")))
         .send()
         .await
-        .map_err(|e| ApiError::Message(e.to_string()))?;
+        .map_err(network_error)?;
     if resp.status() == 401 {
-        return Err(ApiError::Unauthorized);
+        return Err(unauthorized());
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!("{}: {text}", resp.status())));
+        return Err(status_error(resp.status(), &text));
     }
     Ok(())
 }

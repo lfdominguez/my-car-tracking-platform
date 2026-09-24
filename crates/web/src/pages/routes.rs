@@ -80,10 +80,10 @@ pub fn RoutesPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             match list_cars().await {
                 Ok(list) => {
-                    if car_id.get_untracked().is_empty() {
-                        if let Some(c) = list.first() {
-                            car_id.set(c.id.clone());
-                        }
+                    if car_id.get_untracked().is_empty()
+                        && let Some(c) = list.first()
+                    {
+                        car_id.set(c.id.clone());
                     }
                     cars.set(list);
                 }
@@ -92,14 +92,25 @@ pub fn RoutesPage() -> impl IntoView {
         });
     });
 
+    // Bumped per car switch: a slow summary for the previous car must not land on
+    // top of the one now selected.
+    let fetch_gen = RwSignal::new(0u64);
     Effect::new(move |_| {
         let id = car_id.get();
         if id.is_empty() {
             return;
         }
+        let req = fetch_gen.get_untracked().wrapping_add(1);
+        fetch_gen.set(req);
+        summary.set(None);
+        message.set(None);
         error.set(None);
         leptos::task::spawn_local(async move {
-            match route_opt_summary(&id).await {
+            let result = route_opt_summary(&id).await;
+            if fetch_gen.try_get_untracked() != Some(req) {
+                return;
+            }
+            match result {
                 Ok(s) => summary.set(Some(s)),
                 Err(e) => {
                     summary.set(None);
@@ -110,7 +121,7 @@ pub fn RoutesPage() -> impl IntoView {
     });
 
     let recompute = move |_| {
-        let id = car_id.get();
+        let id = car_id.get_untracked();
         if id.is_empty() {
             return;
         }
@@ -118,14 +129,22 @@ pub fn RoutesPage() -> impl IntoView {
         message.set(None);
         error.set(None);
         leptos::task::spawn_local(async move {
+            let still_selected = || car_id.try_get_untracked().as_deref() == Some(id.as_str());
             match route_opt_recompute(&id).await {
-                Ok(r) => {
+                Ok(r) if still_selected() => {
                     message.set(Some(format!("Recomputed {} trips.", r.processed)));
-                    if let Ok(s) = route_opt_summary(&id).await {
+                    if let Ok(s) = route_opt_summary(&id).await
+                        && still_selected()
+                    {
                         summary.set(Some(s));
                     }
                 }
-                Err(e) => error.set(Some(e.to_string())),
+                Ok(_) => {}
+                Err(e) => {
+                    if still_selected() {
+                        error.set(Some(e.to_string()));
+                    }
+                }
             }
             busy.set(false);
         });
@@ -182,7 +201,7 @@ pub fn RoutesPage() -> impl IntoView {
                     </div>
                 }.into_any()
             } else {
-                view! { <></> }.into_any()
+                ().into_any()
             }
         }}
 
@@ -209,10 +228,13 @@ pub fn RoutesPage() -> impl IntoView {
                             let round_trip = c.is_round_trip;
                             let best = c.best_variant_label.clone().unwrap_or_else(|| "—".into());
                             let dur = c.median_duration_secs.map(fmt_duration).unwrap_or_else(|| "—".into());
-                            let dist = c
-                                .median_distance
-                                .map(|d| fmt_distance(Some(d), &prefs.get()))
-                                .unwrap_or_else(|| "—".into());
+                            // Reactive: rows can render before `/api/me` settles the units.
+                            let median_distance = c.median_distance;
+                            let dist = move || {
+                                median_distance
+                                    .map(|d| fmt_distance(Some(d), &prefs.get()))
+                                    .unwrap_or_else(|| "—".into())
+                            };
                             let od_label = if round_trip {
                                 if let (Some(vlat), Some(vlon)) = (c.via_lat, c.via_lon) {
                                     format!(
@@ -277,26 +299,44 @@ pub fn RouteCorridorPage() -> impl IntoView {
     let prefs = use_unit_prefs();
     let map_host = NodeRef::<leptos::html::Div>::new();
 
+    // The page is reused when only `:id` changes: reset what belongs to the old
+    // corridor and drop responses that arrive after the next navigation.
+    let fetch_gen = RwSignal::new(0u64);
     Effect::new(move |_| {
         let id = params.with(|p| p.get("id").unwrap_or_default());
         if id.is_empty() {
             return;
         }
+        let req = fetch_gen.get_untracked().wrapping_add(1);
+        fetch_gen.set(req);
+        detail.set(None);
+        map_geo.set(None);
+        error.set(None);
+        let current = move || fetch_gen.try_get_untracked() == Some(req);
         leptos::task::spawn_local(async move {
-            match route_opt_corridor(&id).await {
+            let corridor = route_opt_corridor(&id).await;
+            if !current() {
+                return;
+            }
+            match corridor {
                 Ok(d) => detail.set(Some(d)),
                 Err(e) => error.set(Some(e.to_string())),
             }
-            match route_opt_corridor_map(&id).await {
-                Ok(g) => map_geo.set(Some(g)),
-                Err(_) => map_geo.set(None),
+            let geo = route_opt_corridor_map(&id).await;
+            if !current() {
+                return;
             }
+            map_geo.set(geo.ok());
         });
     });
 
     Effect::new(move |_| {
         let geo = map_geo.get();
-        let Some(geo) = geo else { return };
+        let Some(geo) = geo else {
+            // Between corridors: don't leave the previous one's lines on the map.
+            crate::components::map::dispose_route_opt_map();
+            return;
+        };
         let Some(el) = map_host.get() else { return };
         crate::components::map::mount_route_opt_map(&el, &geo);
     });
@@ -434,7 +474,6 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                             d.variants
                                                 .into_iter()
                                                 .enumerate()
-                                                .map(|(i, v)| (i, v))
                                                 .collect::<Vec<_>>()
                                         })
                                         .unwrap_or_default()
@@ -442,7 +481,8 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                 key=|(_, v)| v.id.clone()
                                 children=move |(i, v)| {
                                     let elev = v.median_elev_gain_m.map(|e| format!("{e:.0} m")).unwrap_or_else(|| "—".into());
-                                    let dist_label = fmt_distance(Some(v.median_distance), &prefs.get());
+                                    let median_distance = v.median_distance;
+                                    let dist_label = move || fmt_distance(Some(median_distance), &prefs.get());
                                     let color = variant_swatch(i).to_string();
                                     let label = v.label.clone();
                                     view! {
@@ -488,14 +528,14 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                                 d.ors_alternatives
                                                     .into_iter()
                                                     .enumerate()
-                                                    .map(|(i, a)| (i, a))
                                                     .collect::<Vec<_>>()
                                             })
                                             .unwrap_or_default()
                                     }
                                     key=|(i, a)| format!("{}-{}-{}", i, a.preference, a.fetched_at)
                                     children=move |(i, a)| {
-                                        let dist_label = fmt_distance(Some(a.distance), &prefs.get());
+                                        let distance = a.distance;
+                                        let dist_label = move || fmt_distance(Some(distance), &prefs.get());
                                         let color = ors_swatch(i).to_string();
                                         let pref = a.preference.clone();
                                         view! {

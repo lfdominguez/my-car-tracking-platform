@@ -2,7 +2,6 @@ use leptos::prelude::*;
 use leptos_router::components::{A, Outlet};
 use leptos_router::hooks::{use_location, use_navigate};
 use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
 
 use crate::api::{Me, get_me, logout};
 use crate::components::{Icon, IconColor, ThemeToggle};
@@ -27,35 +26,23 @@ pub fn AppLayout() -> impl IntoView {
         nav_open.set(false);
     });
 
-    // Online / offline + SW update events from pwa-register.js
+    // Online / offline + SW update events from pwa-register.js. The shell unmounts
+    // on sign-out and mounts again on sign-in, so the listeners are removed with it
+    // rather than `forget()`-ed (which stacked another set on every mount).
     Effect::new(move |_| {
         if let Some(win) = web_sys::window() {
-            let online = win.navigator().on_line();
-            offline.set(!online);
-
-            let offline_sig = offline;
-            let on_off = Closure::wrap(Box::new(move |_e: web_sys::Event| {
-                offline_sig.set(true);
-            }) as Box<dyn FnMut(_)>);
-            let _ =
-                win.add_event_listener_with_callback("offline", on_off.as_ref().unchecked_ref());
-            on_off.forget();
-
-            let offline_sig = offline;
-            let on_on = Closure::wrap(Box::new(move |_e: web_sys::Event| {
-                offline_sig.set(false);
-            }) as Box<dyn FnMut(_)>);
-            let _ = win.add_event_listener_with_callback("online", on_on.as_ref().unchecked_ref());
-            on_on.forget();
-
-            let update_sig = update_available;
-            let on_upd = Closure::wrap(Box::new(move |_e: web_sys::Event| {
-                update_sig.set(true);
-            }) as Box<dyn FnMut(_)>);
-            let _ = win
-                .add_event_listener_with_callback("ctp-sw-update", on_upd.as_ref().unchecked_ref());
-            on_upd.forget();
+            offline.set(!win.navigator().on_line());
         }
+        let handles = [
+            window_event_listener_untyped("offline", move |_| offline.set(true)),
+            window_event_listener_untyped("online", move |_| offline.set(false)),
+            window_event_listener_untyped("ctp-sw-update", move |_| update_available.set(true)),
+        ];
+        on_cleanup(move || {
+            for handle in handles {
+                handle.remove();
+            }
+        });
     });
 
     Effect::new(move |_| {
@@ -65,10 +52,15 @@ pub fn AppLayout() -> impl IntoView {
                     avatar_failed.set(false);
                     unit_prefs.set(UnitPrefs::from_me(&user));
                     me.set(Some(user));
+                    // Back from signing in again: return to the page the expired
+                    // session was on.
+                    if let Some(next) = crate::api::take_login_next() {
+                        navigate.with_value(|nav| nav(&next, Default::default()));
+                    }
                 }
-                Err(crate::api::ApiError::Unauthorized) => {
-                    navigate.with_value(|nav| nav("/login", Default::default()));
-                }
+                // The API layer already redirected to /login?next=… (see
+                // `api::unauthorized`).
+                Err(crate::api::ApiError::Unauthorized) => {}
                 Err(e) => error.set(Some(e.to_string())),
             }
         });

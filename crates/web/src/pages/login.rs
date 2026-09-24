@@ -1,18 +1,24 @@
 use leptos::prelude::*;
-use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::{use_navigate, use_query_map};
 
-use crate::api::{get_me, get_public_config};
+use crate::api::{get_me, get_public_config, remember_login_next, take_login_next};
 use crate::components::{Icon, IconColor, IconSize};
 
 #[component]
 pub fn LoginPage() -> impl IntoView {
     let allow_dev_login = RwSignal::new(false);
     let navigate = StoredValue::new(use_navigate());
+    // A 401 inside the app sends the user here with `?next=<page>`; keep it for
+    // after the OAuth round trip (see `remember_login_next`).
+    if let Some(next) = use_query_map().get_untracked().get("next") {
+        remember_login_next(&next);
+    }
 
     Effect::new(move |_| {
         leptos::task::spawn_local(async move {
             if get_me().await.is_ok() {
-                navigate.with_value(|nav| nav("/app", Default::default()));
+                let dest = take_login_next().unwrap_or_else(|| "/app".into());
+                navigate.with_value(|nav| nav(&dest, Default::default()));
                 return;
             }
             if let Ok(cfg) = get_public_config().await {

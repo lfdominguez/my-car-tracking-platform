@@ -10,14 +10,58 @@ use crate::api::{
     fetch_trip_analysis, finish_trip, get_trip, list_cars, list_trips, start_trip_analysis,
     start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames, vault_create_job,
 };
-use crate::components::charts::TripTelemetryDashboard;
+use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
-use crate::units::{avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, use_unit_prefs};
-use crate::vault::{
-    VaultUnlockGate, build_analysis_context_json, decrypt_ai_report, decrypt_track_meta,
-    decrypt_track_points, seal_ai_report, use_vault_session,
+use crate::units::{
+    avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, point_si_to_display,
+    trip_si_to_display, use_unit_prefs,
 };
+use crate::vault::{
+    VaultUnlockGate, build_analysis_context_json, decrypt_ai_report, decrypt_car_profile,
+    decrypt_track_meta, decrypt_track_points, seal_ai_report, use_vault_session,
+};
+
+/// A decrypted vault trip in SI units: the summary patched from `track_meta`, and
+/// its samples.
+type VaultTripSi = (Trip, Vec<TripPoint>);
+
+/// Drive three futures concurrently and return all outputs (a dependency-free
+/// `futures::join!` for the one place that needs it).
+async fn join3<A, B, C>(a: A, b: B, c: C) -> (A::Output, B::Output, C::Output)
+where
+    A: std::future::Future,
+    B: std::future::Future,
+    C: std::future::Future,
+{
+    use std::task::Poll;
+    let (mut a, mut b, mut c) = (std::pin::pin!(a), std::pin::pin!(b), std::pin::pin!(c));
+    let (mut ra, mut rb, mut rc) = (None, None, None);
+    std::future::poll_fn(|cx| {
+        if ra.is_none()
+            && let Poll::Ready(v) = a.as_mut().poll(cx)
+        {
+            ra = Some(v);
+        }
+        if rb.is_none()
+            && let Poll::Ready(v) = b.as_mut().poll(cx)
+        {
+            rb = Some(v);
+        }
+        if rc.is_none()
+            && let Poll::Ready(v) = c.as_mut().poll(cx)
+        {
+            rc = Some(v);
+        }
+        if ra.is_some() && rb.is_some() && rc.is_some() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    (ra.unwrap(), rb.unwrap(), rc.unwrap())
+}
 
 fn fmt_duration(s: Option<f64>) -> String {
     let secs = s.unwrap_or(0.0).max(0.0);
@@ -307,6 +351,8 @@ pub fn TripsPage() -> impl IntoView {
 
     Effect::new(move |_| {
         let sess = vault.clone();
+        // Refetch on unlock/lock so sealed rows swap between "Locked" and "Vault trip".
+        sess.unlocked().track();
         let f = filter.get();
         let car_id = car_filter_id.get();
         save_trips_filter(f);
@@ -369,12 +415,13 @@ pub fn TripsPage() -> impl IntoView {
         </div>
 
         <div class="trips-filter-bar">
-            <div class="trips-filter-chips" role="tablist" aria-label="Trip time filter">
+            // A filter, not tabs: there is no tabpanel and no arrow-key model, so these
+            // are toggle buttons in a labelled group with aria-pressed.
+            <div class="trips-filter-chips" role="group" aria-label="Trip time filter">
                 {TripListFilter::all().into_iter().map(|chip| {
                     view! {
                         <button
                             type="button"
-                            role="tab"
                             class=move || {
                                 if filter.get() == chip {
                                     "trips-filter-chip is-active".to_string()
@@ -382,7 +429,7 @@ pub fn TripsPage() -> impl IntoView {
                                     "trips-filter-chip".to_string()
                                 }
                             }
-                            aria-selected=move || (filter.get() == chip).to_string()
+                            aria-pressed=move || (filter.get() == chip).to_string()
                             on:click=move |_| filter.set(chip)
                         >
                             {chip.label()}
@@ -511,20 +558,22 @@ pub fn TripsPage() -> impl IntoView {
                     let status_stale = !finished && status_label.starts_with("No GPS");
                     let car = t.car_name.clone();
                     let started = pretty_started(&t.started_at);
-                    let p = prefs.get();
-                    let distance = fmt_distance(t.distance_m, &p);
+                    // `For` children run once per card, so each unit-dependent value reads
+                    // `prefs` in its own closure: cards rendered before `/api/me` resolves
+                    // must re-format once the user's unit system is known.
+                    let (distance_m, avg_kph, max_kph, fuel_l) =
+                        (t.distance_m, t.avg_speed_kph, t.max_speed_kph, t.fuel_used_l);
+                    let (moving_l, economy_m) =
+                        (t.fuel_used_moving_l, t.economy_distance_m.or(t.distance_m));
+                    let distance = move || fmt_distance(distance_m, &prefs.get());
                     let duration = fmt_duration(t.duration_s);
-                    let avg = fmt_speed(t.avg_speed_kph, &p);
-                    let max = fmt_speed(t.max_speed_kph, &p);
-                    let fuel = fmt_fuel(t.fuel_used_l, &p);
-                    let moving_econ = fmt_economy(
-                        avg_economy(
-                            t.fuel_used_moving_l,
-                            t.economy_distance_m.or(t.distance_m),
-                            &p,
-                        ),
-                        &p,
-                    );
+                    let avg = move || fmt_speed(avg_kph, &prefs.get());
+                    let max = move || fmt_speed(max_kph, &prefs.get());
+                    let fuel = move || fmt_fuel(fuel_l, &prefs.get());
+                    let moving_econ = move || {
+                        let p = prefs.get();
+                        fmt_economy(avg_economy(moving_l, economy_m, &p), &p)
+                    };
                     let points = t.point_count;
                     let trips_sig = trips;
                     let err_sig = error;
@@ -576,7 +625,7 @@ pub fn TripsPage() -> impl IntoView {
                                         } else if t.analysis_status == "failed" {
                                             view! { <span class="pill pill-ai is-failed">"AI failed"</span> }.into_any()
                                         } else {
-                                            view! { <></> }.into_any()
+                                            ().into_any()
                                         }}
                                     </div>
                                 </div>
@@ -643,32 +692,40 @@ pub fn TripsPage() -> impl IntoView {
 /// `hint` renders as a tooltip on an info marker rather than a third line, so
 /// every row keeps the same height — the card grid this replaced stretched all
 /// eight tiles to match whichever one carried the longest explanation.
+///
+/// The tooltip is real text shown on hover *and* keyboard focus (a `title`
+/// attribute is neither), and the value points at it with `aria-describedby`, so a
+/// screen reader announces the explanation with the number it qualifies.
 #[component]
 fn StatRow(
     label: &'static str,
     value: String,
     #[prop(optional_no_strip)] hint: Option<String>,
 ) -> impl IntoView {
+    static NEXT_HINT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let hint_id = hint.as_ref().map(|_| {
+        let n = NEXT_HINT_ID.fetch_add(1, Ordering::Relaxed);
+        format!("stat-hint-{n}")
+    });
+    let described_by = hint_id.clone();
     view! {
         <div class="stat-row">
             <dt class="stat-row-label">
                 {label}
                 {hint
-                    .map(|h| {
+                    .zip(hint_id)
+                    .map(|(h, id)| {
+                        let tip_id = id.clone();
                         view! {
-                            <span
-                                class="stat-row-info"
-                                title=h.clone()
-                                aria-label=h
-                                tabindex="0"
-                                role="note"
-                            >
+                            <span class="stat-row-info" tabindex="0" aria-describedby=id>
                                 <Icon name="info" size=IconSize::Sm />
+                                <span class="sr-only">"More about this value"</span>
+                                <span class="stat-row-tip" role="tooltip" id=tip_id>{h}</span>
                             </span>
                         }
                     })}
             </dt>
-            <dd class="stat-row-value">{value}</dd>
+            <dd class="stat-row-value" aria-describedby=described_by>{value}</dd>
         </div>
     }
 }
@@ -692,12 +749,41 @@ pub fn TripDetailPage() -> impl IntoView {
     let deleting = RwSignal::new(false);
     let finishing = RwSignal::new(false);
     let vault = use_vault_session();
+    let vault_unlocked = vault.unlocked();
+    // A vault trip decrypts to SI, while everything on screen expects the display units
+    // the server applies to plaintext trips. Keep the SI copy: the display copy is
+    // re-derived from it whenever the unit system changes (it may still be loading),
+    // and the client-built AI bundle is declared in SI.
+    let vault_si = RwSignal::new(Option::<VaultTripSi>::None);
+    Effect::new(move |_| {
+        let system = prefs.with(|p| p.system);
+        vault_si.with(|si| {
+            let Some((si_trip, si_points)) = si else {
+                return;
+            };
+            let mut t = si_trip.clone();
+            trip_si_to_display(&mut t, system);
+            trip.set(Some(t));
+            points.set(
+                si_points
+                    .iter()
+                    .cloned()
+                    .map(|mut p| {
+                        point_si_to_display(&mut p, system);
+                        p
+                    })
+                    .collect(),
+            );
+        });
+    });
 
     Effect::new(move |_| {
         let id = params.with(|p| p.get("id").map(|s| s.to_string()).unwrap_or_default());
         if id.is_empty() {
             return;
         }
+        // Unlocking through the gate on this page must decrypt the trip without a reload.
+        vault_unlocked.track();
 
         // Cancel in-flight fetches/polls when the trip id changes or the page unmounts.
         // Without this, async tasks call .set/.get_untracked on disposed signals and panic
@@ -708,6 +794,20 @@ pub fn TripDetailPage() -> impl IntoView {
             alive_cleanup.store(false, Ordering::SeqCst);
         });
 
+        // `TripDetailPage` is reused when only the `:id` changes, so every per-trip
+        // signal starts over here. Otherwise the previous trip's map, charts, traffic
+        // colours and AI report stay on screen until (or, when a fetch fails, even
+        // after) the new trip loads.
+        vault_si.set(None);
+        trip.set(None);
+        points.set(Vec::new());
+        geojson.set(None);
+        traffic_frames.set(Vec::new());
+        analysis.set(None);
+        analysis_busy.set(false);
+        traffic_busy.set(false);
+        traffic_err.set(None);
+        error.set(None);
         loading.set(true);
         analysis_err.set(None);
 
@@ -750,25 +850,36 @@ pub fn TripDetailPage() -> impl IntoView {
                                     "type": "LineString",
                                     "coordinates": coords,
                                 })));
+                                let mut si_trip = trip.try_get_untracked().flatten();
                                 if let Ok(Some(meta)) =
                                     decrypt_track_meta(&sess, &car_id, &id_fetch).await
+                                    && let Some(t) = si_trip.as_mut()
                                 {
-                                    if let Some(mut t) = trip.try_get_untracked().flatten() {
-                                        t.point_count = meta.point_count;
-                                        t.distance_m = meta.distance_m;
-                                        t.duration_s = meta.duration_s;
-                                        t.avg_speed_kph = meta.avg_speed_kph;
-                                        t.max_speed_kph = meta.max_speed_kph;
-                                        t.fuel_used_l = meta.fuel_used_l;
-                                        t.fuel_used_moving_l = meta.fuel_used_moving_l;
-                                        if let Some(n) = meta.started_at {
-                                            // keep skeleton started_at if empty
-                                            let _ = n;
-                                        }
-                                        trip.set(Some(t));
-                                    }
+                                    t.point_count = meta.point_count;
+                                    t.distance_m = meta.distance_m;
+                                    t.economy_distance_m = meta.economy_distance_m;
+                                    t.duration_s = meta.duration_s;
+                                    t.avg_speed_kph = meta.avg_speed_kph;
+                                    t.max_speed_kph = meta.max_speed_kph;
+                                    t.fuel_used_l = meta.fuel_used_l;
+                                    t.fuel_used_moving_l = meta.fuel_used_moving_l;
+                                    t.fuel_from_level_l = meta.fuel_from_level_l;
                                 }
-                                points.set(p);
+                                // The charts gate liquid-fuel panels on the fuel class;
+                                // a sealed trip may only have it in the car profile.
+                                if let Some(t) = si_trip.as_mut()
+                                    && t.fuel_class_snapshot.is_empty()
+                                    && let Ok(Some(profile)) =
+                                        decrypt_car_profile(&sess, &car_id).await
+                                {
+                                    t.fuel_class_snapshot = profile.fuel_class;
+                                }
+                                // The effect above converts both into display units.
+                                if alive_fetch.load(Ordering::SeqCst)
+                                    && let Some(t) = si_trip
+                                {
+                                    vault_si.set(Some((t, p)));
+                                }
                             }
                         }
                         Err(e) => err = Some(format!("vault decrypt: {e}")),
@@ -810,43 +921,27 @@ pub fn TripDetailPage() -> impl IntoView {
                     err = Some("Unlock the vault to decrypt this trip.".into());
                 }
             } else {
-                match trip_points(&id_fetch).await {
-                    Ok(p) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            points.set(p);
-                        }
-                    }
+                // Fetched together and applied in one synchronous block, so the map
+                // (which depends on all three) builds once instead of once per
+                // response, and the three round trips overlap.
+                let (p, g, f) = join3(
+                    trip_points(&id_fetch),
+                    trip_map(&id_fetch),
+                    trip_traffic_frames(&id_fetch),
+                )
+                .await;
+                if !alive_fetch.load(Ordering::SeqCst) {
+                    return;
+                }
+                match p {
+                    Ok(p) => points.set(p),
                     Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
                 }
-                if !alive_fetch.load(Ordering::SeqCst) {
-                    return;
-                }
-                match trip_map(&id_fetch).await {
-                    Ok(g) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            geojson.set(Some(g));
-                        }
-                    }
+                match g {
+                    Ok(g) => geojson.set(Some(g)),
                     Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
                 }
-                if !alive_fetch.load(Ordering::SeqCst) {
-                    return;
-                }
-                match trip_traffic_frames(&id_fetch).await {
-                    Ok(f) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            traffic_frames.set(f);
-                        }
-                    }
-                    Err(_) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            traffic_frames.set(Vec::new());
-                        }
-                    }
-                }
-                if !alive_fetch.load(Ordering::SeqCst) {
-                    return;
-                }
+                traffic_frames.set(f.unwrap_or_default());
                 match fetch_trip_analysis(&id_fetch).await {
                     Ok(a) => {
                         if alive_fetch.load(Ordering::SeqCst) {
@@ -893,10 +988,10 @@ pub fn TripDetailPage() -> impl IntoView {
                         let done = a.analysis_status != "pending" && a.analysis_status != "running";
                         analysis.set(Some(a));
                         if done {
-                            if let Ok(t) = get_trip(&id_poll).await {
-                                if alive_poll.load(Ordering::SeqCst) {
-                                    trip.set(Some(t));
-                                }
+                            if let Ok(t) = get_trip(&id_poll).await
+                                && alive_poll.load(Ordering::SeqCst)
+                            {
+                                trip.set(Some(t));
                             }
                             break;
                         }
@@ -907,6 +1002,13 @@ pub fn TripDetailPage() -> impl IntoView {
                 }
             }
         });
+    });
+
+    // Map and charts draw the sanitized speed/RPM (isolated OBD spikes removed);
+    // the AI panel and the counters keep the samples as recorded.
+    let clean_points = Memo::new(move |_| {
+        let system = prefs.with(|p| p.system);
+        points.with(|pts| sanitize_trip_points(pts, system))
     });
 
     view! {
@@ -1161,7 +1263,7 @@ pub fn TripDetailPage() -> impl IntoView {
             </Show>
 
 
-            <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !use_vault_session().is_unlocked()>
+            <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !vault_unlocked.get()>
                 <VaultUnlockGate message="Unlock the vault to decrypt trip points and AI reports.".to_string()/>
             </Show>
 
@@ -1169,6 +1271,7 @@ pub fn TripDetailPage() -> impl IntoView {
                 trip_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
                 trip=trip
                 points=points
+                vault_si=vault_si
                 analysis=analysis
                 analysis_busy=analysis_busy
                 analysis_err=analysis_err
@@ -1198,7 +1301,7 @@ pub fn TripDetailPage() -> impl IntoView {
                 )}
                 <TripMap
                     geojson=geojson.into()
-                    points=points
+                    points=clean_points
                     traffic_frames=Signal::derive(move || traffic_frames.get())
                 />
                 <div class="map-legend">
@@ -1207,6 +1310,9 @@ pub fn TripDetailPage() -> impl IntoView {
                         <div class="map-speed-bar" id="trip-speed-bar" aria-hidden="true"></div>
                         <span class="map-speed-label" id="trip-speed-max">"—"</span>
                     </div>
+                    // Filled by the map script when the route is traffic-coloured, so
+                    // every congestion colour has a text label.
+                    <ul class="map-traffic-legend" id="trip-traffic-legend" aria-label="Congestion levels" hidden></ul>
                     <div class="map-legend-actions">
                         <p class="muted map-legend-note">
                             {move || {
@@ -1246,7 +1352,12 @@ pub fn TripDetailPage() -> impl IntoView {
                     <p class="muted">"Summary badges, overview charts by default, category filters, and smooth trends — expand ⓘ on any chart for what it means."</p>
                 </div>
                 <TripTelemetryDashboard
-                    points=points.into()
+                    points=clean_points.into()
+                    fuel_class=Signal::derive(move || {
+                        trip.with(|t| {
+                            t.as_ref().map(|t| t.fuel_class_snapshot.clone()).unwrap_or_default()
+                        })
+                    })
                     trip_economy=Signal::derive(move || {
                         let t = trip.get()?;
                         let p = prefs.get();
@@ -1272,6 +1383,16 @@ fn traffic_route_toolbar(
             return;
         }
         let id = t.id.clone();
+        // The poll below outlives a navigation to another trip (the page is reused)
+        // and the page itself. Stop as soon as the trip on screen is no longer the
+        // one being analysed; `try_with_untracked` also reads `false` once disposed.
+        let still_current = {
+            let id = id.clone();
+            move || {
+                trip.try_with_untracked(|t| t.as_ref().is_some_and(|t| t.id == id))
+                    .unwrap_or(false)
+            }
+        };
         traffic_busy.set(true);
         traffic_err.set(None);
         // Optimistic pending so the status badge updates immediately.
@@ -1286,21 +1407,38 @@ fn traffic_route_toolbar(
             trip.set(Some(t));
         }
         leptos::task::spawn_local(async move {
-            match start_trip_traffic_analyze(&id).await {
+            let result = start_trip_traffic_analyze(&id).await;
+            if !still_current() {
+                return;
+            }
+            match result {
                 Ok(acc) => {
                     if acc.status == "ready" {
-                        if let Ok(t) = get_trip(&id).await {
+                        if let Ok(t) = get_trip(&id).await
+                            && still_current()
+                        {
                             trip.set(Some(t));
                         }
-                        if let Ok(f) = trip_traffic_frames(&id).await {
+                        if let Ok(f) = trip_traffic_frames(&id).await
+                            && still_current()
+                        {
                             traffic_frames.set(f);
                         }
-                        traffic_busy.set(false);
+                        if still_current() {
+                            traffic_busy.set(false);
+                        }
                         return;
                     }
                     for _ in 0..60 {
                         gloo_timers::future::TimeoutFuture::new(500).await;
-                        match get_trip(&id).await {
+                        if !still_current() {
+                            return;
+                        }
+                        let polled = get_trip(&id).await;
+                        if !still_current() {
+                            return;
+                        }
+                        match polled {
                             Ok(t) => {
                                 let st = t
                                     .traffic
@@ -1314,10 +1452,13 @@ fn traffic_route_toolbar(
                                     );
                                 trip.set(Some(t));
                                 if done {
-                                    if st == "ready" {
-                                        if let Ok(f) = trip_traffic_frames(&id).await {
-                                            traffic_frames.set(f);
+                                    if st == "ready"
+                                        && let Ok(f) = trip_traffic_frames(&id).await
+                                    {
+                                        if !still_current() {
+                                            return;
                                         }
+                                        traffic_frames.set(f);
                                     }
                                     break;
                                 }
@@ -1429,10 +1570,10 @@ fn traffic_route_toolbar(
                         .as_ref()
                         .and_then(|t| t.traffic.clone())
                     else {
-                        return view! { <></> }.into_any();
+                        return ().into_any();
                     };
                     if tr.status != "ready" {
-                        return view! { <></> }.into_any();
+                        return ().into_any();
                     }
                     let idx = tr.overall_index.unwrap_or(0.0);
                     let heavy = tr
@@ -1505,7 +1646,9 @@ fn sanitize_analysis_ui_error(raw: &str) -> String {
         || lower.contains("already in progress")
         || lower.contains("forbidden")
         || lower.contains("unauthorized")
+        || lower.contains("don't have access")
         || lower.contains("not found")
+        || lower.contains("try again")
     {
         // Strip noisy HTTP status prefixes like "400 Bad Request: …"
         if let Some(idx) = raw.find(": ") {
@@ -1556,6 +1699,7 @@ fn TripAiPanel(
     trip_id: Signal<String>,
     trip: RwSignal<Option<Trip>>,
     points: RwSignal<Vec<TripPoint>>,
+    vault_si: RwSignal<Option<VaultTripSi>>,
     analysis: RwSignal<Option<TripAnalysis>>,
     analysis_busy: RwSignal<bool>,
     analysis_err: RwSignal<Option<String>>,
@@ -1585,25 +1729,41 @@ fn TripAiPanel(
             ai_open.set(true);
 
             let alive_job = Arc::clone(&panel_alive);
+            // The panel survives a switch to another trip, so "alive" also means the
+            // trip this job started for is still the one on screen.
+            let alive_job = {
+                let id = id.clone();
+                move || {
+                    alive_job.load(Ordering::SeqCst)
+                        && trip_id.try_get_untracked().as_deref() == Some(id.as_str())
+                }
+            };
             let sealed = trip
                 .try_get_untracked()
                 .flatten()
                 .map(|t| t.vault_sealed)
                 .unwrap_or(false);
-            let trip_snap = trip.try_get_untracked().flatten();
-            let pts = points.try_get_untracked().unwrap_or_default();
+            // A vault trip's bundle is built from the SI copy: the context declares
+            // metric units, and the display copy is in whatever the user prefers.
+            let (trip_snap, pts) = match vault_si.try_get_untracked().flatten() {
+                Some((t, p)) if sealed => (Some(t), p),
+                _ => (
+                    trip.try_get_untracked().flatten(),
+                    points.try_get_untracked().unwrap_or_default(),
+                ),
+            };
             let sess = vault.clone();
             leptos::task::spawn_local(async move {
                 if sealed {
                     let Some(t) = trip_snap else {
-                        if alive_job.load(Ordering::SeqCst) {
+                        if alive_job() {
                             analysis_err.set(Some("Trip not loaded".into()));
                             analysis_busy.set(false);
                         }
                         return;
                     };
                     if !sess.is_unlocked() {
-                        if alive_job.load(Ordering::SeqCst) {
+                        if alive_job() {
                             analysis_err.set(Some(
                                 "Unlock vault and consent to send a temporary analysis bundle."
                                     .into(),
@@ -1613,20 +1773,28 @@ fn TripAiPanel(
                         return;
                     }
                     if pts.is_empty() {
-                        if alive_job.load(Ordering::SeqCst) {
+                        if alive_job() {
                             analysis_err.set(Some("No decrypted points to analyze".into()));
                             analysis_busy.set(false);
                         }
                         return;
                     }
-                    let ctx = build_analysis_context_json(&t, &t.car_name, &pts);
+                    // The profile carries fuel_class and the engine constants; a
+                    // failure here only thins the bundle, it does not block analysis.
+                    let profile = decrypt_car_profile(&sess, &t.car_id).await.ok().flatten();
+                    let car_name = profile
+                        .as_ref()
+                        .map(|p| p.name.clone())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| t.car_name.clone());
+                    let ctx = build_analysis_context_json(&t, &car_name, &pts, profile.as_ref());
                     let bundle = serde_json::json!({
                         "track_id": id,
                         "context": ctx,
                     });
                     match vault_create_job("ai_analysis", bundle).await {
                         Ok(job) => {
-                            if !alive_job.load(Ordering::SeqCst) {
+                            if !alive_job() {
                                 return;
                             }
                             if job.status != "done" {
@@ -1651,7 +1819,7 @@ fn TripAiPanel(
                             }
                         }
                         Err(e) => {
-                            if alive_job.load(Ordering::SeqCst) {
+                            if alive_job() {
                                 analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
                             }
                         }
@@ -1659,12 +1827,12 @@ fn TripAiPanel(
                 } else {
                     match start_trip_analysis(&id).await {
                         Ok(_) => loop {
-                            if !alive_job.load(Ordering::SeqCst) {
+                            if !alive_job() {
                                 break;
                             }
                             match fetch_trip_analysis(&id).await {
                                 Ok(a) => {
-                                    if !alive_job.load(Ordering::SeqCst) {
+                                    if !alive_job() {
                                         break;
                                     }
                                     let st = a.analysis_status.clone();
@@ -1674,7 +1842,7 @@ fn TripAiPanel(
                                     }
                                 }
                                 Err(e) => {
-                                    if alive_job.load(Ordering::SeqCst) {
+                                    if alive_job() {
                                         analysis_err
                                             .set(Some(sanitize_analysis_ui_error(&e.to_string())));
                                     }
@@ -1684,13 +1852,13 @@ fn TripAiPanel(
                             gloo_timers::future::TimeoutFuture::new(3000).await;
                         },
                         Err(e) => {
-                            if alive_job.load(Ordering::SeqCst) {
+                            if alive_job() {
                                 analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
                             }
                         }
                     }
                 }
-                if alive_job.load(Ordering::SeqCst) {
+                if alive_job() {
                     analysis_busy.set(false);
                 }
             });
@@ -1960,7 +2128,7 @@ fn TripAiPanel(
                             }
                             .into_any()
                         } else {
-                            view! { <></> }.into_any()
+                            ().into_any()
                         };
 
                         view! {

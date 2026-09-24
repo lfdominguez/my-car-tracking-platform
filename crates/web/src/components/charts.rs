@@ -4,15 +4,46 @@ use wasm_bindgen::prelude::*;
 use crate::api::TripPoint;
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{
-    ECONOMY_WINDOW_S, EconomySample, headline_economy, integrated_economy, use_unit_prefs,
-    windowed_economy_series,
+    ECONOMY_WINDOW_S, EconomySample, KM_PER_MILE, UnitSystem, headline_economy, integrated_economy,
+    use_unit_prefs, windowed_economy_series,
 };
+use shared::telemetry_sanitize::{SpeedRpmPoint, sanitize_speed_rpm};
 
 #[wasm_bindgen(inline_js = r#"
+/**
+ * Load a self-hosted vendor script on first use instead of blocking <head>.
+ * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
+ * shared on `window`, so every snippet that needs the library waits on one fetch.
+ */
+function loadVendorScript(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[src]) {
+    loads[src] = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => (window[globalName] ? resolve() : reject(new Error(`${src} loaded without ${globalName}`)));
+      s.onerror = () => {
+        delete loads[src];
+        reject(new Error(`failed to load ${src}`));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return loads[src];
+}
+
+/** Latest option per chart id while ECharts is still loading (older ones are moot). */
+const __pendingCharts = new Map();
+
 const __tripCharts = new Map();
 const __tripChartTimes = new Map(); // elId -> full ISO timestamps aligned with category axis
 let __tripSelection = null; // { iso, dataIndexHint }
 let __zoomState = { start: 0, end: 100 };
+// Which trip the zoom + selection above belong to. Module globals outlive the page,
+// so without this a zoomed-in range or pinned time leaked into the next trip opened.
+let __tripKey = null;
 let __syncingZoom = false;
 let __selectionRaf = null;
 let __pendingSelection = null;
@@ -376,9 +407,50 @@ function applyChartOption(elId, chart, option) {
   });
 }
 
-export function renderTelemetryChart(elId, optionJson) {
+/**
+ * ECharts' base theme for the app theme: its built-in 'dark' for dark, the default
+ * (light) theme otherwise. The option paints most chrome from CSS tokens, but the
+ * base theme still decides defaults the option leaves out (label and marker
+ * colours), which is why a light app must not init charts with 'dark'.
+ */
+function echartsThemeFor(appTheme) {
+  return appTheme === 'dark' ? 'dark' : null;
+}
+
+function initChart(elId, node, appTheme) {
+  const chart = echarts.init(node, echartsThemeFor(appTheme), { renderer: 'canvas' });
+  chart.__appTheme = appTheme;
+  __tripCharts.set(elId, chart);
+  ensureChartObservers(elId, node, chart);
+  bindChartInteractions(elId, chart);
+  return chart;
+}
+
+/** Existing chart for `elId`, re-created when the app theme changed since init. */
+function chartFor(elId, node, appTheme) {
+  let chart = __tripCharts.get(elId);
+  if (chart && chart.__appTheme !== appTheme) {
+    // A theme is fixed at init; switching means a fresh instance.
+    teardownChart(elId, chart);
+    chart = null;
+  }
+  return chart || initChart(elId, node, appTheme);
+}
+
+export function renderTelemetryChart(elId, optionJson, appTheme) {
+  if (!window.echarts) {
+    __pendingCharts.set(elId, [optionJson, appTheme]);
+    loadVendorScript('/vendor/echarts.min.js', 'echarts')
+      .then(() => {
+        const pending = __pendingCharts.get(elId);
+        __pendingCharts.delete(elId);
+        if (pending != null) renderTelemetryChart(elId, ...pending);
+      })
+      .catch((err) => console.error('ECharts failed to load', err));
+    return;
+  }
   const el = document.getElementById(elId);
-  if (!el || !window.echarts) return;
+  if (!el) return;
 
   let option;
   try {
@@ -386,6 +458,16 @@ export function renderTelemetryChart(elId, optionJson) {
   } catch (e) {
     console.error('chart option parse failed', e);
     return;
+  }
+  // A different trip starts from the full range with nothing pinned.
+  if (typeof option.__tripKey === 'string') {
+    if (option.__tripKey !== __tripKey) {
+      __tripKey = option.__tripKey;
+      __zoomState = { start: 0, end: 100 };
+      __tripSelection = null;
+      __pendingSelection = null;
+    }
+    delete option.__tripKey;
   }
   // Optional full timestamps for map↔chart sync (stripped before setOption).
   if (Array.isArray(option.__times)) {
@@ -413,34 +495,26 @@ export function renderTelemetryChart(elId, optionJson) {
         requestAnimationFrame(() => run(attempt + 1));
       } else {
         // Last resort: init anyway and rely on observers.
-        let chart = __tripCharts.get(elId);
-        if (!chart) {
-          chart = echarts.init(node, 'dark', { renderer: 'canvas' });
-          __tripCharts.set(elId, chart);
-          ensureChartObservers(elId, node, chart);
-          bindChartInteractions(elId, chart);
-        }
-        applyChartOption(elId, chart, option);
+        applyChartOption(elId, chartFor(elId, node, appTheme), option);
       }
       return;
     }
 
-    let chart = __tripCharts.get(elId);
-    if (!chart) {
-      chart = echarts.init(node, 'dark', { renderer: 'canvas' });
-      __tripCharts.set(elId, chart);
-      ensureChartObservers(elId, node, chart);
-      bindChartInteractions(elId, chart);
-    }
-    applyChartOption(elId, chart, option);
+    applyChartOption(elId, chartFor(elId, node, appTheme), option);
   };
 
   run(0);
 }
 
 export function disposeTelemetryChart(elId) {
+  __pendingCharts.delete(elId);
   const chart = __tripCharts.get(elId);
   if (!chart) return;
+  teardownChart(elId, chart);
+  __tripChartTimes.delete(elId);
+}
+
+function teardownChart(elId, chart) {
   if (chart.__onResize) {
     window.removeEventListener('resize', chart.__onResize);
   }
@@ -452,11 +526,10 @@ export function disposeTelemetryChart(elId) {
   }
   chart.dispose();
   __tripCharts.delete(elId);
-  __tripChartTimes.delete(elId);
 }
 "#)]
 extern "C" {
-    fn renderTelemetryChart(el_id: &str, option_json: &str);
+    fn renderTelemetryChart(el_id: &str, option_json: &str, app_theme: &str);
     fn disposeTelemetryChart(el_id: &str);
 }
 
@@ -475,6 +548,20 @@ enum PanelKind {
     /// STFT/LTFT as OHLC candles + optional lambda line; healthy ±10% band on % axis.
     MixtureCandles,
 }
+
+/// A panel flattened for rendering: `(id, title, blurb, primary, y_left, y_right,
+/// series, kind, section key)`.
+type FlatPanel = (
+    String,
+    String,
+    String,
+    bool,
+    String,
+    Option<String>,
+    Vec<ChartSeriesSpec>,
+    PanelKind,
+    String,
+);
 
 #[derive(Clone, PartialEq)]
 struct PanelDef {
@@ -539,19 +626,149 @@ fn round_series_2dp(data: &[Option<f64>]) -> Vec<Option<f64>> {
     data.iter().map(|v| v.map(round2)).collect()
 }
 
+/// Min/max decimation down to about `max_n` samples.
+///
+/// Every panel shares one category axis, so whole samples are kept rather than
+/// per-series values. Each bucket keeps the samples holding its lowest and highest
+/// speed (RPM when there is no speed), in time order, plus the first and last
+/// sample of the trip. Taking every Nth sample instead dropped short peaks — a
+/// hard acceleration or a top-speed burst could vanish from the chart entirely.
 fn downsample_points(points: &[TripPoint], max_n: usize) -> Vec<TripPoint> {
-    if points.len() <= max_n || max_n < 3 {
-        return points.to_vec();
+    downsample_indices(points, max_n)
+        .into_iter()
+        .map(|i| points[i].clone())
+        .collect()
+}
+
+fn downsample_indices(points: &[TripPoint], max_n: usize) -> Vec<usize> {
+    let n = points.len();
+    if n <= max_n || max_n < 4 {
+        return (0..n).collect();
     }
-    let last = points.len() - 1;
+    let key = |p: &TripPoint| coalesce_speed(p).or_else(|| coalesce_rpm(p));
+    // Two samples per bucket; the endpoints are added separately.
+    let buckets = (max_n - 2) / 2;
+    let inner = n - 2;
     let mut out = Vec::with_capacity(max_n);
-    for i in 0..max_n {
-        let idx = if i == max_n - 1 {
-            last
-        } else {
-            (i * last) / (max_n - 1)
+    out.push(0);
+    for b in 0..buckets {
+        let start = 1 + b * inner / buckets;
+        let end = 1 + (b + 1) * inner / buckets;
+        if start >= end {
+            continue;
+        }
+        let mut lo: Option<(usize, f64)> = None;
+        let mut hi: Option<(usize, f64)> = None;
+        for (i, p) in points.iter().enumerate().take(end).skip(start) {
+            let Some(v) = key(p).filter(|v| v.is_finite()) else {
+                continue;
+            };
+            if lo.is_none_or(|(_, m)| v < m) {
+                lo = Some((i, v));
+            }
+            if hi.is_none_or(|(_, m)| v > m) {
+                hi = Some((i, v));
+            }
+        }
+        match (lo, hi) {
+            (Some((a, _)), Some((b, _))) if a != b => {
+                out.push(a.min(b));
+                out.push(a.max(b));
+            }
+            (Some((a, _)), _) => out.push(a),
+            // No speed or RPM in this bucket: keep its middle sample for the others.
+            _ => out.push((start + end - 1) / 2),
+        }
+    }
+    out.push(n - 1);
+    out
+}
+
+/// Timestamp for the sanitizer (RFC 3339, or the SQL shape `epoch_seconds` accepts).
+fn sample_time(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f")
+        .ok()
+        .map(|n| n.and_utc())
+}
+
+/// Liquid-fuel signals as the fuel class allows them, mirroring the server's trip
+/// fuel integral:
+/// - `FULL_ELECTRIC` burns no liquid fuel, so fuel rate, tank level and the
+///   mixture/trim signals are dropped (their panels, chips and the Fuel tab go
+///   with them);
+/// - `HYBRID` reports liquid L/h only while the engine turns: with RPM at 0 (or
+///   missing) the rate is 0, whatever the adapter says — RPM 0 is a valid state
+///   for a hybrid that is on, not a gap.
+fn apply_fuel_class(points: &[TripPoint], fuel_class: &str) -> Vec<TripPoint> {
+    let class = fuel_class.trim().to_ascii_uppercase();
+    match class.as_str() {
+        "FULL_ELECTRIC" => points
+            .iter()
+            .cloned()
+            .map(|mut p| {
+                p.fuel_consumption_rate = None;
+                p.fuel_level_pct = None;
+                p.short_term_fuel_trim_pct = None;
+                p.long_term_fuel_trim_pct = None;
+                p.lambda_cmd = None;
+                p
+            })
+            .collect(),
+        "HYBRID" => points
+            .iter()
+            .cloned()
+            .map(|mut p| {
+                if p.fuel_consumption_rate.is_some() && coalesce_rpm(&p).unwrap_or(0.0) <= 0.0 {
+                    p.fuel_consumption_rate = Some(0.0);
+                }
+                p
+            })
+            .collect(),
+        _ => points.to_vec(),
+    }
+}
+
+/// Speed/RPM with isolated OBD spikes removed, for the map and the charts.
+///
+/// Runs the same `shared::telemetry_sanitize::sanitize_speed_rpm` pass the server
+/// applies before trip graphs and analysis. Speeds arrive in display units, and the
+/// sanitizer's limits are in km/h, so mph is converted for the pass and back.
+/// Both speed (and both RPM) fields are overwritten so every `coalesce_*` reader
+/// sees the cleaned value.
+pub fn sanitize_trip_points(points: &[TripPoint], system: UnitSystem) -> Vec<TripPoint> {
+    let to_kph = match system {
+        UnitSystem::Metric => 1.0,
+        UnitSystem::Us => KM_PER_MILE,
+    };
+    let mut out = points.to_vec();
+    let mut index = Vec::with_capacity(points.len());
+    let mut series = Vec::with_capacity(points.len());
+    for (i, p) in points.iter().enumerate() {
+        let Some(t) = sample_time(&p.recorded_at) else {
+            continue;
         };
-        out.push(points[idx].clone());
+        index.push(i);
+        series.push(SpeedRpmPoint {
+            t,
+            speed_kph: coalesce_speed(p).map(|v| v * to_kph),
+            rpm: coalesce_rpm(p),
+        });
+    }
+    sanitize_speed_rpm(&mut series);
+    for (i, s) in index.into_iter().zip(series) {
+        let p = &mut out[i];
+        if p.vehicle_speed_kph.is_some() || p.engine_vel.is_some() {
+            let v = s.speed_kph.map(|v| v / to_kph);
+            p.vehicle_speed_kph = v;
+            p.engine_vel = v;
+        }
+        if p.vehicle_engine_rpm.is_some() || p.engine_rpm.is_some() {
+            p.vehicle_engine_rpm = s.rpm;
+            p.engine_rpm = s.rpm;
+        }
     }
     out
 }
@@ -776,7 +993,7 @@ fn mixture_bucket_size(n: usize) -> usize {
     if n <= MIXTURE_CANDLE_TARGET {
         1
     } else {
-        (n + MIXTURE_CANDLE_TARGET - 1) / MIXTURE_CANDLE_TARGET
+        n.div_ceil(MIXTURE_CANDLE_TARGET)
     }
 }
 
@@ -1133,76 +1350,76 @@ fn build_mixture_option(
 
     let mut series_json: Vec<serde_json::Value> = Vec::new();
 
-    if let Some(s) = stft {
-        if series_has_data(&s.data) {
-            series_json.push(serde_json::json!({
-                "name": "STFT (%)",
-                "type": "candlestick",
-                "yAxisIndex": 0,
-                "animation": false,
-                "barMaxWidth": 10,
-                "itemStyle": {
-                    "color": "#22c55e",
-                    "color0": "#ef4444",
-                    "borderColor": "#16a34a",
-                    "borderColor0": "#dc2626"
-                },
-                "data": series_to_ohlc(&s.data, bucket),
-                "markArea": healthy_mark_area,
-                "markLine": healthy_mark_line
-            }));
-        }
+    if let Some(s) = stft
+        && series_has_data(&s.data)
+    {
+        series_json.push(serde_json::json!({
+            "name": "STFT (%)",
+            "type": "candlestick",
+            "yAxisIndex": 0,
+            "animation": false,
+            "barMaxWidth": 10,
+            "itemStyle": {
+                "color": "#22c55e",
+                "color0": "#ef4444",
+                "borderColor": "#16a34a",
+                "borderColor0": "#dc2626"
+            },
+            "data": series_to_ohlc(&s.data, bucket),
+            "markArea": healthy_mark_area,
+            "markLine": healthy_mark_line
+        }));
     }
 
-    if let Some(s) = ltft {
-        if series_has_data(&s.data) {
-            // LTFT usually moves slowly — still show as candles so high/low of the
-            // window is obvious when learned trim drifts outside healthy band.
-            series_json.push(serde_json::json!({
-                "name": "LTFT (%)",
-                "type": "candlestick",
-                "yAxisIndex": 0,
-                "animation": false,
-                "barMaxWidth": 10,
-                "itemStyle": {
-                    "color": "#38bdf8",
-                    "color0": "#f97316",
-                    "borderColor": "#0ea5e9",
-                    "borderColor0": "#ea580c"
-                },
-                "data": series_to_ohlc(&s.data, bucket)
-            }));
-        }
+    if let Some(s) = ltft
+        && series_has_data(&s.data)
+    {
+        // LTFT usually moves slowly — still show as candles so high/low of the
+        // window is obvious when learned trim drifts outside healthy band.
+        series_json.push(serde_json::json!({
+            "name": "LTFT (%)",
+            "type": "candlestick",
+            "yAxisIndex": 0,
+            "animation": false,
+            "barMaxWidth": 10,
+            "itemStyle": {
+                "color": "#38bdf8",
+                "color0": "#f97316",
+                "borderColor": "#0ea5e9",
+                "borderColor0": "#ea580c"
+            },
+            "data": series_to_ohlc(&s.data, bucket)
+        }));
     }
 
-    if let Some(s) = lambda {
-        if series_has_data(&s.data) {
-            let lambda_data: Vec<serde_json::Value> = s
-                .data
-                .chunks(bucket.max(1))
-                .map(|chunk| {
-                    // last non-null in bucket; "-" = gap (safer than JSON null for some series)
-                    chunk
-                        .iter()
-                        .rev()
-                        .find_map(|v| *v)
-                        .map(|v| serde_json::json!(round2(v)))
-                        .unwrap_or_else(|| serde_json::json!("-"))
-                })
-                .collect();
-            series_json.push(serde_json::json!({
-                "name": "Lambda cmd",
-                "type": "line",
-                "yAxisIndex": if use_right { 1 } else { 0 },
-                "smooth": line_smooth,
-                "showSymbol": false,
-                "connectNulls": false,
-                "animation": false,
-                "data": lambda_data,
-                "lineStyle": { "width": 2, "color": "#a78bfa" },
-                "itemStyle": { "color": "#a78bfa" }
-            }));
-        }
+    if let Some(s) = lambda
+        && series_has_data(&s.data)
+    {
+        let lambda_data: Vec<serde_json::Value> = s
+            .data
+            .chunks(bucket.max(1))
+            .map(|chunk| {
+                // last non-null in bucket; "-" = gap (safer than JSON null for some series)
+                chunk
+                    .iter()
+                    .rev()
+                    .find_map(|v| *v)
+                    .map(|v| serde_json::json!(round2(v)))
+                    .unwrap_or_else(|| serde_json::json!("-"))
+            })
+            .collect();
+        series_json.push(serde_json::json!({
+            "name": "Lambda cmd",
+            "type": "line",
+            "yAxisIndex": if use_right { 1 } else { 0 },
+            "smooth": line_smooth,
+            "showSymbol": false,
+            "connectNulls": false,
+            "animation": false,
+            "data": lambda_data,
+            "lineStyle": { "width": 2, "color": "#a78bfa" },
+            "itemStyle": { "color": "#a78bfa" }
+        }));
     }
 
     serde_json::json!({
@@ -1253,6 +1470,7 @@ fn TelemetryChart(
     y_right_name: Option<String>,
     kind: PanelKind,
     line_smooth: f64,
+    trip_key: String,
 ) -> impl IntoView {
     let el_id = chart_id.clone();
     let el_id_dispose = chart_id.clone();
@@ -1266,8 +1484,12 @@ fn TelemetryChart(
 
     Effect::new(move |_| {
         // Subscribe to the theme so a light/dark flip repaints the canvas with
-        // the new palette (ECharts draws to canvas; CSS variables can't reach it).
-        let _ = theme.theme.get();
+        // the new palette (ECharts draws to canvas; CSS variables can't reach it)
+        // and re-creates the instance with the matching ECharts base theme.
+        let app_theme = match theme.theme.get() {
+            crate::components::theme::Theme::Dark => "dark",
+            crate::components::theme::Theme::Light => "light",
+        };
         if series_c.is_empty() || labels_c.is_empty() {
             return;
         }
@@ -1284,8 +1506,13 @@ fn TelemetryChart(
                 line_smooth,
             ),
         };
+        let mut option = option;
+        if let Some(obj) = option.as_object_mut() {
+            // Stripped in JS; resets the shared zoom/selection when the trip changes.
+            obj.insert("__tripKey".into(), trip_key.clone().into());
+        }
         if let Ok(s) = serde_json::to_string(&option) {
-            renderTelemetryChart(&el_id, &s);
+            renderTelemetryChart(&el_id, &s, app_theme);
         }
     });
 
@@ -1396,10 +1623,17 @@ fn build_signal_chips(
 pub fn TripTelemetryDashboard(
     points: Signal<Vec<TripPoint>>,
     #[prop(optional)] trip_economy: Option<Signal<Option<f64>>>,
+    /// Trip fuel class (`fuel_class_snapshot`); empty behaves like GASOLINE.
+    #[prop(optional)]
+    fuel_class: Option<Signal<String>>,
 ) -> impl IntoView {
     let prefs = use_unit_prefs();
     let smooth = RwSignal::new(true);
     let category = RwSignal::new(load_category_filter());
+    let points = Memo::new(move |_| {
+        let class = fuel_class.map(|c| c.get()).unwrap_or_default();
+        points.with(|pts| apply_fuel_class(pts, &class))
+    });
 
     let chips = Memo::new(move |_| {
         let unit_prefs = prefs.get();
@@ -1757,7 +1991,13 @@ pub fn TripTelemetryDashboard(
         });
 
         let line_smooth = if want_smooth { LINE_SMOOTH_VISUAL } else { 0.0 };
-        Some((labels, times, sections, has_obd, line_smooth))
+        let trip_key = format!(
+            "{}|{}|{}",
+            raw.first().map(|p| p.recorded_at.as_str()).unwrap_or(""),
+            raw.last().map(|p| p.recorded_at.as_str()).unwrap_or(""),
+            raw.len()
+        );
+        Some((labels, times, sections, has_obd, line_smooth, trip_key))
     });
 
     view! {
@@ -1770,30 +2010,20 @@ pub fn TripTelemetryDashboard(
                             <div>"No samples for this trip yet."</div>
                         </div>
                     }.into_any(),
-                    Some((_, _, sections, _, _)) if sections.is_empty() => view! {
+                    Some((_, _, sections, _, _, _)) if sections.is_empty() => view! {
                         <div class="empty-state compact">
                             <Icon name="chart-line" size=IconSize::Lg color=IconColor::Accent />
                             <div>"No chartable telemetry in these samples."</div>
                         </div>
                     }.into_any(),
-                    Some((labels, times, sections, has_obd, line_smooth)) => {
+                    Some((labels, times, sections, has_obd, line_smooth, trip_key)) => {
                         let labels = labels.clone();
                         let times = times.clone();
                         let smooth_tag = if line_smooth > 0.0 { "s" } else { "r" };
                         let chip_list = chips.get();
                         let show_chips = !chip_list.is_empty();
                         // Flatten panels with section key for category filtering.
-                        let flat: Vec<(
-                            String,
-                            String,
-                            String,
-                            bool,
-                            String,
-                            Option<String>,
-                            Vec<ChartSeriesSpec>,
-                            PanelKind,
-                            String,
-                        )> = sections
+                        let flat: Vec<FlatPanel> = sections
                             .iter()
                             .flat_map(|(_title, _icon, key, _blurb, panels)| {
                                 panels.iter().map(|p| {
@@ -1861,11 +2091,13 @@ pub fn TripTelemetryDashboard(
                                     </div>
                                 }.into_any()
                             } else {
-                                view! { <></> }.into_any()
+                                ().into_any()
                             }}
 
                             <div class="telemetry-toolbar">
-                                <div class="telemetry-cat-scroll" role="tablist" aria-label="Telemetry category">
+                                // Category filter as toggle buttons: the charts below are
+                                // one list filtered in place, not tab panels.
+                                <div class="telemetry-cat-scroll" role="group" aria-label="Telemetry category">
                                     {CATEGORY_TABS
                                         .iter()
                                         .filter(|(key, _)| {
@@ -1881,7 +2113,6 @@ pub fn TripTelemetryDashboard(
                                             view! {
                                                 <button
                                                     type="button"
-                                                    role="tab"
                                                     class=move || {
                                                         if category.get() == key_active {
                                                             "telemetry-cat-btn is-active"
@@ -1889,7 +2120,7 @@ pub fn TripTelemetryDashboard(
                                                             "telemetry-cat-btn"
                                                         }
                                                     }
-                                                    prop:aria-selected=move || category.get() == key_s
+                                                    aria-pressed=move || (category.get() == key_s).to_string()
                                                     on:click=move |_| {
                                                         category.set(key_click.clone());
                                                         save_category_filter(&key_click);
@@ -1953,6 +2184,7 @@ pub fn TripTelemetryDashboard(
                                             children=move |(id, panel_title, blurb, primary, y_left, y_right, series, kind, _sec)| {
                                                 let labels = labels.clone();
                                                 let times = times.clone();
+                                                let trip_key = trip_key.clone();
                                                 let chart_id = format!("tel-{id}-{smooth_tag}");
                                                 let panel_class = if primary {
                                                     "card telemetry-panel telemetry-panel-primary"
@@ -1977,6 +2209,7 @@ pub fn TripTelemetryDashboard(
                                                             y_right_name=y_right
                                                             kind=kind
                                                             line_smooth=line_smooth
+                                                            trip_key=trip_key
                                                         />
                                                     </div>
                                                 }
@@ -1996,6 +2229,75 @@ pub fn TripTelemetryDashboard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn point(t: usize, speed: Option<f64>) -> TripPoint {
+        serde_json::from_value(serde_json::json!({
+            "recorded_at": format!("2026-01-01T00:{:02}:{:02}Z", t / 60, t % 60),
+            "lat": null, "lon": null, "gps_acc_m": -1.0,
+            "vehicle_speed_kph": speed, "vehicle_engine_rpm": null, "engine_rpm": null,
+            "engine_vel": null, "fuel_consumption_rate": null, "engine_load_pct": null,
+            "absolute_engine_load_pct": null, "short_term_fuel_trim_pct": null,
+            "long_term_fuel_trim_pct": null, "fuel_level_pct": null,
+            "accelerator_pedal_pct": null, "ambient_air_temp_c": null,
+            "odometer_value_km": null, "engine_coolant_temp_c": null,
+            "manifold_absolute_pressure_kpa": null, "control_module_voltage": null,
+            "engine_on_time": null, "lambda_cmd": null, "atmospheric_pressure": null,
+            "intake_air_temperature": null, "mass_air_flow": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn fuel_class_gates_liquid_fuel() {
+        let mut p = point(0, Some(30.0));
+        p.fuel_consumption_rate = Some(1.5);
+        p.short_term_fuel_trim_pct = Some(2.0);
+        p.vehicle_engine_rpm = Some(0.0);
+        let hybrid = apply_fuel_class(std::slice::from_ref(&p), "HYBRID");
+        assert_eq!(
+            hybrid[0].fuel_consumption_rate,
+            Some(0.0),
+            "engine off → no L/h"
+        );
+        p.vehicle_engine_rpm = Some(1800.0);
+        let hybrid = apply_fuel_class(std::slice::from_ref(&p), "hybrid");
+        assert_eq!(hybrid[0].fuel_consumption_rate, Some(1.5));
+        let ev = apply_fuel_class(std::slice::from_ref(&p), "FULL_ELECTRIC");
+        assert_eq!(ev[0].fuel_consumption_rate, None);
+        assert_eq!(ev[0].short_term_fuel_trim_pct, None);
+        let gas = apply_fuel_class(std::slice::from_ref(&p), "");
+        assert_eq!(gas[0], p);
+    }
+
+    #[test]
+    fn downsample_keeps_short_peaks() {
+        // 3000 samples at 50 with a single 2-sample burst to 120: every-Nth to 100
+        // would almost surely skip it.
+        let pts: Vec<_> = (0..3000)
+            .map(|i| point(i, Some(if i == 1777 || i == 1778 { 120.0 } else { 50.0 })))
+            .collect();
+        let idx = downsample_indices(&pts, 100);
+        assert!(idx.len() <= 100, "{}", idx.len());
+        assert_eq!(idx.first(), Some(&0));
+        assert_eq!(idx.last(), Some(&2999));
+        assert!(
+            idx.windows(2).all(|w| w[0] < w[1]),
+            "must stay in time order"
+        );
+        assert!(idx.iter().any(|&i| i == 1777 || i == 1778), "peak dropped");
+    }
+
+    #[test]
+    fn sanitize_drops_isolated_speed_spike() {
+        let mut pts: Vec<_> = (0..20).map(|i| point(i, Some(50.0))).collect();
+        pts[10] = point(10, Some(200.0));
+        let clean = sanitize_trip_points(&pts, UnitSystem::Metric);
+        assert!(clean.iter().all(|p| p.vehicle_speed_kph == Some(50.0)));
+        // Samples without a speed stay without one.
+        let gaps: Vec<_> = (0..5).map(|i| point(i, None)).collect();
+        let clean = sanitize_trip_points(&gaps, UnitSystem::Us);
+        assert!(clean.iter().all(|p| p.vehicle_speed_kph.is_none()));
+    }
 
     #[test]
     fn ema_empty() {

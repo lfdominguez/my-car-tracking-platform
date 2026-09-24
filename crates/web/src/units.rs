@@ -6,7 +6,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Me, UnitLabelsDto};
+use crate::api::{Me, Trip, TripPoint, UnitLabelsDto};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -115,6 +115,77 @@ pub type UnitPrefsSignal = RwSignal<UnitPrefs>;
 
 pub fn use_unit_prefs() -> UnitPrefsSignal {
     expect_context::<UnitPrefsSignal>()
+}
+
+/// Metres per international mile (same constant as the server's `units`).
+pub const METERS_PER_MILE: f64 = 1609.344;
+/// km/h per mph, and km per mile.
+pub const KM_PER_MILE: f64 = 1.609_344;
+/// Litres per US liquid gallon.
+pub const LITERS_PER_US_GALLON: f64 = 3.785_411_784;
+
+/// Divisors that take an SI value to what the server sends for `system`:
+/// `(distance_m, speed_kph / odometer_km, fuel_l / fuel_rate_lph)`.
+///
+/// Metric distances stay in metres — the formatters divide by 1000 themselves.
+fn si_divisors(system: UnitSystem) -> (f64, f64, f64) {
+    match system {
+        UnitSystem::Metric => (1.0, 1.0, 1.0),
+        UnitSystem::Us => (METERS_PER_MILE, KM_PER_MILE, LITERS_PER_US_GALLON),
+    }
+}
+
+fn scale_trip(t: &mut Trip, dist: f64, speed: f64, fuel: f64) {
+    let scale = |v: &mut Option<f64>, f: f64| {
+        if let Some(x) = v {
+            *x *= f;
+        }
+    };
+    scale(&mut t.distance_m, dist);
+    scale(&mut t.economy_distance_m, dist);
+    scale(&mut t.avg_speed_kph, speed);
+    scale(&mut t.max_speed_kph, speed);
+    scale(&mut t.fuel_used_l, fuel);
+    scale(&mut t.fuel_used_moving_l, fuel);
+    scale(&mut t.fuel_from_level_l, fuel);
+}
+
+fn scale_point(p: &mut TripPoint, speed: f64, fuel: f64) {
+    let scale = |v: &mut Option<f64>, f: f64| {
+        if let Some(x) = v {
+            *x *= f;
+        }
+    };
+    scale(&mut p.vehicle_speed_kph, speed);
+    scale(&mut p.engine_vel, speed);
+    scale(&mut p.odometer_value_km, speed);
+    scale(&mut p.fuel_consumption_rate, fuel);
+}
+
+/// Convert an SI trip summary (vault-decrypted) into display units, matching the
+/// conversion the server applies to plaintext trips (`apply_trip_summary_units`).
+pub fn trip_si_to_display(t: &mut Trip, system: UnitSystem) {
+    let (d, s, f) = si_divisors(system);
+    scale_trip(t, 1.0 / d, 1.0 / s, 1.0 / f);
+}
+
+/// Inverse of [`trip_si_to_display`]: display-unit API values back to SI.
+pub fn trip_display_to_si(t: &mut Trip, system: UnitSystem) {
+    let (d, s, f) = si_divisors(system);
+    scale_trip(t, d, s, f);
+}
+
+/// Convert an SI sample (vault-decrypted) into display units, matching the server's
+/// `apply_trip_point_units`.
+pub fn point_si_to_display(p: &mut TripPoint, system: UnitSystem) {
+    let (_, s, f) = si_divisors(system);
+    scale_point(p, 1.0 / s, 1.0 / f);
+}
+
+/// Inverse of [`point_si_to_display`].
+pub fn point_display_to_si(p: &mut TripPoint, system: UnitSystem) {
+    let (_, s, f) = si_divisors(system);
+    scale_point(p, s, f);
 }
 
 /// Format trip/dashboard distance field.
