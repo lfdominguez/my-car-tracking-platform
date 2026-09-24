@@ -6,10 +6,10 @@ use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 
 use crate::api::{
-    Car, Trip, TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame, delete_trip,
-    fetch_trip_analysis, finish_trip, get_car, get_trip, list_cars, list_trips, merge_trips,
-    split_trip, start_trip_analysis, start_trip_traffic_analyze, trip_map, trip_points,
-    trip_traffic_frames, update_trip_meta, vault_create_job,
+    Car, Trip, TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame, cancel_trip_analysis,
+    delete_trip, fetch_trip_analysis, finish_trip, get_car, get_trip, list_cars, list_trips,
+    merge_trips, split_trip, start_trip_analysis, start_trip_traffic_analyze, trip_map,
+    trip_points, trip_traffic_frames, update_trip_meta, vault_create_job,
 };
 use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
@@ -2328,30 +2328,26 @@ fn friendly_analysis_status(status: &str, analyzed: bool) -> (&'static str, &'st
     }
 }
 
-/// User-facing analysis errors only; technical diagnostics stay in server logs.
+/// Analysis errors as the user sees them. The API layer already turns 5xx bodies
+/// into a generic retry message, and the server writes `analysis_error` for
+/// people, so the text is shown as is — only a legacy "400 Bad Request: " style
+/// prefix is stripped and very long text is cut.
 fn sanitize_analysis_ui_error(raw: &str) -> String {
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains("openrouter")
-        || lower.contains("configure your")
-        || lower.contains("already in progress")
-        || lower.contains("forbidden")
-        || lower.contains("unauthorized")
-        || lower.contains("don't have access")
-        || lower.contains("not found")
-        || lower.contains("try again")
+    let mut s = raw.trim();
+    if let Some((head, rest)) = s.split_once(": ")
+        && head.len() <= 24
+        && head.chars().next().is_some_and(|c| c.is_ascii_digit())
     {
-        // Strip noisy HTTP status prefixes like "400 Bad Request: …"
-        if let Some(idx) = raw.find(": ") {
-            let rest = raw[idx + 2..].trim();
-            if !rest.is_empty() && rest.len() < 180 {
-                return rest.to_string();
-            }
-        }
-        if raw.len() < 180 {
-            return raw.to_string();
-        }
+        s = rest.trim();
     }
-    "System Error".into()
+    if s.is_empty() {
+        return "The analysis failed.".into();
+    }
+    if s.chars().count() > 300 {
+        let cut: String = s.chars().take(300).collect();
+        return format!("{cut}…");
+    }
+    s.to_string()
 }
 
 /// Trigger a browser download for the AI markdown report (not shown inline).
@@ -2400,6 +2396,7 @@ fn TripAiPanel(
     on_cleanup(move || {
         panel_alive_cleanup.store(false, Ordering::SeqCst);
     });
+    let cancelling = RwSignal::new(false);
     let vault = use_vault_session();
     // Collapsed by default — status stays visible in the header.
     let ai_open = RwSignal::new(false);
@@ -2688,6 +2685,32 @@ fn TripAiPanel(
                                 <Icon name="spinner-gap" size=IconSize::Sm color=IconColor::Accent />
                                 " Working in background"
                             </span>
+                            <Show when=move || {
+                                analysis.get().is_some_and(|a| a.can_analyze)
+                                    && !trip.with(|t| t.as_ref().is_some_and(|t| t.vault_sealed))
+                            }>
+                                <button
+                                    type="button"
+                                    class="btn ghost btn-sm"
+                                    prop:disabled=move || cancelling.get()
+                                    on:click=move |_| {
+                                        let id = trip_id.get_untracked();
+                                        if id.is_empty() {
+                                            return;
+                                        }
+                                        cancelling.set(true);
+                                        leptos::task::spawn_local(async move {
+                                            if let Err(e) = cancel_trip_analysis(&id).await {
+                                                let _ = analysis_err.try_set(Some(e.to_string()));
+                                            }
+                                            let _ = cancelling.try_set(false);
+                                        });
+                                    }
+                                >
+                                    <Icon name="stop-circle" size=IconSize::Sm />
+                                    {move || if cancelling.get() { "Cancelling…" } else { "Cancel" }}
+                                </button>
+                            </Show>
                         </Show>
                         <Show when=move || {
                             let a = analysis.get();
@@ -2713,7 +2736,7 @@ fn TripAiPanel(
 
                 <Show when=move || analysis_err.get().is_some()>
                     <div class="banner err">
-                        {move || analysis_err.get().unwrap_or_else(|| "System Error".into())}
+                        {move || analysis_err.get().unwrap_or_default()}
                     </div>
                 </Show>
 
@@ -2727,8 +2750,14 @@ fn TripAiPanel(
                         .unwrap_or(false)
                 }>
                     <div class="banner err">
-                        "System Error"
-                        <span class="banner-hint">" — details are in the server logs."</span>
+                        {move || {
+                            analysis
+                                .get()
+                                .and_then(|a| a.analysis_error)
+                                .filter(|e| !e.trim().is_empty())
+                                .map(|e| sanitize_analysis_ui_error(&e))
+                                .unwrap_or_else(|| "The analysis failed. Try again in a moment.".into())
+                        }}
                     </div>
                 </Show>
 
@@ -2922,6 +2951,20 @@ mod tests {
             "max_speed_kph": null, "fuel_used_l": null
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn analysis_errors_are_shown_as_written() {
+        assert_eq!(
+            sanitize_analysis_ui_error("Analysis cancelled by the user"),
+            "Analysis cancelled by the user"
+        );
+        assert_eq!(
+            sanitize_analysis_ui_error("400 Bad Request: Configure your OpenRouter key"),
+            "Configure your OpenRouter key"
+        );
+        assert_eq!(sanitize_analysis_ui_error("  "), "The analysis failed.");
+        assert!(sanitize_analysis_ui_error(&"x".repeat(500)).ends_with('…'));
     }
 
     #[test]

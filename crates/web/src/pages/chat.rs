@@ -11,9 +11,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 use crate::api::{
-    ApiError, Car, ChatConversation, ChatMessage, chat_stream_url, create_chat_conversation,
-    delete_chat_conversation, get_chat_conversation, list_cars, list_chat_conversations,
-    post_chat_message,
+    ApiError, Car, ChatConversation, ChatMessage, cancel_chat_message, chat_stream_url,
+    create_chat_conversation, delete_chat_conversation, get_chat_conversation, list_cars,
+    list_chat_conversations, post_chat_message,
 };
 use crate::components::markdown;
 use crate::components::{Icon, IconColor, IconSize};
@@ -379,6 +379,26 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                             }
                         }
                     ></textarea>
+                    <Show when=move || live.get().is_some_and(|t| t.running)>
+                        <button
+                            class="btn secondary"
+                            type="button"
+                            title="Stop generating this answer"
+                            on:click=move |_| {
+                                let Some(id) = live.get_untracked().map(|t| t.message_id) else {
+                                    return;
+                                };
+                                leptos::task::spawn_local(async move {
+                                    if let Err(e) = cancel_chat_message(&id).await {
+                                        web_sys::console::warn_1(&format!("cancel failed: {e}").into());
+                                    }
+                                });
+                            }
+                        >
+                            <Icon name="stop-circle" size=IconSize::Sm />
+                            "Stop"
+                        </button>
+                    </Show>
                     <button
                         class="btn primary"
                         type="submit"

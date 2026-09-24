@@ -574,6 +574,19 @@ pub async fn start_trip_analysis(id: &str) -> Result<AnalyzeAccepted, ApiError> 
     send_body_json(req).await
 }
 
+/// Stop a running trip analysis (owner only). The poll then sees it failed.
+pub async fn cancel_trip_analysis(id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::post(&format!("/api/trips/{id}/analysis/cancel"))).await
+}
+
+/// Stop an assistant answer that is still being generated.
+pub async fn cancel_chat_message(message_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::post(&format!(
+        "/api/chat/messages/{message_id}/cancel"
+    )))
+    .await
+}
+
 pub async fn get_public_config() -> Result<PublicConfig, ApiError> {
     send_json(Request::get("/api/public-config")).await
 }
