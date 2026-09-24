@@ -974,10 +974,10 @@ mod tests {
 
     #[test]
     fn economy_distance_prefers_a_sane_odometer() {
-        // GPS 10 km, odometer 10.4 km: trust the odometer.
+        // GPS 10 km, odometer 10.5 km: trust the odometer.
         assert_eq!(
-            economy_distance_m(Some(10_000.0), Some(100.0), Some(110.4)),
-            Some(10_400.0)
+            economy_distance_m(Some(10_000.0), Some(100.0), Some(110.5)),
+            Some(10_500.0)
         );
         // Whole-km odometer says 1 km for an 8.6 km drive: fall back to GPS.
         assert_eq!(
