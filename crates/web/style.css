@@ -4345,3 +4345,29 @@ button.tag-chip:hover { color: var(--accent); border-color: var(--color-border-a
 .export-menu-item:hover:not(:disabled) { background: var(--color-accent-softer); color: var(--accent); }
 .export-menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
 .export-menu-note { margin: 0.35rem 0.5rem 0.2rem; font-size: var(--text-xs); max-width: 13rem; }
+
+/* ---- Settings: region, your data (#60 #118) ------------------------------- */
+.settings-kv {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.85rem;
+  margin: 0.5rem 0 1rem;
+}
+.settings-kv strong { color: var(--text); font-family: var(--font-family-mono); font-weight: var(--font-weight-mono-medium); }
+.danger-zone {
+  margin-top: 1.25rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 34%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-subtle);
+}
+.danger-zone-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.35rem;
+  font-size: var(--text-md);
+  color: var(--color-danger);
+}
+.danger-zone .field { margin-bottom: 0.75rem; }

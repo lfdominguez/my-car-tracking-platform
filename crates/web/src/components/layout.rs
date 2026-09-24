@@ -51,6 +51,22 @@ pub fn AppLayout() -> impl IntoView {
                 Ok(user) => {
                     avatar_failed.set(false);
                     unit_prefs.set(UnitPrefs::from_me(&user));
+                    // Accounts start on UTC; adopt the browser's zone once so
+                    // statistics and rush hours bucket in local time (#60). Only
+                    // the default is overwritten: a zone the user picked stays.
+                    if user.timezone == "UTC"
+                        && let Some(tz) = crate::pages::settings::browser_timezone()
+                        && tz != "UTC"
+                    {
+                        leptos::task::spawn_local(async move {
+                            let body = serde_json::json!({ "timezone": tz });
+                            if let Err(e) = crate::api::update_me_preferences(body).await {
+                                web_sys::console::warn_1(
+                                    &format!("timezone update failed: {e}").into(),
+                                );
+                            }
+                        });
+                    }
                     me.set(Some(user));
                     // Back from signing in again: return to the page the expired
                     // session was on.

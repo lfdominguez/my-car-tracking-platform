@@ -1,8 +1,8 @@
 use leptos::prelude::*;
 
 use crate::api::{
-    AuditEvent, SessionInfo, get_audit, get_me, get_sessions, revoke_all_sessions,
-    revoke_mcp_token, revoke_other_sessions, revoke_session, rotate_mcp_token,
+    AuditEvent, SessionInfo, delete_my_account, get_audit, get_me, get_sessions,
+    revoke_all_sessions, revoke_mcp_token, revoke_other_sessions, revoke_session, rotate_mcp_token,
     update_me_preferences, update_me_unit_system,
 };
 use crate::components::{Icon, IconColor, IconSize};
@@ -30,6 +30,12 @@ pub fn SettingsPage() -> impl IntoView {
     let sessions = RwSignal::new(Vec::<SessionInfo>::new());
     let audit = RwSignal::new(Vec::<AuditEvent>::new());
     let loaded = RwSignal::new(false);
+    let account_email = RwSignal::new(String::new());
+    let timezone = RwSignal::new(String::new());
+    let locale = RwSignal::new(String::new());
+    let delete_confirm = RwSignal::new(String::new());
+    let deleting_account = RwSignal::new(false);
+    let browser_tz = browser_timezone();
 
     Effect::new(move |_| {
         if loaded.get() {
@@ -45,6 +51,9 @@ pub fn SettingsPage() -> impl IntoView {
                     ors_key_hint.set(me.ors_api_key_hint.clone());
                     mcp_token_set.set(me.mcp_token_set);
                     mcp_token_hint.set(me.mcp_token_hint.clone());
+                    account_email.set(me.email.clone());
+                    timezone.set(me.timezone.clone());
+                    locale.set(me.locale.clone().unwrap_or_default());
                     if let Some(origin) = web_sys::window().and_then(|w| w.location().origin().ok())
                     {
                         mcp_url.set(format!("{origin}/mcp"));
@@ -192,6 +201,51 @@ pub fn SettingsPage() -> impl IntoView {
         });
     };
 
+    let save_region = move |body: serde_json::Value, done: &'static str| {
+        saving.set(true);
+        message.set(None);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            match update_me_preferences(body).await {
+                Ok(me) => {
+                    timezone.set(me.timezone.clone());
+                    locale.set(me.locale.clone().unwrap_or_default());
+                    message.set(Some(done.into()));
+                }
+                Err(e) => error.set(Some(e.to_string())),
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_account = move |_| {
+        let typed = delete_confirm.get_untracked();
+        if !typed
+            .trim()
+            .eq_ignore_ascii_case(account_email.get_untracked().trim())
+        {
+            return;
+        }
+        if !confirm(
+            "Delete your account and everything in it — cars, trips, devices, chats? This cannot be undone.",
+        ) {
+            return;
+        }
+        deleting_account.set(true);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            match delete_my_account(typed.trim()).await {
+                Ok(()) => {
+                    let _ = web_sys::window().map(|w| w.location().set_href("/"));
+                }
+                Err(e) => {
+                    error.set(Some(e.to_string()));
+                    deleting_account.set(false);
+                }
+            }
+        });
+    };
+
     view! {
         <div class="page-header">
             <h1>"Settings"</h1>
@@ -246,6 +300,58 @@ pub fn SettingsPage() -> impl IntoView {
                     <div class="unit-choice-meta">"mi, mph, gal, mpg"</div>
                 </button>
             </div>
+        </div>
+
+        <div class="card settings-card" style="margin-top:1rem">
+            <h2 class="section-title">
+                <Icon name="clock" color=IconColor::Accent />
+                "Region & language"
+            </h2>
+            <p class="muted">
+                "Your timezone decides where days, weeks and rush hours begin in statistics and route insights."
+            </p>
+            <div class="settings-kv">
+                <span class="muted">"Timezone"</span>
+                <strong>{move || if timezone.get().is_empty() { "—".to_string() } else { timezone.get() }}</strong>
+                {
+                    let browser_tz = browser_tz.clone();
+                    move || {
+                        let tz = browser_tz.clone()?;
+                        (tz != timezone.get() && loaded.get()).then(|| {
+                            let label = format!("Use this device's timezone ({tz})");
+                            view! {
+                                <button
+                                    type="button"
+                                    class="btn ghost btn-sm"
+                                    prop:disabled=move || saving.get()
+                                    on:click=move |_| save_region(
+                                        serde_json::json!({ "timezone": tz.clone() }),
+                                        "Timezone updated.",
+                                    )
+                                >
+                                    {label}
+                                </button>
+                            }
+                        })
+                    }
+                }
+            </div>
+            <label class="field">
+                <span>"Language"</span>
+                <select
+                    prop:value=move || locale.get()
+                    prop:disabled=move || saving.get()
+                    on:change=move |ev| {
+                        let value = event_target_value(&ev);
+                        save_region(serde_json::json!({ "locale": value }), "Language preference saved.");
+                    }
+                >
+                    <option value="">"Automatic (browser)"</option>
+                    <option value="en">"English"</option>
+                    <option value="es">"Español"</option>
+                </select>
+            </label>
+            <p class="field-hint">"Saved to your account now; the interface is translated in a later release."</p>
         </div>
 
         <div class="card settings-card" style="margin-top:1rem">
@@ -578,6 +684,58 @@ pub fn SettingsPage() -> impl IntoView {
             </div>
         </div>
 
+        <div class="card settings-card" style="margin-top:1rem">
+            <h2 class="section-title">
+                <Icon name="database" color=IconColor::Accent />
+                "Your data"
+            </h2>
+            <p class="muted">
+                "Download everything this account holds — profile, cars, trips with their samples, devices, "
+                "shares, chats and the security log — as one JSON file. Secrets such as API keys are left out; "
+                "vault data is included as the ciphertext the server stores."
+            </p>
+            <a class="btn secondary" href="/api/me/export" download="" rel="nofollow">
+                <Icon name="download-simple" />
+                "Download my data"
+            </a>
+
+            <div class="danger-zone">
+                <h3 class="danger-zone-title">
+                    <Icon name="warning" color=IconColor::Danger />
+                    "Delete account"
+                </h3>
+                <p class="muted">
+                    "Erases your account, your cars and everything recorded for them, and signs you out. "
+                    "Cars shared with you stay with their owners. This cannot be undone."
+                </p>
+                <label class="field">
+                    <span>{move || format!("Type your email ({}) to confirm", account_email.get())}</span>
+                    <input
+                        type="email"
+                        autocomplete="off"
+                        prop:value=move || delete_confirm.get()
+                        on:input=move |ev| delete_confirm.set(event_target_value(&ev))
+                    />
+                </label>
+                <button
+                    type="button"
+                    class="btn danger"
+                    prop:disabled=move || {
+                        deleting_account.get()
+                            || account_email.get().is_empty()
+                            || !delete_confirm
+                                .get()
+                                .trim()
+                                .eq_ignore_ascii_case(account_email.get().trim())
+                    }
+                    on:click=delete_account
+                >
+                    <Icon name="trash" />
+                    {move || if deleting_account.get() { "Deleting…" } else { "Delete my account" }}
+                </button>
+            </div>
+        </div>
+
         <Show when=move || saving.get()>
             <div class="muted" style="margin-top:0.75rem">
                 <Icon name="spinner-gap" size=IconSize::Sm color=IconColor::Accent />
@@ -585,6 +743,16 @@ pub fn SettingsPage() -> impl IntoView {
             </div>
         </Show>
     }
+}
+
+/// The browser's IANA timezone (`Intl.DateTimeFormat().resolvedOptions().timeZone`).
+pub fn browser_timezone() -> Option<String> {
+    let fmt = js_sys::Intl::DateTimeFormat::new(&js_sys::Array::new(), &js_sys::Object::new());
+    let opts = fmt.resolved_options();
+    js_sys::Reflect::get(&opts, &"timeZone".into())
+        .ok()?
+        .as_string()
+        .filter(|s| !s.is_empty())
 }
 
 fn confirm(msg: &str) -> bool {

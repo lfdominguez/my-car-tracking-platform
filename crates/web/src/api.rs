@@ -39,6 +39,16 @@ pub struct Me {
     pub mcp_token_set: bool,
     #[serde(default)]
     pub mcp_token_hint: Option<String>,
+    /// IANA timezone used to bucket days and hours (`UTC` until set).
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    /// `en`, `es`, or unset (follow the browser).
+    #[serde(default)]
+    pub locale: Option<String>,
+}
+
+fn default_timezone() -> String {
+    "UTC".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -515,6 +525,13 @@ pub async fn update_me_preferences(body: serde_json::Value) -> Result<Me, ApiErr
         .json(&body)
         .map_err(|e| ApiError::Message(e.to_string()))?;
     send_body_json(req).await
+}
+
+/// Erase the account. `confirm_email` must match the signed-in email.
+pub async fn delete_my_account(confirm_email: &str) -> Result<(), ApiError> {
+    let body = serde_json::json!({ "confirm_email": confirm_email });
+    let _: serde_json::Value = send_json_body(Request::delete("/api/me"), &body).await?;
+    Ok(())
 }
 
 pub async fn rotate_mcp_token() -> Result<McpTokenResponse, ApiError> {
