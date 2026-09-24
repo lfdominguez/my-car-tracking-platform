@@ -22,6 +22,7 @@ use serde::Serialize;
 use crate::error::AppError;
 use crate::mcp::auth::McpUser;
 use crate::state::AppState;
+use crate::units::UnitSystem;
 
 pub struct ToolCtx<'a> {
     pub state: &'a AppState,
@@ -74,6 +75,18 @@ pub fn map_app_err(err: AppError) -> McpError {
     }
 }
 
+/// A distance in the unit `UnitLabels::distance` names: km or mi.
+///
+/// `units::convert_distance_m` leaves metric values in meters because the SPA
+/// divides for display; a tool result has no such second step, so a metric trip of
+/// 12 km must say `12`, not `12000` next to a `"km"` label.
+pub fn display_distance(meters: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => meters / 1000.0,
+        UnitSystem::Us => crate::units::convert_distance_m(meters, system),
+    }
+}
+
 /// Reject vault-sealed entities as not found for MCP.
 pub fn reject_vault(sealed: bool) -> Result<(), AppError> {
     if sealed {
@@ -112,6 +125,12 @@ mod tests {
         assert!(!err.message.contains("secret_table"), "{}", err.message);
         let err = map_app_err(AppError::Db(sqlx::Error::PoolTimedOut));
         assert_eq!(err.message, "internal error");
+    }
+
+    #[test]
+    fn display_distance_matches_its_label() {
+        assert_eq!(display_distance(12_000.0, UnitSystem::Metric), 12.0);
+        assert!((display_distance(1609.344, UnitSystem::Us) - 1.0).abs() < 1e-9);
     }
 
     #[test]

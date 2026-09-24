@@ -6,9 +6,9 @@ use crate::error::{AppError, AppResult};
 use crate::mcp::token::clamp_list_limit;
 use crate::shares::access::can_read_car;
 use crate::trips::stats;
-use crate::units::{convert_distance_m, convert_fuel_l, convert_speed_kph};
+use crate::units::{convert_fuel_l, convert_speed_kph};
 
-use super::{ToolCtx, reject_vault};
+use super::{ToolCtx, display_distance, reject_vault};
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct TripRow {
@@ -57,6 +57,7 @@ pub struct TripDto {
     /// the car reports no SoC, the capacity is unknown, or the battery charged.
     pub energy_used_kwh: Option<f64>,
     pub point_count: i64,
+    /// In `units.distance` (km or mi).
     pub distance: Option<f64>,
     pub duration_s: Option<f64>,
     pub avg_speed: Option<f64>,
@@ -72,7 +73,7 @@ pub struct TripDto {
 
 fn to_dto(mut r: TripRow, system: crate::units::UnitSystem) -> TripDto {
     if let Some(d) = r.distance_m {
-        r.distance_m = Some(convert_distance_m(d, system));
+        r.distance_m = Some(display_distance(d, system));
     }
     if let Some(v) = r.avg_speed_kph {
         r.avg_speed_kph = Some(convert_speed_kph(v, system));

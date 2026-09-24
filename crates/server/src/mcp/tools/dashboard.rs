@@ -4,9 +4,9 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 use crate::trips::stats;
-use crate::units::{convert_distance_m, convert_fuel_l, convert_odometer_km, convert_speed_kph};
+use crate::units::{convert_fuel_l, convert_odometer_km, convert_speed_kph};
 
-use super::ToolCtx;
+use super::{ToolCtx, display_distance};
 
 #[derive(Debug, Serialize)]
 pub struct DashboardDto {
@@ -282,7 +282,7 @@ pub async fn get_dashboard_summary(
             odometer: c.odometer.map(|v| convert_odometer_km(v, system)),
             odometer_at: c.odometer_at,
             fuel_level_pct: c.fuel_level_pct,
-            tracked_distance: convert_distance_m(c.tracked_distance_m, system),
+            tracked_distance: display_distance(c.tracked_distance_m, system),
             trip_count: c.trip_count,
         })
         .collect();
@@ -342,7 +342,7 @@ fn summarize(
         totals.push(FuelClassTotalsDto {
             fuel_class: class.to_string(),
             trip_count: row.trip_count,
-            distance: convert_distance_m(row.total_distance_m, system),
+            distance: display_distance(row.total_distance_m, system),
             duration_s: row.total_duration_s,
             fuel_used: liquid.then(|| convert_fuel_l(row.total_fuel_l.unwrap_or(0.0), system)),
             energy_used_kwh: row.total_energy_kwh,
@@ -351,7 +351,7 @@ fn summarize(
 
     DashboardDto {
         trip_count,
-        total_distance: convert_distance_m(distance_m, system),
+        total_distance: display_distance(distance_m, system),
         total_duration_s: duration_s,
         total_fuel: convert_fuel_l(fuel_l, system),
         total_energy_kwh: energy_kwh,
