@@ -80,10 +80,10 @@ pub fn RoutesPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             match list_cars().await {
                 Ok(list) => {
-                    if car_id.get_untracked().is_empty() {
-                        if let Some(c) = list.first() {
-                            car_id.set(c.id.clone());
-                        }
+                    if car_id.get_untracked().is_empty()
+                        && let Some(c) = list.first()
+                    {
+                        car_id.set(c.id.clone());
                     }
                     cars.set(list);
                 }
@@ -201,7 +201,7 @@ pub fn RoutesPage() -> impl IntoView {
                     </div>
                 }.into_any()
             } else {
-                view! { <></> }.into_any()
+                ().into_any()
             }
         }}
 
@@ -474,7 +474,6 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                             d.variants
                                                 .into_iter()
                                                 .enumerate()
-                                                .map(|(i, v)| (i, v))
                                                 .collect::<Vec<_>>()
                                         })
                                         .unwrap_or_default()
@@ -529,7 +528,6 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                                 d.ors_alternatives
                                                     .into_iter()
                                                     .enumerate()
-                                                    .map(|(i, a)| (i, a))
                                                     .collect::<Vec<_>>()
                                             })
                                             .unwrap_or_default()

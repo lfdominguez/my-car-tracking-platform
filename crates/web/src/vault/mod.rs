@@ -82,11 +82,11 @@ impl VaultSession {
             .map_err(|_| "Invalid recovery key".to_string())?;
         let secret = identity_from_recovery(&rk);
         let public = public_identity(&secret);
-        if let Some(win) = web_sys::window() {
-            if let Ok(Some(storage)) = win.local_storage() {
-                let b64 = B64.encode(secret.to_bytes());
-                let _ = storage.set_item(LS_DEVICE_IDENTITY, &b64);
-            }
+        if let Some(win) = web_sys::window()
+            && let Ok(Some(storage)) = win.local_storage()
+        {
+            let b64 = B64.encode(secret.to_bytes());
+            let _ = storage.set_item(LS_DEVICE_IDENTITY, &b64);
         }
         self.set_keys(Some(UnlockedVault { secret, public }));
         Ok(())

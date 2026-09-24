@@ -625,7 +625,7 @@ pub fn TripsPage() -> impl IntoView {
                                         } else if t.analysis_status == "failed" {
                                             view! { <span class="pill pill-ai is-failed">"AI failed"</span> }.into_any()
                                         } else {
-                                            view! { <></> }.into_any()
+                                            ().into_any()
                                         }}
                                     </div>
                                 </div>
@@ -988,10 +988,10 @@ pub fn TripDetailPage() -> impl IntoView {
                         let done = a.analysis_status != "pending" && a.analysis_status != "running";
                         analysis.set(Some(a));
                         if done {
-                            if let Ok(t) = get_trip(&id_poll).await {
-                                if alive_poll.load(Ordering::SeqCst) {
-                                    trip.set(Some(t));
-                                }
+                            if let Ok(t) = get_trip(&id_poll).await
+                                && alive_poll.load(Ordering::SeqCst)
+                            {
+                                trip.set(Some(t));
                             }
                             break;
                         }
@@ -1570,10 +1570,10 @@ fn traffic_route_toolbar(
                         .as_ref()
                         .and_then(|t| t.traffic.clone())
                     else {
-                        return view! { <></> }.into_any();
+                        return ().into_any();
                     };
                     if tr.status != "ready" {
-                        return view! { <></> }.into_any();
+                        return ().into_any();
                     }
                     let idx = tr.overall_index.unwrap_or(0.0);
                     let heavy = tr
@@ -2128,7 +2128,7 @@ fn TripAiPanel(
                             }
                             .into_any()
                         } else {
-                            view! { <></> }.into_any()
+                            ().into_any()
                         };
 
                         view! {

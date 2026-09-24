@@ -549,6 +549,20 @@ enum PanelKind {
     MixtureCandles,
 }
 
+/// A panel flattened for rendering: `(id, title, blurb, primary, y_left, y_right,
+/// series, kind, section key)`.
+type FlatPanel = (
+    String,
+    String,
+    String,
+    bool,
+    String,
+    Option<String>,
+    Vec<ChartSeriesSpec>,
+    PanelKind,
+    String,
+);
+
 #[derive(Clone, PartialEq)]
 struct PanelDef {
     id: &'static str,
@@ -979,7 +993,7 @@ fn mixture_bucket_size(n: usize) -> usize {
     if n <= MIXTURE_CANDLE_TARGET {
         1
     } else {
-        (n + MIXTURE_CANDLE_TARGET - 1) / MIXTURE_CANDLE_TARGET
+        n.div_ceil(MIXTURE_CANDLE_TARGET)
     }
 }
 
@@ -1336,76 +1350,76 @@ fn build_mixture_option(
 
     let mut series_json: Vec<serde_json::Value> = Vec::new();
 
-    if let Some(s) = stft {
-        if series_has_data(&s.data) {
-            series_json.push(serde_json::json!({
-                "name": "STFT (%)",
-                "type": "candlestick",
-                "yAxisIndex": 0,
-                "animation": false,
-                "barMaxWidth": 10,
-                "itemStyle": {
-                    "color": "#22c55e",
-                    "color0": "#ef4444",
-                    "borderColor": "#16a34a",
-                    "borderColor0": "#dc2626"
-                },
-                "data": series_to_ohlc(&s.data, bucket),
-                "markArea": healthy_mark_area,
-                "markLine": healthy_mark_line
-            }));
-        }
+    if let Some(s) = stft
+        && series_has_data(&s.data)
+    {
+        series_json.push(serde_json::json!({
+            "name": "STFT (%)",
+            "type": "candlestick",
+            "yAxisIndex": 0,
+            "animation": false,
+            "barMaxWidth": 10,
+            "itemStyle": {
+                "color": "#22c55e",
+                "color0": "#ef4444",
+                "borderColor": "#16a34a",
+                "borderColor0": "#dc2626"
+            },
+            "data": series_to_ohlc(&s.data, bucket),
+            "markArea": healthy_mark_area,
+            "markLine": healthy_mark_line
+        }));
     }
 
-    if let Some(s) = ltft {
-        if series_has_data(&s.data) {
-            // LTFT usually moves slowly — still show as candles so high/low of the
-            // window is obvious when learned trim drifts outside healthy band.
-            series_json.push(serde_json::json!({
-                "name": "LTFT (%)",
-                "type": "candlestick",
-                "yAxisIndex": 0,
-                "animation": false,
-                "barMaxWidth": 10,
-                "itemStyle": {
-                    "color": "#38bdf8",
-                    "color0": "#f97316",
-                    "borderColor": "#0ea5e9",
-                    "borderColor0": "#ea580c"
-                },
-                "data": series_to_ohlc(&s.data, bucket)
-            }));
-        }
+    if let Some(s) = ltft
+        && series_has_data(&s.data)
+    {
+        // LTFT usually moves slowly — still show as candles so high/low of the
+        // window is obvious when learned trim drifts outside healthy band.
+        series_json.push(serde_json::json!({
+            "name": "LTFT (%)",
+            "type": "candlestick",
+            "yAxisIndex": 0,
+            "animation": false,
+            "barMaxWidth": 10,
+            "itemStyle": {
+                "color": "#38bdf8",
+                "color0": "#f97316",
+                "borderColor": "#0ea5e9",
+                "borderColor0": "#ea580c"
+            },
+            "data": series_to_ohlc(&s.data, bucket)
+        }));
     }
 
-    if let Some(s) = lambda {
-        if series_has_data(&s.data) {
-            let lambda_data: Vec<serde_json::Value> = s
-                .data
-                .chunks(bucket.max(1))
-                .map(|chunk| {
-                    // last non-null in bucket; "-" = gap (safer than JSON null for some series)
-                    chunk
-                        .iter()
-                        .rev()
-                        .find_map(|v| *v)
-                        .map(|v| serde_json::json!(round2(v)))
-                        .unwrap_or_else(|| serde_json::json!("-"))
-                })
-                .collect();
-            series_json.push(serde_json::json!({
-                "name": "Lambda cmd",
-                "type": "line",
-                "yAxisIndex": if use_right { 1 } else { 0 },
-                "smooth": line_smooth,
-                "showSymbol": false,
-                "connectNulls": false,
-                "animation": false,
-                "data": lambda_data,
-                "lineStyle": { "width": 2, "color": "#a78bfa" },
-                "itemStyle": { "color": "#a78bfa" }
-            }));
-        }
+    if let Some(s) = lambda
+        && series_has_data(&s.data)
+    {
+        let lambda_data: Vec<serde_json::Value> = s
+            .data
+            .chunks(bucket.max(1))
+            .map(|chunk| {
+                // last non-null in bucket; "-" = gap (safer than JSON null for some series)
+                chunk
+                    .iter()
+                    .rev()
+                    .find_map(|v| *v)
+                    .map(|v| serde_json::json!(round2(v)))
+                    .unwrap_or_else(|| serde_json::json!("-"))
+            })
+            .collect();
+        series_json.push(serde_json::json!({
+            "name": "Lambda cmd",
+            "type": "line",
+            "yAxisIndex": if use_right { 1 } else { 0 },
+            "smooth": line_smooth,
+            "showSymbol": false,
+            "connectNulls": false,
+            "animation": false,
+            "data": lambda_data,
+            "lineStyle": { "width": 2, "color": "#a78bfa" },
+            "itemStyle": { "color": "#a78bfa" }
+        }));
     }
 
     serde_json::json!({
@@ -2009,17 +2023,7 @@ pub fn TripTelemetryDashboard(
                         let chip_list = chips.get();
                         let show_chips = !chip_list.is_empty();
                         // Flatten panels with section key for category filtering.
-                        let flat: Vec<(
-                            String,
-                            String,
-                            String,
-                            bool,
-                            String,
-                            Option<String>,
-                            Vec<ChartSeriesSpec>,
-                            PanelKind,
-                            String,
-                        )> = sections
+                        let flat: Vec<FlatPanel> = sections
                             .iter()
                             .flat_map(|(_title, _icon, key, _blurb, panels)| {
                                 panels.iter().map(|p| {
@@ -2087,7 +2091,7 @@ pub fn TripTelemetryDashboard(
                                     </div>
                                 }.into_any()
                             } else {
-                                view! { <></> }.into_any()
+                                ().into_any()
                             }}
 
                             <div class="telemetry-toolbar">

@@ -1430,7 +1430,7 @@ pub fn TripMap(
 ) -> impl IntoView {
     let id = "trip-map";
     let prefs = crate::units::use_unit_prefs();
-    let traffic_frames = traffic_frames.unwrap_or_else(|| Signal::derive(|| Vec::new()));
+    let traffic_frames = traffic_frames.unwrap_or_else(|| Signal::derive(Vec::new));
 
     // Always tear down MapLibre when this component leaves the tree so a remount
     // does not reuse a map bound to a disposed DOM node / reactive scope.

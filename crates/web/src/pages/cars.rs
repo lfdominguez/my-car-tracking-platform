@@ -689,17 +689,17 @@ pub fn CarDetailPage() -> impl IntoView {
                                                             // Optimistic UI: mark revoked immediately so
                                                             // the row updates before the list refetch.
                                                             devices.update(|list| {
-                                                                if let Some(dev) = list.iter_mut().find(|x| x.id == did) {
-                                                                    if dev.revoked_at.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
-                                                                        dev.revoked_at = Some("revoked".into());
-                                                                    }
+                                                                if let Some(dev) = list.iter_mut().find(|x| x.id == did)
+                                                                    && dev.revoked_at.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                                                                {
+                                                                    dev.revoked_at = Some("revoked".into());
                                                                 }
                                                             });
-                                                            if let Some(tok) = last_token.get_untracked() {
-                                                                if tok.device.id == did {
-                                                                    last_token.set(None);
-                                                                    qr_payload.set(None);
-                                                                }
+                                                            if let Some(tok) = last_token.get_untracked()
+                                                                && tok.device.id == did
+                                                            {
+                                                                last_token.set(None);
+                                                                qr_payload.set(None);
                                                             }
                                                             match list_devices(&cid).await {
                                                                 Ok(list) => devices.set(list),
@@ -761,40 +761,40 @@ pub fn CarDetailPage() -> impl IntoView {
                     leptos::task::spawn_local(async move {
                         match create_share(&id, &email, &role).await {
                             Ok(resp) => {
-                                if sealed {
-                                    if let Some(share) = resp.share.as_ref() {
-                                        if let Some(pk) = share.vault_identity_pubkey_b64.as_ref() {
-                                            if sess.is_unlocked() {
-                                                match load_car_dek(&sess, &id).await {
-                                                    Ok(dek) => {
-                                                        if let Err(e) = wrap_and_upload_dek(
-                                                            &sess,
-                                                            &id,
-                                                            &share.user_id,
-                                                            pk,
-                                                            &dek,
-                                                        )
-                                                        .await
-                                                        {
-                                                            error.set(Some(format!(
-                                                                "Share added but DEK wrap failed: {e}"
-                                                            )));
-                                                        }
+                                if sealed
+                                    && let Some(share) = resp.share.as_ref()
+                                {
+                                    if let Some(pk) = share.vault_identity_pubkey_b64.as_ref() {
+                                        if sess.is_unlocked() {
+                                            match load_car_dek(&sess, &id).await {
+                                                Ok(dek) => {
+                                                    if let Err(e) = wrap_and_upload_dek(
+                                                        &sess,
+                                                        &id,
+                                                        &share.user_id,
+                                                        pk,
+                                                        &dek,
+                                                    )
+                                                    .await
+                                                    {
+                                                        error.set(Some(format!(
+                                                            "Share added but DEK wrap failed: {e}"
+                                                        )));
                                                     }
-                                                    Err(e) => error.set(Some(format!(
-                                                        "Share added but could not load DEK: {e}"
-                                                    ))),
                                                 }
-                                            } else {
-                                                error.set(Some(
-                                                    "Share added — unlock vault to wrap the car key for the recipient.".into(),
-                                                ));
+                                                Err(e) => error.set(Some(format!(
+                                                    "Share added but could not load DEK: {e}"
+                                                ))),
                                             }
                                         } else {
                                             error.set(Some(
-                                                "Share added — recipient has no vault pubkey yet (pending wrap).".into(),
+                                                "Share added — unlock vault to wrap the car key for the recipient.".into(),
                                             ));
                                         }
+                                    } else {
+                                        error.set(Some(
+                                            "Share added — recipient has no vault pubkey yet (pending wrap).".into(),
+                                        ));
                                     }
                                 }
                                 share_email.set(String::new());
