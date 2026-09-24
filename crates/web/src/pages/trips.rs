@@ -1613,7 +1613,9 @@ fn sanitize_analysis_ui_error(raw: &str) -> String {
         || lower.contains("already in progress")
         || lower.contains("forbidden")
         || lower.contains("unauthorized")
+        || lower.contains("don't have access")
         || lower.contains("not found")
+        || lower.contains("try again")
     {
         // Strip noisy HTTP status prefixes like "400 Bad Request: …"
         if let Some(idx) = raw.find(": ") {

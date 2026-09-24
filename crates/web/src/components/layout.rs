@@ -65,10 +65,15 @@ pub fn AppLayout() -> impl IntoView {
                     avatar_failed.set(false);
                     unit_prefs.set(UnitPrefs::from_me(&user));
                     me.set(Some(user));
+                    // Back from signing in again: return to the page the expired
+                    // session was on.
+                    if let Some(next) = crate::api::take_login_next() {
+                        navigate.with_value(|nav| nav(&next, Default::default()));
+                    }
                 }
-                Err(crate::api::ApiError::Unauthorized) => {
-                    navigate.with_value(|nav| nav("/login", Default::default()));
-                }
+                // The API layer already redirected to /login?next=… (see
+                // `api::unauthorized`).
+                Err(crate::api::ApiError::Unauthorized) => {}
                 Err(e) => error.set(Some(e.to_string())),
             }
         });
