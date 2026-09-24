@@ -167,6 +167,63 @@ pub async fn notify(pool: &PgPool, user_id: Uuid, n: Notification<'_>) {
     });
 }
 
+/// A security notice, linking to the sessions list so an unexpected one can be
+/// revoked at once.
+pub async fn security_notice(pool: &PgPool, user_id: Uuid, title: String, body: String) {
+    notify(
+        pool,
+        user_id,
+        Notification {
+            kind: kinds::SECURITY,
+            title,
+            body: format!("{body} Not you? Review your sessions and devices in Settings."),
+            url: Some("/app/settings#security".into()),
+            dedup_key: None,
+        },
+    )
+    .await;
+}
+
+/// Tell a user about a sign-in from a browser and network not seen in their last
+/// 180 days of logins. The very first sign-in is not news.
+pub async fn notify_if_new_sign_in(
+    pool: &PgPool,
+    user_id: Uuid,
+    ip: &str,
+    user_agent: Option<&str>,
+) {
+    let seen: Result<(i64, bool), _> = sqlx::query_as(
+        "SELECT COUNT(*),
+                COALESCE(BOOL_OR(ip = $2 OR user_agent IS NOT DISTINCT FROM $3), false)
+         FROM audit_events
+         WHERE user_id = $1 AND action = 'auth.login'
+           AND created_at > NOW() - interval '180 days'",
+    )
+    .bind(user_id)
+    .bind(ip)
+    .bind(user_agent)
+    .fetch_one(pool)
+    .await;
+    match seen {
+        Ok((n, familiar)) if n > 0 && !familiar => {
+            let agent: String = user_agent
+                .unwrap_or("an unknown browser")
+                .chars()
+                .take(80)
+                .collect();
+            security_notice(
+                pool,
+                user_id,
+                "New sign-in to your account".into(),
+                format!("Signed in from {agent} at {ip}."),
+            )
+            .await;
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(%user_id, error = %e, "new sign-in check failed"),
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct SubRow {
     id: Uuid,
