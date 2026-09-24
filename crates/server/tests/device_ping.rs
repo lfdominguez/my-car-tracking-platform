@@ -63,6 +63,31 @@ async fn ping_checks_the_token_without_creating_a_trip() {
         0,
         "ping must not start a trip"
     );
+    // Nor count as the phone being seen: the offline alert reads last_seen_at.
+    let last_seen = |pool: sqlx::PgPool, id: String| async move {
+        sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
+            "SELECT last_seen_at FROM devices WHERE id = $1",
+        )
+        .bind(Uuid::parse_str(&id).unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(last_seen(pool().await, device_id.clone()).await, None);
+    let old = chrono::Utc::now() - chrono::Duration::hours(3);
+    sqlx::query("UPDATE devices SET last_seen_at = $2 WHERE id = $1")
+        .bind(Uuid::parse_str(&device_id).unwrap())
+        .bind(old)
+        .execute(&pool().await)
+        .await
+        .unwrap();
+    let resp = ping(Some(format!("Basic {token}"))).await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let seen = last_seen(pool().await, device_id.clone()).await.unwrap();
+    assert!(
+        (seen - old).num_milliseconds().abs() < 1,
+        "ping moved last_seen_at"
+    );
 
     assert_eq!(
         ping(None).await.unwrap().status(),

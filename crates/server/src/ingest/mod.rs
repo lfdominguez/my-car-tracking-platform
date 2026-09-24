@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-use crate::devices::authenticate_device_token;
+use crate::devices::{authenticate_device_token, verify_device_token};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -58,7 +58,11 @@ async fn track_ping(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> AppResult<Json<TrackPingResponse>> {
-    let device = auth_device(&state, &headers).await?;
+    // Not `auth_device`: a token check must not count as the device being seen.
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let device = verify_device_token(&state.pool, &state.config.device_token_pepper, auth).await?;
     let car_name: String = sqlx::query_scalar("SELECT name FROM cars WHERE id = $1")
         .bind(device.car_id)
         .fetch_one(&state.pool)

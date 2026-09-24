@@ -352,7 +352,31 @@ pub struct DeviceAuth {
     pub car_id: Uuid,
 }
 
+/// Authenticate an ingest call and record the device as seen.
 pub async fn authenticate_device_token(
+    pool: &sqlx::PgPool,
+    pepper: &str,
+    authorization: Option<&str>,
+) -> Result<DeviceAuth, AppError> {
+    let device = verify_device_token(pool, pepper, authorization).await?;
+
+    // At most one write a minute: at 1 Hz ingest an unconditional update doubled
+    // the writes of every /api/track/sample call for no visible difference.
+    sqlx::query(
+        "UPDATE devices SET last_seen_at = NOW()
+         WHERE id = $1
+           AND (last_seen_at IS NULL OR last_seen_at < NOW() - interval '60 seconds')",
+    )
+    .bind(device.device_id)
+    .execute(pool)
+    .await?;
+
+    Ok(device)
+}
+
+/// Check a device token without touching `last_seen_at`: the offline alert reads
+/// it as "data arrived", which a token check is not.
+pub async fn verify_device_token(
     pool: &sqlx::PgPool,
     pepper: &str,
     authorization: Option<&str>,
@@ -378,18 +402,6 @@ pub async fn authenticate_device_token(
     if revoked_at.is_some() {
         return Err(AppError::Forbidden);
     }
-
-    // At most one write a minute: at 1 Hz ingest an unconditional update doubled
-    // the writes of every /api/track/sample call for no visible difference.
-    sqlx::query(
-        "UPDATE devices SET last_seen_at = NOW()
-         WHERE id = $1
-           AND (last_seen_at IS NULL OR last_seen_at < NOW() - interval '60 seconds')",
-    )
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-
     Ok(DeviceAuth { device_id, car_id })
 }
 
