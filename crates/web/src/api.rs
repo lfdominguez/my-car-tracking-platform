@@ -1304,3 +1304,200 @@ pub async fn post_chat_message(
 pub fn chat_stream_url(message_id: &str) -> String {
     format!("/api/chat/messages/{message_id}/stream")
 }
+
+// --- garage: maintenance, odometer, fuel & charging log (SI in and out) -------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MaintenanceItem {
+    pub id: String,
+    pub car_id: String,
+    pub name: String,
+    pub interval_km: Option<f64>,
+    pub interval_months: Option<i32>,
+    /// `YYYY-MM-DD`.
+    pub last_done_on: Option<String>,
+    pub last_done_km: Option<f64>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MaintenanceLogEntry {
+    pub id: String,
+    pub car_id: String,
+    pub item_id: Option<String>,
+    /// `YYYY-MM-DD`.
+    pub done_on: String,
+    pub odometer_km: Option<f64>,
+    pub title: String,
+    pub cost: Option<f64>,
+    pub currency: Option<String>,
+    pub workshop: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DueItem {
+    pub item_id: String,
+    pub name: String,
+    pub due_on: Option<String>,
+    pub due_km: Option<f64>,
+    pub days_left: Option<i64>,
+    pub km_left: Option<f64>,
+    /// `overdue`, `soon`, `ok` or `unknown`.
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DueResponse {
+    pub odometer_km: Option<f64>,
+    #[serde(default)]
+    pub items: Vec<DueItem>,
+}
+
+impl DueResponse {
+    /// `(overdue, soon)` counts, for badges.
+    pub fn counts(&self) -> (usize, usize) {
+        let n = |s: &str| self.items.iter().filter(|i| i.status == s).count();
+        (n("overdue"), n("soon"))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OdometerReading {
+    pub id: String,
+    pub read_at: String,
+    pub odometer_km: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FuelEntry {
+    pub id: String,
+    pub car_id: String,
+    pub filled_at: String,
+    pub odometer_km: Option<f64>,
+    /// `L` or `kWh`.
+    pub unit: String,
+    pub quantity: f64,
+    pub price_per_unit: Option<f64>,
+    pub total_cost: Option<f64>,
+    pub currency: Option<String>,
+    pub full_tank: bool,
+    pub station: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FuelSummary {
+    #[serde(default)]
+    pub entries: usize,
+    #[serde(default)]
+    pub total_quantity_l: f64,
+    #[serde(default)]
+    pub total_quantity_kwh: f64,
+    #[serde(default)]
+    pub total_cost: f64,
+    pub currency: Option<String>,
+    pub measured_l_per_100km: Option<f64>,
+    pub measured_kwh_per_100km: Option<f64>,
+    pub cost_per_km: Option<f64>,
+    pub latest_price_per_l: Option<f64>,
+    pub latest_price_per_kwh: Option<f64>,
+    pub co2_kg: Option<f64>,
+}
+
+pub async fn list_maintenance_items(car_id: &str) -> Result<Vec<MaintenanceItem>, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/cars/{car_id}/maintenance/items"
+    )))
+    .await
+}
+
+pub async fn create_maintenance_item(
+    car_id: &str,
+    body: &serde_json::Value,
+) -> Result<MaintenanceItem, ApiError> {
+    send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/maintenance/items")),
+        body,
+    )
+    .await
+}
+
+pub async fn update_maintenance_item(
+    car_id: &str,
+    item_id: &str,
+    body: &serde_json::Value,
+) -> Result<MaintenanceItem, ApiError> {
+    send_json_body(
+        Request::patch(&format!("/api/cars/{car_id}/maintenance/items/{item_id}")),
+        body,
+    )
+    .await
+}
+
+pub async fn delete_maintenance_item(car_id: &str, item_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/maintenance/items/{item_id}"
+    )))
+    .await
+}
+
+pub async fn list_maintenance_log(car_id: &str) -> Result<Vec<MaintenanceLogEntry>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/maintenance/log"))).await
+}
+
+pub async fn create_maintenance_log(
+    car_id: &str,
+    body: &serde_json::Value,
+) -> Result<MaintenanceLogEntry, ApiError> {
+    send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/maintenance/log")),
+        body,
+    )
+    .await
+}
+
+pub async fn delete_maintenance_log(car_id: &str, entry_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/maintenance/log/{entry_id}"
+    )))
+    .await
+}
+
+pub async fn maintenance_due(car_id: &str) -> Result<DueResponse, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/maintenance/due"))).await
+}
+
+pub async fn add_odometer(car_id: &str, odometer_km: f64) -> Result<OdometerReading, ApiError> {
+    let body = serde_json::json!({ "odometer_km": odometer_km });
+    send_json_body(
+        Request::post(&format!("/api/cars/{car_id}/odometer")),
+        &body,
+    )
+    .await
+}
+
+pub async fn list_fuel_log(car_id: &str) -> Result<Vec<FuelEntry>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/fuel-log"))).await
+}
+
+pub async fn create_fuel_entry(
+    car_id: &str,
+    body: &serde_json::Value,
+) -> Result<FuelEntry, ApiError> {
+    send_json_body(Request::post(&format!("/api/cars/{car_id}/fuel-log")), body).await
+}
+
+pub async fn delete_fuel_entry(car_id: &str, entry_id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!(
+        "/api/cars/{car_id}/fuel-log/{entry_id}"
+    )))
+    .await
+}
+
+pub async fn fuel_summary(car_id: &str) -> Result<FuelSummary, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/cars/{car_id}/fuel-log/summary"
+    )))
+    .await
+}

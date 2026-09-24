@@ -9,6 +9,7 @@ use crate::api::{
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::pages::garage::GarageSection;
 use crate::vault::{
     CarProfileV1, VaultUnlockGate, decrypt_car_profile, load_car_dek, put_car_profile,
     use_vault_session, wrap_and_upload_dek,
@@ -846,5 +847,15 @@ pub fn CarDetailPage() -> impl IntoView {
                 </tbody>
             </table>
         </div>
+
+        <GarageSection
+            car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
+            can_edit=Signal::derive(move || {
+                car.with(|c| c.as_ref().is_some_and(|c| c.role == "owner" || c.role == "editor"))
+            })
+            electric=Signal::derive(move || {
+                car.with(|c| c.as_ref().is_some_and(|c| c.fuel_class.eq_ignore_ascii_case("FULL_ELECTRIC")))
+            })
+        />
     }
 }

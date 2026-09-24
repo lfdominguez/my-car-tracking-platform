@@ -427,6 +427,91 @@ pub fn integrated_economy(samples: &[EconomySample], system: UnitSystem) -> Opti
     economy_from_totals(fuel, dist, system)
 }
 
+// --- SI <-> display for garage values ------------------------------------------
+//
+// The garage endpoints (maintenance, odometer, fuel log) take and return SI —
+// km, litres, price per litre — whatever the user's unit system, so the UI
+// converts both ways here.
+
+/// km → km or miles.
+pub fn km_to_display(km: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => km,
+        UnitSystem::Us => km / KM_PER_MILE,
+    }
+}
+
+/// km or miles → km.
+pub fn display_to_km(v: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => v,
+        UnitSystem::Us => v * KM_PER_MILE,
+    }
+}
+
+/// Litres → litres or US gallons.
+pub fn litres_to_display(l: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => l,
+        UnitSystem::Us => l / LITERS_PER_US_GALLON,
+    }
+}
+
+/// Litres or US gallons → litres.
+pub fn display_to_litres(v: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => v,
+        UnitSystem::Us => v * LITERS_PER_US_GALLON,
+    }
+}
+
+/// Price per litre → price per litre or per US gallon.
+pub fn price_per_litre_to_display(p: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => p,
+        UnitSystem::Us => p * LITERS_PER_US_GALLON,
+    }
+}
+
+/// Price per litre or per US gallon → price per litre.
+pub fn display_to_price_per_litre(p: f64, system: UnitSystem) -> f64 {
+    match system {
+        UnitSystem::Metric => p,
+        UnitSystem::Us => p / LITERS_PER_US_GALLON,
+    }
+}
+
+/// L/100 km → L/100 km or mpg (US).
+pub fn l_per_100km_to_display(v: f64, system: UnitSystem) -> Option<f64> {
+    match system {
+        UnitSystem::Metric => (v > 0.0).then_some(v),
+        UnitSystem::Us => (v > 0.0).then(|| 100.0 * KM_PER_MILE / LITERS_PER_US_GALLON / v),
+    }
+}
+
+/// An SI distance in km with the user's distance label, no decimals.
+pub fn fmt_km(km: Option<f64>, prefs: &UnitPrefs) -> String {
+    match km {
+        Some(v) if v.is_finite() => format!(
+            "{:.0} {}",
+            km_to_display(v, prefs.system),
+            prefs.labels.distance
+        ),
+        _ => "—".into(),
+    }
+}
+
+/// Money with an optional currency code (`12.50 EUR`).
+pub fn fmt_money(v: Option<f64>, currency: Option<&str>) -> String {
+    match v {
+        Some(x) if x.is_finite() => match currency.filter(|c| !c.trim().is_empty()) {
+            Some(c) => format!("{x:.2} {c}"),
+            None => format!("{x:.2}"),
+        },
+        _ => "—".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

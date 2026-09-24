@@ -1,6 +1,7 @@
 pub mod cars;
 pub mod chat;
 pub mod dashboard;
+pub mod garage;
 pub mod landing;
 pub mod login;
 pub mod not_found;

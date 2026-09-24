@@ -3,6 +3,7 @@ use leptos_router::components::A;
 
 use crate::api::{
     DashboardCarSummary, DashboardSummary, Trip, TripListOpts, get_dashboard, list_trips,
+    maintenance_due,
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{
@@ -315,6 +316,17 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoVie
     let make = car.make_model.clone();
     let name = car.name.clone();
 
+    // Maintenance due counts (#113): one small request per card, best-effort.
+    let due_counts = RwSignal::new((0usize, 0usize));
+    {
+        let id = id.clone();
+        leptos::task::spawn_local(async move {
+            if let Ok(due) = maintenance_due(&id).await {
+                let _ = due_counts.try_set(due.counts());
+            }
+        });
+    }
+
     view! {
         <A href=href>
             <article class="dash-car-card">
@@ -335,6 +347,20 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoVie
                     <div class="dash-car-titles">
                         <div class="dash-car-name">{name}</div>
                         <div class="dash-car-sub muted">{format!("{make} · {trips_label}")}</div>
+                        <Show when=move || due_counts.get() != (0, 0)>
+                            <div class="dash-car-due" aria-label="Maintenance">
+                                <Show when=move || { due_counts.get().0 > 0 }>
+                                    <span class="pill pill-danger">
+                                        {move || format!("{} overdue", due_counts.get().0)}
+                                    </span>
+                                </Show>
+                                <Show when=move || { due_counts.get().1 > 0 }>
+                                    <span class="pill pill-warn">
+                                        {move || format!("{} due soon", due_counts.get().1)}
+                                    </span>
+                                </Show>
+                            </div>
+                        </Show>
                     </div>
                 </div>
                 <div class="dash-car-body">

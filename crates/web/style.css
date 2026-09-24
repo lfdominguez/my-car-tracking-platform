@@ -4148,3 +4148,76 @@ button.tag-chip:hover { color: var(--accent); border-color: var(--color-border-a
 .trip-meta-form textarea { min-height: 72px; }
 .trip-meta-readonly { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.6rem; }
 .trip-meta-notes { margin: 0; white-space: pre-wrap; color: var(--body); }
+
+/* ---- Garage: maintenance, odometer, fuel & charging (#113 #114 #115) ------- */
+.garage-card { margin-top: 1.25rem; }
+.garage-head { flex-wrap: wrap; margin-bottom: 0.75rem; }
+.garage-panel { display: flex; flex-direction: column; gap: 0.75rem; }
+.garage-subtitle {
+  margin: 0.75rem 0 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-body-bold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.garage-odo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1.25rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--inset);
+}
+.garage-inline-form { display: flex; gap: 0.5rem; align-items: center; }
+.garage-inline-form input { width: 11rem; min-height: 36px; }
+.garage-due-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.garage-due-item {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) 2fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.garage-due-name { color: var(--text); font-weight: var(--font-weight-body-medium); }
+.garage-due-detail { font-size: var(--text-sm); }
+.table-scroll { width: 100%; overflow-x: auto; }
+.garage-table td { vertical-align: top; }
+.garage-note { font-size: var(--text-xs); margin-top: 0.15rem; }
+.garage-row-actions { display: flex; gap: 0.35rem; justify-content: flex-end; flex-wrap: wrap; }
+.garage-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+.garage-form .btn { align-self: flex-start; }
+.garage-form-title { font-weight: var(--font-weight-body-bold); color: var(--text); }
+.garage-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.6rem 0.75rem;
+}
+.garage-field { margin: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.garage-field span { color: var(--muted); font-size: var(--text-xs); }
+.garage-field-wide { grid-column: 1 / -1; }
+.garage-check { display: flex; align-items: center; gap: 0.5rem; margin: 0; align-self: end; min-height: 42px; }
+.garage-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.5rem;
+}
+.dash-car-due { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem; }
+@media (max-width: 640px) {
+  .garage-due-item { grid-template-columns: 1fr auto; }
+  .garage-due-detail { grid-column: 1 / -1; grid-row: 2; }
+  .garage-inline-form input { width: 100%; }
+}
