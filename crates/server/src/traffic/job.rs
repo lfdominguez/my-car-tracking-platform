@@ -197,13 +197,14 @@ pub async fn process_finished_track(
             .await
             .ok()
             .flatten();
-        matched.push((frame, free_flow_kph(way.as_ref())));
+        let limit = way.as_ref().and_then(|w| w.maxspeed_kph);
+        matched.push((frame, free_flow_kph(way.as_ref()), limit));
     }
 
     // Off-peak history for every way on the trip in one query, not one per frame.
     let way_ids: Vec<i64> = matched
         .iter()
-        .filter_map(|(_, (_, way_id, _))| *way_id)
+        .filter_map(|(_, (_, way_id, _), _)| *way_id)
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
@@ -215,7 +216,7 @@ pub async fn process_finished_track(
         });
 
     let mut scored = Vec::with_capacity(matched.len());
-    for (frame, (mut v_ff, way_id, has_ms)) in matched {
+    for (frame, (mut v_ff, way_id, has_ms), maxspeed_kph) in matched {
         if let Some(p85) = way_id.and_then(|w| p85_by_way.get(&w)) {
             v_ff = apply_history_boost(v_ff, Some(*p85), has_ms);
         }
@@ -223,6 +224,7 @@ pub async fn process_finished_track(
             frame,
             v_ff_kph: v_ff,
             osm_way_id: way_id,
+            maxspeed_kph,
             level: TrafficLevel::Free,
         });
     }
@@ -240,8 +242,8 @@ pub async fn process_finished_track(
             r#"
             INSERT INTO trip_traffic_frames (
                 track_id, seq, t_start, t_end, lat, lon,
-                speed_kph, v_ff_kph, level, osm_way_id, distance_m
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                speed_kph, v_ff_kph, level, osm_way_id, distance_m, maxspeed_kph
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             "#,
         )
         .bind(track_id)
@@ -255,6 +257,7 @@ pub async fn process_finished_track(
         .bind(s.level.as_str())
         .bind(s.osm_way_id)
         .bind(s.frame.distance_m)
+        .bind(s.maxspeed_kph)
         .execute(&mut *tx)
         .await?;
     }

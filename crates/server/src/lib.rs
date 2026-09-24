@@ -10,6 +10,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod devices;
+pub mod driving;
 pub mod error;
 pub mod garage;
 pub mod geofences;
@@ -77,6 +78,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(garage::router())
         .merge(alerts::router())
         .merge(geofences::router())
+        .merge(driving::router())
         .merge(photo_routes)
         .merge(devices::router())
         .merge(shares::router())
