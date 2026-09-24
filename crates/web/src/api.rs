@@ -157,6 +157,13 @@ pub struct Trip {
     pub last_point_at: Option<String>,
     #[serde(default)]
     pub traffic: Option<TripTrafficSummary>,
+    /// `business`, `personal`, or unset.
+    #[serde(default)]
+    pub purpose: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -253,6 +260,10 @@ pub struct TripPoint {
     pub accel_rms_mps2: Option<f64>,
     #[serde(default)]
     pub device_tilt_delta_deg: Option<f64>,
+    #[serde(default)]
+    pub battery_soc_pct: Option<f64>,
+    #[serde(default)]
+    pub battery_power_kw: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -462,6 +473,25 @@ fn with_creds(builder: RequestBuilder) -> RequestBuilder {
     builder.credentials(web_sys::RequestCredentials::Include)
 }
 
+/// Send `body` as JSON and decode a JSON response.
+async fn send_json_body<T: DeserializeOwned>(
+    builder: RequestBuilder,
+    body: &serde_json::Value,
+) -> Result<T, ApiError> {
+    let req = with_creds(builder)
+        .header("Content-Type", "application/json")
+        .json(body)
+        .map_err(|e| ApiError::Message(e.to_string()))?;
+    send_body_json(req).await
+}
+
+/// Send a request whose response body does not matter (DELETE and friends).
+async fn send_no_content(builder: RequestBuilder) -> Result<(), ApiError> {
+    let resp = with_creds(builder).send().await.map_err(network_error)?;
+    check(resp).await?;
+    Ok(())
+}
+
 pub async fn get_me() -> Result<Me, ApiError> {
     send_json(Request::get("/api/me")).await
 }
@@ -492,18 +522,7 @@ pub async fn rotate_mcp_token() -> Result<McpTokenResponse, ApiError> {
 }
 
 pub async fn revoke_mcp_token() -> Result<(), ApiError> {
-    let resp = with_creds(Request::delete("/api/me/mcp-token"))
-        .send()
-        .await
-        .map_err(network_error)?;
-    if resp.status() == 401 {
-        return Err(unauthorized());
-    }
-    if !resp.ok() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(status_error(resp.status(), &text));
-    }
-    Ok(())
+    send_no_content(Request::delete("/api/me/mcp-token")).await
 }
 
 pub async fn fetch_trip_analysis(id: &str) -> Result<TripAnalysis, ApiError> {
@@ -573,6 +592,11 @@ pub struct TripListOpts {
     /// Inclusive upper bound on `started_at` (RFC3339 / ISO-8601).
     pub to: Option<String>,
     pub limit: Option<i64>,
+    /// Exclusive upper bound on `started_at`: the last trip of the previous page.
+    pub before: Option<String>,
+    /// `business` or `personal`.
+    pub purpose: Option<String>,
+    pub tag: Option<String>,
 }
 
 pub fn build_trips_list_url(opts: &TripListOpts) -> String {
@@ -589,6 +613,18 @@ pub fn build_trips_list_url(opts: &TripListOpts) -> String {
     if let Some(limit) = opts.limit {
         parts.push(format!("limit={limit}"));
     }
+    if let Some(before) = opts.before.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("before={}", urlencoding_trip_query(before)));
+    }
+    if let Some(purpose) = opts.purpose.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("purpose={}", urlencoding_trip_query(purpose)));
+    }
+    if let Some(tag) = opts.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(format!(
+            "tag={}",
+            urlencoding_trip_query(&tag.to_lowercase())
+        ));
+    }
     if parts.is_empty() {
         "/api/trips".into()
     } else {
@@ -597,7 +633,7 @@ pub fn build_trips_list_url(opts: &TripListOpts) -> String {
 }
 
 /// Minimal query encoding for ISO timestamps and UUIDs (encode reserved chars).
-fn urlencoding_trip_query(raw: &str) -> String {
+pub fn urlencoding_trip_query(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for b in raw.bytes() {
         match b {
@@ -661,8 +697,37 @@ pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub async fn trip_points(id: &str) -> Result<Vec<TripPoint>, ApiError> {
-    send_json(Request::get(&format!("/api/trips/{id}/points"))).await
+/// Samples of a trip. `max_points` asks the server to thin them to about that many
+/// while keeping each bucket's slowest and fastest sample.
+pub async fn trip_points(id: &str, max_points: Option<usize>) -> Result<Vec<TripPoint>, ApiError> {
+    let url = match max_points {
+        Some(n) => format!("/api/trips/{id}/points?max_points={n}"),
+        None => format!("/api/trips/{id}/points"),
+    };
+    send_json(Request::get(&url)).await
+}
+
+/// Edit a trip's purpose (`business` / `personal` / `""` to clear), notes and tags.
+pub async fn update_trip_meta(
+    id: &str,
+    purpose: &str,
+    notes: &str,
+    tags: &[String],
+) -> Result<Trip, ApiError> {
+    let body = serde_json::json!({ "purpose": purpose, "notes": notes, "tags": tags });
+    send_json_body(Request::patch(&format!("/api/trips/{id}")), &body).await
+}
+
+/// Join consecutive finished trips of one car; returns the merged trip.
+pub async fn merge_trips(ids: &[String]) -> Result<Trip, ApiError> {
+    let body = serde_json::json!({ "trip_ids": ids });
+    send_json_body(Request::post("/api/trips/merge"), &body).await
+}
+
+/// Split a finished trip at `at` (RFC3339); returns the new, later trip.
+pub async fn split_trip(id: &str, at: &str) -> Result<Trip, ApiError> {
+    let body = serde_json::json!({ "at": at });
+    send_json_body(Request::post(&format!("/api/trips/{id}/split")), &body).await
 }
 
 pub async fn trip_traffic_frames(id: &str) -> Result<Vec<TripTrafficFrame>, ApiError> {

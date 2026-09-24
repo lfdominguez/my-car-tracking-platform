@@ -577,7 +577,9 @@ async fn migrate_trip(
     let body = encrypt_put(dek, car_uuid, "track_meta", track_uuid, None, 1, &plain)?;
     vault_put_object(body).await.map_err(|e| e.to_string())?;
 
-    let mut points = trip_points(&trip.id).await.map_err(|e| e.to_string())?;
+    let mut points = trip_points(&trip.id, None)
+        .await
+        .map_err(|e| e.to_string())?;
     for p in &mut points {
         point_display_to_si(p, system);
     }

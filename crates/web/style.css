@@ -4070,3 +4070,81 @@ a:hover .routes-corridor-card {
   .chat-rail { position: static; }
   .chat-msg, .chat-msg-user { max-width: 100%; }
 }
+
+/* ---- Trips: purpose, tags, selection, paging (#121 #89 #93) --------------- */
+.trips-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.trips-range-field {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  color: var(--muted);
+}
+.trips-range-field input { width: auto; min-height: 36px; padding: 0.35rem 0.6rem; }
+.trips-tag-filter .trips-search-input { max-width: 9rem; }
+
+.trips-select-bar {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 1rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--color-border-accent);
+  border-radius: var(--radius);
+  background: var(--gradient-surface), var(--panel-2);
+  box-shadow: var(--shadow-2);
+}
+.trips-select-count { font-weight: var(--font-weight-body-bold); color: var(--text); }
+.trips-select-hint { font-size: var(--text-sm); }
+.trips-select-actions { display: flex; gap: 0.5rem; margin-left: auto; flex-wrap: wrap; }
+.trip-card.is-selected {
+  border-color: var(--color-border-accent);
+  box-shadow: var(--shadow-2), inset 0 0 0 1px var(--color-border-accent);
+}
+.trip-select-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.pill-purpose { color: var(--color-accent-2); border-color: color-mix(in srgb, var(--color-accent-2) 30%, transparent); }
+.pill-purpose.is-business { color: var(--color-info); background: var(--color-info-subtle); border-color: var(--color-border-accent); }
+.pill-purpose.is-personal { color: var(--color-success); background: var(--color-success-subtle); border-color: color-mix(in srgb, var(--color-success) 26%, transparent); }
+
+.trip-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+.tag-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.14rem 0.55rem;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--border);
+  background: var(--inset);
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-family: var(--font-family-mono);
+  line-height: 1.4;
+}
+button.tag-chip { cursor: pointer; transition: color var(--t-fast), border-color var(--t-fast); }
+button.tag-chip:hover { color: var(--accent); border-color: var(--color-border-accent); }
+
+.trips-load-more { display: flex; justify-content: center; margin-top: 1.25rem; }
+
+.trip-meta-card { margin-top: 1.25rem; }
+.trip-meta-form { margin-top: 0.75rem; }
+.trip-meta-form textarea { min-height: 72px; }
+.trip-meta-readonly { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.6rem; }
+.trip-meta-notes { margin: 0; white-space: pre-wrap; color: var(--body); }

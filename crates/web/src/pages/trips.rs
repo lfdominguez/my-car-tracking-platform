@@ -7,8 +7,9 @@ use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 
 use crate::api::{
     Car, Trip, TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame, delete_trip,
-    fetch_trip_analysis, finish_trip, get_trip, list_cars, list_trips, start_trip_analysis,
-    start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames, vault_create_job,
+    fetch_trip_analysis, finish_trip, get_car, get_trip, list_cars, list_trips, merge_trips,
+    split_trip, start_trip_analysis, start_trip_traffic_analyze, trip_map, trip_points,
+    trip_traffic_frames, update_trip_meta, vault_create_job,
 };
 use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
@@ -129,6 +130,26 @@ fn pretty_started(s: &str) -> String {
     }
 }
 
+/// Local `YYYY-MM-DD HH:MM:SS` for an RFC3339 instant.
+fn pretty_time_secs(s: &str) -> String {
+    use chrono::{DateTime, Local};
+    DateTime::parse_from_rfc3339(s.trim())
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|_| s.to_string())
+}
+
+/// Local `HH:MM:SS` for an RFC3339 instant.
+fn pretty_clock(s: &str) -> String {
+    use chrono::{DateTime, Local};
+    DateTime::parse_from_rfc3339(s.trim())
+        .map(|dt| dt.with_timezone(&Local).format("%H:%M:%S").to_string())
+        .unwrap_or_else(|_| s.to_string())
+}
+
 /// Human status for open trips: live vs no GPS for a while.
 fn open_trip_status_label(last_point_at: Option<&str>, started_at: &str) -> String {
     use chrono::{DateTime, Local, Utc};
@@ -154,7 +175,12 @@ fn confirm(msg: &str) -> bool {
         .unwrap_or(false)
 }
 
-const TRIPS_LIST_LIMIT: i64 = 200;
+/// Samples requested for the detail view; the server thins longer trips to about
+/// this many while keeping each bucket's extremes.
+const DETAIL_MAX_POINTS: usize = 2000;
+
+/// Trips fetched per page; "Load more" asks for the next page with `before`.
+const TRIPS_PAGE_SIZE: i64 = 50;
 const TRIPS_FILTER_STORAGE_KEY: &str = "trips-list-filter";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +189,7 @@ enum TripListFilter {
     Month,
     Older,
     All,
+    Custom,
 }
 
 impl TripListFilter {
@@ -172,6 +199,7 @@ impl TripListFilter {
             Self::Month => "month",
             Self::Older => "older",
             Self::All => "all",
+            Self::Custom => "custom",
         }
     }
 
@@ -181,6 +209,7 @@ impl TripListFilter {
             Self::Month => "This month",
             Self::Older => "Older",
             Self::All => "All",
+            Self::Custom => "Custom range",
         }
     }
 
@@ -190,12 +219,19 @@ impl TripListFilter {
             "month" => Some(Self::Month),
             "older" => Some(Self::Older),
             "all" => Some(Self::All),
+            "custom" => Some(Self::Custom),
             _ => None,
         }
     }
 
-    fn all() -> [Self; 4] {
-        [Self::Week, Self::Month, Self::Older, Self::All]
+    fn all() -> [Self; 5] {
+        [
+            Self::Week,
+            Self::Month,
+            Self::Older,
+            Self::All,
+            Self::Custom,
+        ]
     }
 }
 
@@ -222,7 +258,7 @@ fn save_trips_filter(f: TripListFilter) {
     let _ = storage.set_item(TRIPS_FILTER_STORAGE_KEY, f.as_str());
 }
 
-fn local_midnight(date: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
+pub(crate) fn local_midnight(date: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
     use chrono::{Local, TimeZone};
     let naive = date.and_hms_opt(0, 0, 0).expect("midnight is always valid");
     Local
@@ -250,36 +286,38 @@ fn end_of_previous_local_month() -> chrono::DateTime<chrono::Utc> {
     start_of_local_month() - chrono::Duration::milliseconds(1)
 }
 
-fn to_rfc3339(dt: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn to_rfc3339(dt: chrono::DateTime<chrono::Utc>) -> String {
     dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn trip_list_opts_for_filter(filter: TripListFilter) -> TripListOpts {
-    match filter {
-        TripListFilter::Week => TripListOpts {
-            from: Some(to_rfc3339(start_of_local_week_monday())),
-            to: None,
-            limit: Some(TRIPS_LIST_LIMIT),
-            car_id: None,
-        },
-        TripListFilter::Month => TripListOpts {
-            from: Some(to_rfc3339(start_of_local_month())),
-            to: None,
-            limit: Some(TRIPS_LIST_LIMIT),
-            car_id: None,
-        },
-        TripListFilter::Older => TripListOpts {
-            from: None,
-            to: Some(to_rfc3339(end_of_previous_local_month())),
-            limit: Some(TRIPS_LIST_LIMIT),
-            car_id: None,
-        },
-        TripListFilter::All => TripListOpts {
-            from: None,
-            to: None,
-            limit: Some(TRIPS_LIST_LIMIT),
-            car_id: None,
-        },
+/// `YYYY-MM-DD` from a date input, if it is one.
+fn parse_input_date(raw: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()
+}
+
+/// Time bounds for a filter. The custom range is inclusive of both local days.
+fn trip_list_opts_for_filter(
+    filter: TripListFilter,
+    custom_from: &str,
+    custom_to: &str,
+) -> TripListOpts {
+    let (from, to) = match filter {
+        TripListFilter::Week => (Some(start_of_local_week_monday()), None),
+        TripListFilter::Month => (Some(start_of_local_month()), None),
+        TripListFilter::Older => (None, Some(end_of_previous_local_month())),
+        TripListFilter::All => (None, None),
+        TripListFilter::Custom => (
+            parse_input_date(custom_from).map(local_midnight),
+            parse_input_date(custom_to).map(|d| {
+                local_midnight(d + chrono::Duration::days(1)) - chrono::Duration::milliseconds(1)
+            }),
+        ),
+    };
+    TripListOpts {
+        from: from.map(to_rfc3339),
+        to: to.map(to_rfc3339),
+        limit: Some(TRIPS_PAGE_SIZE),
+        ..Default::default()
     }
 }
 
@@ -297,6 +335,18 @@ fn trip_matches_query(t: &Trip, q: &str) -> bool {
     if t.started_at.to_ascii_lowercase().contains(&q) {
         return true;
     }
+    if t.tags
+        .iter()
+        .any(|tag| tag.contains(q.trim_start_matches('#')))
+    {
+        return true;
+    }
+    if t.notes
+        .as_deref()
+        .is_some_and(|n| n.to_ascii_lowercase().contains(&q))
+    {
+        return true;
+    }
     let local = pretty_started(&t.started_at).to_ascii_lowercase();
     if local.contains(&q) {
         return true;
@@ -309,17 +359,57 @@ fn trip_matches_query(t: &Trip, q: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Display label for a stored purpose.
+pub(crate) fn purpose_label(purpose: &str) -> Option<&'static str> {
+    match purpose {
+        "business" => Some("Business"),
+        "personal" => Some("Personal"),
+        _ => None,
+    }
+}
+
+/// Why the selected trips cannot be merged, or `None` when they can.
+fn merge_blocker(selected: &[Trip]) -> Option<&'static str> {
+    if selected.len() < 2 {
+        return Some("Select at least two trips to merge");
+    }
+    if selected.len() > 20 {
+        return Some("Merge at most 20 trips at a time");
+    }
+    let car = &selected[0].car_id;
+    if selected.iter().any(|t| &t.car_id != car) {
+        return Some("Merged trips must belong to the same car");
+    }
+    if selected.iter().any(|t| !t.finished) {
+        return Some("Only finished trips can be merged");
+    }
+    if selected.iter().any(|t| t.vault_sealed) {
+        return Some("Vault trips cannot be merged on the server");
+    }
+    None
+}
+
 #[component]
 pub fn TripsPage() -> impl IntoView {
     let prefs = use_unit_prefs();
     let trips = RwSignal::new(Vec::<Trip>::new());
     let error = RwSignal::new(Option::<String>::None);
+    let notice = RwSignal::new(Option::<String>::None);
     let loading = RwSignal::new(true);
+    let loading_more = RwSignal::new(false);
+    let has_more = RwSignal::new(false);
     let deleting = RwSignal::new(Option::<String>::None);
     let filter = RwSignal::new(load_trips_filter());
+    let custom_from = RwSignal::new(String::new());
+    let custom_to = RwSignal::new(String::new());
+    let purpose_filter = RwSignal::new(String::new());
+    let tag_filter = RwSignal::new(String::new());
     let search = RwSignal::new(String::new());
     let fetch_gen = RwSignal::new(0u64);
+    let refresh = RwSignal::new(0u32);
     let cars_list = RwSignal::new(Vec::<Car>::new());
+    let selected = RwSignal::new(Vec::<String>::new());
+    let merging = RwSignal::new(false);
 
     // `TripsPage` can be reused across navigations that only change the query
     // string (e.g. clicking a different car on the dashboard), so the car
@@ -332,8 +422,12 @@ pub fn TripsPage() -> impl IntoView {
         .get("car_id")
         .or_else(crate::default_car::load_default_car_id);
     let car_filter_id = RwSignal::new(initial_car_id);
+    if let Some(tag) = query.get_untracked().get("tag") {
+        tag_filter.set(tag);
+    }
 
     let vault = use_vault_session();
+    let vault_unlocked = vault.unlocked();
 
     Effect::new(move |_| {
         let url_car_id = query.with(|q| q.get("car_id"));
@@ -349,27 +443,37 @@ pub fn TripsPage() -> impl IntoView {
         });
     });
 
-    Effect::new(move |_| {
-        let sess = vault.clone();
-        // Refetch on unlock/lock so sealed rows swap between "Locked" and "Vault trip".
-        sess.unlocked().track();
-        let f = filter.get();
-        let car_id = car_filter_id.get();
-        save_trips_filter(f);
-        let mut opts = trip_list_opts_for_filter(f);
-        opts.car_id = car_id;
+    // The server-side filters of the first page. Reading this inside an effect
+    // subscribes it to every filter control.
+    let base_opts = move || {
+        let mut opts =
+            trip_list_opts_for_filter(filter.get(), &custom_from.get(), &custom_to.get());
+        opts.car_id = car_filter_id.get();
+        opts.purpose = Some(purpose_filter.get()).filter(|p| !p.is_empty());
+        opts.tag = Some(tag_filter.get()).filter(|t| !t.trim().is_empty());
+        opts
+    };
+
+    // One request for a page of trips; `append` extends the list ("Load more")
+    // instead of replacing it. Stale responses (a filter changed mid-flight) are
+    // dropped by generation.
+    let run_fetch = move |opts: TripListOpts, append: bool| {
         let req_id = fetch_gen.get_untracked().wrapping_add(1);
         fetch_gen.set(req_id);
-        leptos::task::spawn_local(async move {
+        if append {
+            loading_more.set(true);
+        } else {
             loading.set(true);
-            match list_trips(opts).await {
-                Ok(mut t) => {
-                    // Drop stale responses if the filter changed mid-flight.
-                    if fetch_gen.get_untracked() != req_id {
-                        return;
-                    }
-                    let unlocked = sess.is_unlocked();
-                    for trip in t.iter_mut() {
+        }
+        leptos::task::spawn_local(async move {
+            let result = list_trips(opts).await;
+            if fetch_gen.try_get_untracked() != Some(req_id) {
+                return;
+            }
+            match result {
+                Ok(mut page) => {
+                    let unlocked = vault_unlocked.get_untracked();
+                    for trip in page.iter_mut() {
                         if trip.vault_sealed && trip.car_name.is_empty() {
                             trip.car_name = if unlocked {
                                 "🔒 Vault trip".into()
@@ -378,21 +482,45 @@ pub fn TripsPage() -> impl IntoView {
                             };
                         }
                     }
-                    trips.set(t);
+                    has_more.set(page.len() as i64 >= TRIPS_PAGE_SIZE);
+                    if append {
+                        trips.update(|list| {
+                            for t in page {
+                                if !list.iter().any(|x| x.id == t.id) {
+                                    list.push(t);
+                                }
+                            }
+                        });
+                    } else {
+                        trips.set(page);
+                    }
                     error.set(None);
                 }
-                Err(e) => {
-                    if fetch_gen.get_untracked() != req_id {
-                        return;
-                    }
-                    error.set(Some(e.to_string()));
-                }
+                Err(e) => error.set(Some(e.to_string())),
             }
-            if fetch_gen.get_untracked() == req_id {
-                loading.set(false);
-            }
+            loading.set(false);
+            loading_more.set(false);
         });
+    };
+
+    Effect::new(move |_| {
+        // Refetch on unlock/lock so sealed rows swap between "Locked" and "Vault trip".
+        vault_unlocked.track();
+        refresh.track();
+        save_trips_filter(filter.get());
+        let opts = base_opts();
+        selected.set(Vec::new());
+        run_fetch(opts, false);
     });
+
+    let load_more = move |_| {
+        let Some(last) = trips.with_untracked(|t| t.last().map(|t| t.started_at.clone())) else {
+            return;
+        };
+        let mut opts = untrack(base_opts);
+        opts.before = Some(last);
+        run_fetch(opts, true);
+    };
 
     let visible_trips = move || {
         let q = search.get();
@@ -403,6 +531,47 @@ pub fn TripsPage() -> impl IntoView {
             .collect::<Vec<_>>()
     };
 
+    let selected_trips = move || {
+        let ids = selected.get();
+        trips.with(|list| {
+            list.iter()
+                .filter(|t| ids.contains(&t.id))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let on_merge = move |_| {
+        let picked = selected_trips();
+        if merge_blocker(&picked).is_some() || merging.get_untracked() {
+            return;
+        }
+        if !confirm(&format!(
+            "Merge {} trips into one? Their samples join the earliest trip; the others are removed.",
+            picked.len()
+        )) {
+            return;
+        }
+        let ids: Vec<String> = picked.iter().map(|t| t.id.clone()).collect();
+        merging.set(true);
+        notice.set(None);
+        leptos::task::spawn_local(async move {
+            match merge_trips(&ids).await {
+                Ok(merged) => {
+                    notice.set(Some(format!(
+                        "Merged {} trips into the one starting {}.",
+                        ids.len(),
+                        pretty_started(&merged.started_at)
+                    )));
+                    error.set(None);
+                    refresh.update(|n| *n = n.wrapping_add(1));
+                }
+                Err(e) => error.set(Some(e.to_string())),
+            }
+            merging.set(false);
+        });
+    };
+
     view! {
         <div class="topbar">
             <div>
@@ -410,7 +579,7 @@ pub fn TripsPage() -> impl IntoView {
                     <Icon name="map-trifold" color=IconColor::Accent />
                     "Trips"
                 </h1>
-                <p class="muted">"History across accessible cars — filter by time, open a trip for full telemetry"</p>
+                <p class="muted">"History across accessible cars — filter by time, purpose or tag, open a trip for full telemetry"</p>
             </div>
         </div>
 
@@ -437,9 +606,30 @@ pub fn TripsPage() -> impl IntoView {
                     }
                 }).collect_view()}
             </div>
+            <Show when=move || filter.get() == TripListFilter::Custom>
+                <div class="trips-range" role="group" aria-label="Custom date range">
+                    <label class="trips-range-field">
+                        <span>"From"</span>
+                        <input
+                            type="date"
+                            prop:value=move || custom_from.get()
+                            on:change=move |ev| custom_from.set(event_target_value(&ev))
+                        />
+                    </label>
+                    <label class="trips-range-field">
+                        <span>"To"</span>
+                        <input
+                            type="date"
+                            prop:value=move || custom_to.get()
+                            on:change=move |ev| custom_to.set(event_target_value(&ev))
+                        />
+                    </label>
+                </div>
+            </Show>
             <div class="trips-filter-tools">
                 <select
                     class="trips-car-select"
+                    aria-label="Car"
                     prop:value=move || {
                         // Re-run once `cars_list` populates so the DOM re-applies the
                         // selection: setting `value` before the matching `<option>`
@@ -463,12 +653,34 @@ pub fn TripsPage() -> impl IntoView {
                         }
                     />
                 </select>
+                <select
+                    class="trips-car-select"
+                    aria-label="Purpose"
+                    prop:value=move || purpose_filter.get()
+                    on:change=move |ev| purpose_filter.set(event_target_value(&ev))
+                >
+                    <option value="">"Any purpose"</option>
+                    <option value="business">"Business"</option>
+                    <option value="personal">"Personal"</option>
+                </select>
+                <label class="trips-search trips-tag-filter">
+                    <span class="sr-only">"Filter by tag"</span>
+                    <input
+                        type="search"
+                        class="trips-search-input"
+                        placeholder="Tag…"
+                        prop:value=move || tag_filter.get()
+                        on:change=move |ev| {
+                            tag_filter.set(event_target_value(&ev).trim().trim_start_matches('#').to_string())
+                        }
+                    />
+                </label>
                 <label class="trips-search">
                     <span class="sr-only">"Search trips"</span>
                     <input
                         type="search"
                         class="trips-search-input"
-                        placeholder="Search car, date, or trip id…"
+                        placeholder="Search car, date, tag, or trip id…"
                         prop:value=move || search.get()
                         on:input=move |ev| search.set(event_target_value(&ev))
                     />
@@ -481,23 +693,61 @@ pub fn TripsPage() -> impl IntoView {
                             let total = trips.get().len();
                             let shown = visible_trips().len();
                             let label = filter.get().label();
-                            let mut s = if search.get().trim().is_empty() {
-                                format!("{total} trip{} · {label}", if total == 1 { "" } else { "s" })
+                            let more = if has_more.get() { "+" } else { "" };
+                            if search.get().trim().is_empty() {
+                                format!("{total}{more} trip{} · {label}", if total == 1 { "" } else { "s" })
                             } else {
-                                format!("{shown} of {total} · {label}")
-                            };
-                            if total as i64 >= TRIPS_LIST_LIMIT {
-                                s.push_str(&format!(
-                                    " · showing latest {TRIPS_LIST_LIMIT} in this range"
-                                ));
+                                format!("{shown} of {total}{more} · {label}")
                             }
-                            s
                         }
                     }}
                 </div>
             </div>
         </div>
 
+        <Show when=move || !selected.get().is_empty()>
+            <div class="trips-select-bar" role="region" aria-label="Selected trips">
+                <span class="trips-select-count">
+                    {move || {
+                        let n = selected.get().len();
+                        format!("{n} trip{} selected", if n == 1 { "" } else { "s" })
+                    }}
+                </span>
+                <span class="muted trips-select-hint">
+                    {move || merge_blocker(&selected_trips()).unwrap_or("Consecutive trips of one car can be merged")}
+                </span>
+                <div class="trips-select-actions">
+                    <button
+                        type="button"
+                        class="btn secondary btn-sm"
+                        prop:disabled=move || merging.get() || merge_blocker(&selected_trips()).is_some()
+                        on:click=on_merge
+                    >
+                        <Icon name="arrows-merge" size=IconSize::Sm />
+                        {move || if merging.get() { "Merging…" } else { "Merge" }}
+                    </button>
+                    <Show when=move || selected.get().len() == 2>
+                        <A href=move || format!("/app/trips/compare?ids={}", selected.get().join(","))>
+                            <span class="btn secondary btn-sm">
+                                <Icon name="git-diff" size=IconSize::Sm />
+                                "Compare"
+                            </span>
+                        </A>
+                    </Show>
+                    <button
+                        type="button"
+                        class="btn ghost btn-sm"
+                        on:click=move |_| selected.set(Vec::new())
+                    >
+                        "Clear"
+                    </button>
+                </div>
+            </div>
+        </Show>
+
+        <Show when=move || notice.get().is_some()>
+            <div class="success" role="status">{move || notice.get().unwrap_or_default()}</div>
+        </Show>
         <Show when=move || error.get().is_some()>
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
@@ -514,9 +764,13 @@ pub fn TripsPage() -> impl IntoView {
                 <div class="empty-state">
                     <Icon name="map-trifold" size=IconSize::Xl color=IconColor::Accent />
                     <div>{move || {
+                        let narrowed = !purpose_filter.get().is_empty() || !tag_filter.get().is_empty();
                         match filter.get() {
-                            TripListFilter::All => {
+                            TripListFilter::All if !narrowed => {
                                 "No trips yet. Upload a track from the phone to see it here.".to_string()
+                            }
+                            _ if narrowed => {
+                                "No trips match these filters — clear the purpose or tag filter.".to_string()
                             }
                             other => format!(
                                 "No trips in this period ({}) — try another filter (All / This month).",
@@ -548,6 +802,8 @@ pub fn TripsPage() -> impl IntoView {
                     let id = t.id.clone();
                     let id_short = t.id.get(..8).unwrap_or(t.id.as_str()).to_string();
                     let id_del = t.id.clone();
+                    let id_sel = t.id.clone();
+                    let id_sel_toggle = t.id.clone();
                     let href = format!("/app/trips/{id}");
                     let finished = t.finished;
                     let status_label = if finished {
@@ -558,6 +814,12 @@ pub fn TripsPage() -> impl IntoView {
                     let status_stale = !finished && status_label.starts_with("No GPS");
                     let car = t.car_name.clone();
                     let started = pretty_started(&t.started_at);
+                    let purpose = t.purpose.as_deref().and_then(purpose_label);
+                    let purpose_class = format!(
+                        "pill pill-purpose is-{}",
+                        t.purpose.clone().unwrap_or_default()
+                    );
+                    let tags = t.tags.clone();
                     // `For` children run once per card, so each unit-dependent value reads
                     // `prefs` in its own closure: cards rendered before `/api/me` resolves
                     // must re-format once the user's unit system is known.
@@ -593,6 +855,7 @@ pub fn TripsPage() -> impl IntoView {
                             match delete_trip(&id).await {
                                 Ok(()) => {
                                     trips_sig.update(|v| v.retain(|x| x.id != id));
+                                    selected.update(|s| s.retain(|x| x != &id));
                                     err_sig.set(None);
                                 }
                                 Err(e) => err_sig.set(Some(e.to_string())),
@@ -600,8 +863,9 @@ pub fn TripsPage() -> impl IntoView {
                             deleting_sig.set(None);
                         });
                     };
+                    let is_selected = Memo::new(move |_| selected.with(|s| s.contains(&id_sel)));
                     view! {
-                        <article class="trip-card">
+                        <article class="trip-card" class:is-selected=is_selected>
                             <A href=href.clone()>
                                 <div class="trip-card-top">
                                     <div>
@@ -609,6 +873,7 @@ pub fn TripsPage() -> impl IntoView {
                                         <div class="trip-card-sub muted">{format!("{started} · {id_short}")}</div>
                                     </div>
                                     <div class="trip-card-badges">
+                                        {purpose.map(|label| view! { <span class=purpose_class.clone()>{label}</span> })}
                                         <span class=if finished {
                                             "pill pill-ok".to_string()
                                         } else if status_stale {
@@ -660,7 +925,41 @@ pub fn TripsPage() -> impl IntoView {
                                     </div>
                                 </div>
                             </A>
+                            {(!tags.is_empty()).then(|| view! {
+                                <div class="trip-tags" aria-label="Tags">
+                                    {tags.into_iter().map(|tag| {
+                                        let tag_click = tag.clone();
+                                        view! {
+                                            <button
+                                                type="button"
+                                                class="tag-chip"
+                                                title="Filter by this tag"
+                                                on:click=move |_| tag_filter.set(tag_click.clone())
+                                            >
+                                                {format!("#{tag}")}
+                                            </button>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            })}
                             <div class="trip-card-footer trip-card-actions">
+                                <label class="trip-select-toggle">
+                                    <input
+                                        type="checkbox"
+                                        prop:checked=is_selected
+                                        on:change=move |ev| {
+                                            let on = event_target_checked(&ev);
+                                            let id = id_sel_toggle.clone();
+                                            selected.update(|s| {
+                                                s.retain(|x| x != &id);
+                                                if on {
+                                                    s.push(id);
+                                                }
+                                            });
+                                        }
+                                    />
+                                    <span>"Select"</span>
+                                </label>
                                 <A href=href>
                                     <span class="icon-label muted">
                                         "Open analytics"
@@ -684,6 +983,19 @@ pub fn TripsPage() -> impl IntoView {
                 }
             />
         </div>
+        <Show when=move || has_more.get() && !trips.get().is_empty()>
+            <div class="trips-load-more">
+                <button
+                    type="button"
+                    class="btn secondary"
+                    prop:disabled=move || loading_more.get() || loading.get()
+                    on:click=load_more
+                >
+                    <Icon name="arrow-down" size=IconSize::Sm />
+                    {move || if loading_more.get() { "Loading…" } else { "Load more" }}
+                </button>
+            </div>
+        </Show>
     }
 }
 
@@ -748,8 +1060,59 @@ pub fn TripDetailPage() -> impl IntoView {
     let traffic_err = RwSignal::new(Option::<String>::None);
     let deleting = RwSignal::new(false);
     let finishing = RwSignal::new(false);
+    // Bumped to reload the trip in place (after a split).
+    let reload = RwSignal::new(0u32);
+    // Time pinned on the charts or map (RFC3339), for "Split here".
+    let selected_iso = RwSignal::new(Option::<String>::None);
+    let splitting = RwSignal::new(false);
+    let split_result = RwSignal::new(Option::<String>::None);
+    // The viewer's role on this trip's car: edits are for owners and editors.
+    let car_role = RwSignal::new(Option::<String>::None);
+    let can_edit =
+        Signal::derive(move || matches!(car_role.get().as_deref(), Some("owner") | Some("editor")));
     let vault = use_vault_session();
     let vault_unlocked = vault.unlocked();
+
+    // Charts and map announce the pinned sample on `window`; mirror it here so the
+    // split control knows where to cut.
+    Effect::new(move |_| {
+        let handles = [
+            window_event_listener_untyped("trip-telemetry-select", move |ev| {
+                let iso = js_sys::Reflect::get(&ev, &"detail".into())
+                    .ok()
+                    .and_then(|d| js_sys::Reflect::get(&d, &"iso".into()).ok())
+                    .and_then(|v| v.as_string());
+                if iso.is_some() {
+                    let _ = selected_iso.try_set(iso);
+                }
+            }),
+            window_event_listener_untyped("trip-telemetry-clear", move |_| {
+                let _ = selected_iso.try_set(None);
+            }),
+        ];
+        on_cleanup(move || {
+            for h in handles {
+                h.remove();
+            }
+        });
+    });
+
+    Effect::new(move |prev: Option<String>| {
+        let car_id = trip
+            .with(|t| t.as_ref().map(|t| t.car_id.clone()))
+            .unwrap_or_default();
+        if car_id.is_empty() || prev.as_deref() == Some(car_id.as_str()) {
+            return car_id;
+        }
+        car_role.set(None);
+        let id = car_id.clone();
+        leptos::task::spawn_local(async move {
+            if let Ok(c) = get_car(&id).await {
+                let _ = car_role.try_set(Some(c.role));
+            }
+        });
+        car_id
+    });
     // A vault trip decrypts to SI, while everything on screen expects the display units
     // the server applies to plaintext trips. Keep the SI copy: the display copy is
     // re-derived from it whenever the unit system changes (it may still be loading),
@@ -784,6 +1147,7 @@ pub fn TripDetailPage() -> impl IntoView {
         }
         // Unlocking through the gate on this page must decrypt the trip without a reload.
         vault_unlocked.track();
+        reload.track();
 
         // Cancel in-flight fetches/polls when the trip id changes or the page unmounts.
         // Without this, async tasks call .set/.get_untracked on disposed signals and panic
@@ -810,6 +1174,7 @@ pub fn TripDetailPage() -> impl IntoView {
         error.set(None);
         loading.set(true);
         analysis_err.set(None);
+        selected_iso.set(None);
 
         let alive_fetch = Arc::clone(&alive);
         let id_fetch = id.clone();
@@ -925,7 +1290,7 @@ pub fn TripDetailPage() -> impl IntoView {
                 // (which depends on all three) builds once instead of once per
                 // response, and the three round trips overlap.
                 let (p, g, f) = join3(
-                    trip_points(&id_fetch),
+                    trip_points(&id_fetch, Some(DETAIL_MAX_POINTS)),
                     trip_map(&id_fetch),
                     trip_traffic_frames(&id_fetch),
                 )
@@ -1132,6 +1497,14 @@ pub fn TripDetailPage() -> impl IntoView {
             <Show when=move || error.get().is_some()>
                 <div class="error">{move || error.get().unwrap_or_default()}</div>
             </Show>
+            <Show when=move || split_result.get().is_some()>
+                <div class="success" role="status">
+                    "Trip split. This page now shows the earlier part. "
+                    <A href=move || format!("/app/trips/{}", split_result.get().unwrap_or_default())>
+                        "Open the later part"
+                    </A>
+                </div>
+            </Show>
 
             <Show when=move || loading.get() && trip.get().is_none()>
                 <div class="card">
@@ -1204,6 +1577,8 @@ pub fn TripDetailPage() -> impl IntoView {
                     }
                 }
             </Show>
+
+            <TripMetaEditor trip=trip can_edit=can_edit />
 
     <Show when=move || {
                 let pts = points.get();
@@ -1329,6 +1704,58 @@ pub fn TripDetailPage() -> impl IntoView {
                                 }
                             }}
                         </p>
+                        <Show when=move || {
+                            can_edit.get()
+                                && selected_iso.get().is_some()
+                                && trip.get().is_some_and(|t| t.finished && !t.vault_sealed)
+                        }>
+                            <button
+                                type="button"
+                                class="btn secondary btn-sm"
+                                title="Cut the trip at the pinned time; samples from then on become a new trip"
+                                prop:disabled=move || splitting.get()
+                                on:click=move |_| {
+                                    let Some(iso) = selected_iso.get_untracked() else {
+                                        return;
+                                    };
+                                    let Some(t) = trip.get_untracked() else {
+                                        return;
+                                    };
+                                    if !confirm(&format!(
+                                        "Split this trip at {}? Samples from that moment on become a separate trip.",
+                                        pretty_time_secs(&iso)
+                                    )) {
+                                        return;
+                                    }
+                                    splitting.set(true);
+                                    split_result.set(None);
+                                    leptos::task::spawn_local(async move {
+                                        match split_trip(&t.id, &iso).await {
+                                            Ok(later) => {
+                                                let _ = split_result.try_set(Some(later.id));
+                                                reload.update(|n| *n = n.wrapping_add(1));
+                                            }
+                                            Err(e) => {
+                                                let _ = error.try_set(Some(e.to_string()));
+                                            }
+                                        }
+                                        let _ = splitting.try_set(false);
+                                    });
+                                }
+                            >
+                                <Icon name="scissors" size=IconSize::Sm />
+                                {move || {
+                                    if splitting.get() {
+                                        "Splitting…".to_string()
+                                    } else {
+                                        format!(
+                                            "Split at {}",
+                                            selected_iso.get().map(|s| pretty_clock(&s)).unwrap_or_default()
+                                        )
+                                    }
+                                }}
+                            </button>
+                        </Show>
                         <button
                             type="button"
                             class="btn btn-ghost btn-sm"
@@ -1366,6 +1793,181 @@ pub fn TripDetailPage() -> impl IntoView {
                 />
             </div>
         }
+}
+
+/// Split free text into clean tags: comma or whitespace separated, lower-case,
+/// without a leading `#`, de-duplicated.
+fn parse_tags(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in raw.split(|c: char| c == ',' || c.is_whitespace()) {
+        let t = t.trim().trim_start_matches('#').to_lowercase();
+        if !t.is_empty() && !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// Purpose, notes and tags of a trip (#121, #89). Owners and editors edit them;
+/// viewers see them read-only. Vault trips keep them off the server entirely.
+#[component]
+fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl IntoView {
+    let purpose = RwSignal::new(String::new());
+    let tags = RwSignal::new(String::new());
+    let notes = RwSignal::new(String::new());
+    let saving = RwSignal::new(false);
+    let msg = RwSignal::new(Option::<String>::None);
+    let err = RwSignal::new(Option::<String>::None);
+
+    // Load the form once per trip: the page re-fetches the same trip while analyses
+    // run, and that must not wipe what the user is typing.
+    Effect::new(move |prev: Option<String>| {
+        let Some(t) = trip.get() else {
+            return String::new();
+        };
+        if prev.as_deref() == Some(t.id.as_str()) {
+            return t.id;
+        }
+        purpose.set(t.purpose.clone().unwrap_or_default());
+        tags.set(t.tags.join(", "));
+        notes.set(t.notes.clone().unwrap_or_default());
+        msg.set(None);
+        err.set(None);
+        t.id
+    });
+
+    let save = move |_| {
+        let Some(t) = trip.get_untracked() else {
+            return;
+        };
+        let tag_list = parse_tags(&tags.get_untracked());
+        let p = purpose.get_untracked();
+        let n = notes.get_untracked();
+        saving.set(true);
+        msg.set(None);
+        err.set(None);
+        leptos::task::spawn_local(async move {
+            match update_trip_meta(&t.id, &p, &n, &tag_list).await {
+                Ok(updated) => {
+                    let _ = tags.try_set(updated.tags.join(", "));
+                    let _ = trip.try_update(|cur| {
+                        if let Some(cur) = cur.as_mut()
+                            && cur.id == updated.id
+                        {
+                            cur.purpose = updated.purpose.clone();
+                            cur.notes = updated.notes.clone();
+                            cur.tags = updated.tags.clone();
+                        }
+                    });
+                    let _ = msg.try_set(Some("Saved.".into()));
+                }
+                Err(e) => {
+                    let _ = err.try_set(Some(e.to_string()));
+                }
+            }
+            let _ = saving.try_set(false);
+        });
+    };
+
+    let sealed = move || trip.with(|t| t.as_ref().is_some_and(|t| t.vault_sealed));
+
+    view! {
+        <Show when=move || trip.get().is_some() && !sealed()>
+            <section class="card trip-meta-card">
+                <div class="telemetry-section-head">
+                    <h2 class="section-title">
+                        <Icon name="tag" color=IconColor::Accent />
+                        "Purpose, notes & tags"
+                    </h2>
+                    <Show when=move || !can_edit.get()>
+                        <span class="muted">"Read-only"</span>
+                    </Show>
+                </div>
+                <Show
+                    when=move || can_edit.get()
+                    fallback=move || {
+                        let t = trip.get();
+                        let p = t.as_ref().and_then(|t| t.purpose.clone()).unwrap_or_default();
+                        let tg = t.as_ref().map(|t| t.tags.clone()).unwrap_or_default();
+                        let n = t.as_ref().and_then(|t| t.notes.clone()).unwrap_or_default();
+                        let purpose_class = format!("pill pill-purpose is-{p}");
+                        view! {
+                            <div class="trip-meta-readonly">
+                                <div class="trip-tags">
+                                    {purpose_label(&p).map(|l| view! { <span class=purpose_class.clone()>{l}</span> })}
+                                    {tg.into_iter().map(|t| view! { <span class="tag-chip">{format!("#{t}")}</span> }).collect_view()}
+                                </div>
+                                {if n.is_empty() {
+                                    view! { <p class="muted">"No notes."</p> }.into_any()
+                                } else {
+                                    view! { <p class="trip-meta-notes">{n}</p> }.into_any()
+                                }}
+                            </div>
+                        }
+                    }
+                >
+                    <div class="trip-meta-form">
+                        <div class="form-row">
+                            <label id="trip-purpose-label">"Purpose"</label>
+                            <div class="seg-control" role="group" aria-labelledby="trip-purpose-label">
+                                {[("", "Unset"), ("business", "Business"), ("personal", "Personal")]
+                                    .into_iter()
+                                    .map(|(value, label)| view! {
+                                        <button
+                                            type="button"
+                                            class=move || if purpose.get() == value { "seg-btn is-active" } else { "seg-btn" }
+                                            aria-pressed=move || (purpose.get() == value).to_string()
+                                            on:click=move |_| purpose.set(value.to_string())
+                                        >
+                                            {label}
+                                        </button>
+                                    })
+                                    .collect_view()}
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <label for="trip-tags-input">"Tags"</label>
+                            <input
+                                id="trip-tags-input"
+                                type="text"
+                                placeholder="commute, client-x"
+                                prop:value=move || tags.get()
+                                on:input=move |ev| tags.set(event_target_value(&ev))
+                            />
+                            <div class="field-hint">"Comma or space separated · up to 20"</div>
+                        </div>
+                        <div class="form-row">
+                            <label for="trip-notes-input">"Notes"</label>
+                            <textarea
+                                id="trip-notes-input"
+                                maxlength="2000"
+                                placeholder="Who, why, anything worth remembering about this drive"
+                                prop:value=move || notes.get()
+                                on:input=move |ev| notes.set(event_target_value(&ev))
+                            ></textarea>
+                        </div>
+                        <div class="row">
+                            <button
+                                type="button"
+                                class="btn primary btn-sm"
+                                prop:disabled=move || saving.get()
+                                on:click=save
+                            >
+                                <Icon name="floppy-disk" size=IconSize::Sm />
+                                {move || if saving.get() { "Saving…" } else { "Save" }}
+                            </button>
+                            <Show when=move || msg.get().is_some()>
+                                <span class="muted" role="status">{move || msg.get().unwrap_or_default()}</span>
+                            </Show>
+                        </div>
+                        <Show when=move || err.get().is_some()>
+                            <div class="error">{move || err.get().unwrap_or_default()}</div>
+                        </Show>
+                    </div>
+                </Show>
+            </section>
+        </Show>
+    }
 }
 
 /// Traffic controls live on the Route card (map is colored by congestion).
@@ -2217,5 +2819,64 @@ fn TripAiPanel(
                 </Show>
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trip(id: &str, car: &str, finished: bool) -> Trip {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "car_id": car, "car_name": "Car", "started_at": "2026-01-01T08:00:00Z",
+            "finished_at": null, "finished": finished, "fuel_type_snapshot": "E10",
+            "point_count": 10, "distance_m": null, "duration_s": null, "avg_speed_kph": null,
+            "max_speed_kph": null, "fuel_used_l": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn tags_are_split_cleaned_and_deduplicated() {
+        assert_eq!(
+            parse_tags("Commute, #client-x  commute,,"),
+            vec!["commute".to_string(), "client-x".to_string()]
+        );
+        assert!(parse_tags("  , ").is_empty());
+    }
+
+    #[test]
+    fn merge_needs_two_finished_trips_of_one_car() {
+        let a = trip("a", "c1", true);
+        let b = trip("b", "c1", true);
+        assert!(merge_blocker(std::slice::from_ref(&a)).is_some());
+        assert!(merge_blocker(&[a.clone(), b.clone()]).is_none());
+        assert!(merge_blocker(&[a.clone(), trip("c", "c2", true)]).is_some());
+        assert!(merge_blocker(&[a, trip("d", "c1", false)]).is_some());
+    }
+
+    #[test]
+    fn custom_range_without_dates_is_unbounded() {
+        let opts = trip_list_opts_for_filter(TripListFilter::Custom, "", "");
+        assert!(opts.from.is_none() && opts.to.is_none());
+        assert_eq!(opts.limit, Some(TRIPS_PAGE_SIZE));
+        let opts = trip_list_opts_for_filter(TripListFilter::Custom, "2026-03-01", "2026-03-31");
+        assert!(opts.from.is_some() && opts.to.is_some());
+        assert!(opts.from < opts.to);
+    }
+
+    #[test]
+    fn list_url_carries_paging_and_filters() {
+        let url = crate::api::build_trips_list_url(&TripListOpts {
+            limit: Some(50),
+            before: Some("2026-01-01T08:00:00+00:00".into()),
+            purpose: Some("business".into()),
+            tag: Some("Client X".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            url,
+            "/api/trips?limit=50&before=2026-01-01T08:00:00%2B00:00&purpose=business&tag=client%20x"
+        );
     }
 }
