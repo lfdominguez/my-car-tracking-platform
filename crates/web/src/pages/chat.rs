@@ -495,6 +495,9 @@ fn join_tools(tools: &[String]) -> String {
 /// The signal holding the open stream, if any.
 type StreamSlot = RwSignal<Option<SendWrapper<LiveStream>>>;
 
+/// An SSE event name and the listener registered for it.
+type NamedListener = (&'static str, Closure<dyn FnMut(web_sys::MessageEvent)>);
+
 /// An open `EventSource` together with the listeners attached to it.
 ///
 /// The listeners are owned here rather than `forget()`-ed, so the whole bundle is
@@ -502,7 +505,7 @@ type StreamSlot = RwSignal<Option<SendWrapper<LiveStream>>>;
 /// unmounted) closes the connection, detaches every listener and frees the closures.
 pub struct LiveStream {
     es: web_sys::EventSource,
-    listeners: Vec<(&'static str, Closure<dyn FnMut(web_sys::MessageEvent)>)>,
+    listeners: Vec<NamedListener>,
     _on_transport_error: Closure<dyn FnMut(web_sys::Event)>,
 }
 
@@ -604,7 +607,7 @@ fn attach_stream(
         }
     };
 
-    let mut listeners: Vec<(&'static str, Closure<dyn FnMut(web_sys::MessageEvent)>)> = Vec::new();
+    let mut listeners: Vec<NamedListener> = Vec::new();
 
     // snapshot: everything the server already had when we connected.
     listeners.push((
