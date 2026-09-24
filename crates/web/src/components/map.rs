@@ -1609,6 +1609,14 @@ const ORS_COLORS = ['#ff2d95', '#ff9100', '#d500f9', '#ff1744'];
 let __routeOptMap = null;
 let __routeOptHost = null;
 let __routeOptPopup = null;
+/** Variant picked in the page's list (sticky) and the one previewed on hover. */
+let __routeOptSel = { selected: null, hovered: null };
+/** Bounds of every line, to zoom back out when the selection is cleared. */
+let __routeOptAllBounds = null;
+/** Never a real `variant_id`: filters built from it match nothing. */
+const ROUTE_OPT_NO_ID = '\u0000none';
+const ROUTE_OPT_SELECTED_LAYERS = ['route-opt-selected-casing', 'route-opt-selected-glow', 'route-opt-selected-line'];
+const ROUTE_OPT_HOVER_LAYERS = ['route-opt-hover-glow', 'route-opt-hover-line'];
 
 /** OpenFreeMap Liberty sometimes references sprite icons not in the sprite sheet. */
 function bindStyleImageFallback(map) {
@@ -1671,7 +1679,10 @@ function enrichRouteOptGeojson(data) {
     const props = Object.assign({}, f.properties || {});
     props.display_label = routeOptDisplayLabel(props);
     props.kind_label = props.kind === 'ors' ? 'OpenRouteService' : tt('js.route.your_path', 'Your path');
-    props.route_color = routeOptColorFor(props);
+    // The page stamps `route_color` from the same palette as its list swatches;
+    // fall back to the index-based pick for features it did not recognise.
+    props.route_color = (typeof props.route_color === 'string' && props.route_color) || routeOptColorFor(props);
+    if (props.variant_id != null) props.variant_id = String(props.variant_id);
     return {
       type: 'Feature',
       properties: props,
@@ -1696,6 +1707,67 @@ export function disposeRouteOptMap() {
   } catch (e) {}
   __routeOptMap = null;
   __routeOptHost = null;
+  __routeOptSel = { selected: null, hovered: null };
+  __routeOptAllBounds = null;
+}
+
+/** Filter matching the one variant line with this id (nothing for ROUTE_OPT_NO_ID). */
+function routeOptVariantFilter(id) {
+  return ['all',
+    ['==', ['get', 'kind'], 'variant'],
+    ['==', ['to-string', ['coalesce', ['get', 'variant_id'], '']], id || ROUTE_OPT_NO_ID]];
+}
+
+/**
+ * Restyle for the current selection without touching sources or rebuilding
+ * layers: the focus layers (created once, above every other line) are pointed at
+ * the chosen feature by filter, and the base layers are dimmed by paint property.
+ */
+function applyRouteOptSelection(map) {
+  if (!map || !map.getLayer('route-opt-selected-line')) return;
+  const sel = __routeOptSel.selected || '';
+  const hov = __routeOptSel.hovered && __routeOptSel.hovered !== sel ? __routeOptSel.hovered : '';
+  ROUTE_OPT_SELECTED_LAYERS.forEach((id) => map.setFilter(id, routeOptVariantFilter(sel)));
+  ROUTE_OPT_HOVER_LAYERS.forEach((id) => map.setFilter(id, routeOptVariantFilter(hov)));
+  const focused = !!(sel || hov);
+  // Dim, never hide: the other paths stay readable as context.
+  map.setPaintProperty('route-opt-variant-line', 'line-opacity', focused ? 0.3 : 1.0);
+  map.setPaintProperty('route-opt-variant-halo', 'line-opacity', focused ? 0.1 : 0.28);
+  map.setPaintProperty('route-opt-ors-line', 'line-opacity', focused ? 0.3 : 0.95);
+  map.setPaintProperty('route-opt-ors-halo', 'line-opacity', focused ? 0.08 : 0.22);
+  const idExpr = ['to-string', ['coalesce', ['get', 'variant_id'], '']];
+  map.setPaintProperty('route-opt-labels', 'text-opacity', focused
+    ? ['case',
+        ['any', ['==', idExpr, sel || ROUTE_OPT_NO_ID], ['==', idExpr, hov || ROUTE_OPT_NO_ID]], 1.0,
+        0.35]
+    : 1.0);
+  // Let the focused label win placement collisions against its neighbours.
+  map.setLayoutProperty('route-opt-labels', 'symbol-sort-key', focused
+    ? ['case', ['==', idExpr, sel || hov], 0, 1]
+    : 0);
+}
+
+/**
+ * Highlight `selected` (sticky) and preview `hovered` (lighter); null clears.
+ * `bounds` is `[minLon, minLat, maxLon, maxLat]` of the selected line. The view
+ * only moves when the selection itself changes: to the chosen line, or back out
+ * to every line once it is cleared. Hover never moves the map.
+ */
+export function setRouteOptSelection(selected, hovered, bounds) {
+  const prev = __routeOptSel.selected;
+  __routeOptSel = { selected: selected || null, hovered: hovered || null };
+  const map = __routeOptMap;
+  if (!map) return;
+  try { applyRouteOptSelection(map); } catch (e) { console.warn('route selection style', e); }
+  if (__routeOptSel.selected === prev) return;
+  const target = __routeOptSel.selected
+    ? (bounds && bounds.length === 4 ? [[bounds[0], bounds[1]], [bounds[2], bounds[3]]] : null)
+    : __routeOptAllBounds;
+  if (!target) return;
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  try {
+    map.fitBounds(target, { padding: 64, maxZoom: 15, duration: reduce ? 0 : 700 });
+  } catch (_) {}
 }
 
 function ensureRouteOptLayers(map) {
@@ -1761,6 +1833,32 @@ function ensureRouteOptLayers(map) {
       'line-width': 6.5,
       'line-opacity': 1.0,
     },
+  });
+
+  // Focus layers: redraw the hovered / selected variant above every other line
+  // (overlapping paths share long stretches). They start matching nothing;
+  // applyRouteOptSelection re-points them by filter. The line keeps its own
+  // color so it still matches the list swatch; the white casing is the cue.
+  const focusLayer = (id, paint) => map.addLayer({
+    id,
+    type: 'line',
+    source: 'route-opt',
+    filter: routeOptVariantFilter(''),
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint,
+  });
+  focusLayer('route-opt-hover-glow', { 'line-color': '#ffffff', 'line-width': 11, 'line-opacity': 0.8 });
+  focusLayer('route-opt-hover-line', {
+    'line-color': ['to-color', ['get', 'route_color']],
+    'line-width': 7.5,
+    'line-opacity': 1.0,
+  });
+  focusLayer('route-opt-selected-casing', { 'line-color': '#111827', 'line-width': 20, 'line-opacity': 0.6 });
+  focusLayer('route-opt-selected-glow', { 'line-color': '#ffffff', 'line-width': 16, 'line-opacity': 1.0 });
+  focusLayer('route-opt-selected-line', {
+    'line-color': ['to-color', ['get', 'route_color']],
+    'line-width': 10,
+    'line-opacity': 1.0,
   });
 
   // On-path labels (kind · name)
@@ -1834,6 +1932,22 @@ function ensureRouteOptLayers(map) {
     map.getCanvas().style.cursor = '';
     if (__routeOptPopup) __routeOptPopup.remove();
   });
+  // Clicking one of your lines selects its variant in the page. Where paths
+  // overlap, repeated clicks cycle through every variant under the cursor
+  // (the page toggles: re-sending the selected id clears it).
+  map.on('click', 'route-opt-hit', (e) => {
+    const ids = [];
+    (e.features || []).forEach((f) => {
+      const p = f.properties || {};
+      if (p.kind === 'variant' && p.variant_id != null && !ids.includes(String(p.variant_id))) {
+        ids.push(String(p.variant_id));
+      }
+    });
+    if (!ids.length) return;
+    const at = ids.indexOf(__routeOptSel.selected);
+    const id = at >= 0 && ids.length > 1 ? ids[(at + 1) % ids.length] : ids[at >= 0 ? at : 0];
+    window.dispatchEvent(new CustomEvent('route-opt-variant-select', { detail: { id } }));
+  });
 }
 
 export function mountRouteOptMap(host, geojson) {
@@ -1894,8 +2008,12 @@ export function mountRouteOptMap(host, geojson) {
           }
         });
       });
-      if (any) map.fitBounds(bounds, { padding: 56, maxZoom: 14, duration: 0 });
+      if (any) {
+        __routeOptAllBounds = bounds;
+        map.fitBounds(bounds, { padding: 56, maxZoom: 14, duration: 0 });
+      }
     } catch (e) {}
+    try { applyRouteOptSelection(map); } catch (e) {}
   };
   if (map.isStyleLoaded()) apply();
   else map.once('load', apply);
@@ -1907,6 +2025,33 @@ extern "C" {
 
     #[wasm_bindgen(js_name = disposeRouteOptMap)]
     fn dispose_route_opt_map_js();
+
+    #[wasm_bindgen(js_name = setRouteOptSelection)]
+    fn set_route_opt_selection_js(
+        selected: Option<String>,
+        hovered: Option<String>,
+        bounds: &JsValue,
+    );
+}
+
+/// Window event carrying `detail: { id }` when a variant line is clicked on the
+/// corridor map. The page decides what a click means (select / toggle).
+pub const ROUTE_OPT_VARIANT_SELECT_EVENT: &str = "route-opt-variant-select";
+
+/// Highlight `selected` on the corridor map and preview `hovered`; the others
+/// are dimmed. `bounds` (`[min_lon, min_lat, max_lon, max_lat]`) of the selected
+/// line is where the view flies when the selection changes.
+pub fn set_route_opt_selection(
+    selected: Option<&str>,
+    hovered: Option<&str>,
+    bounds: Option<[f64; 4]>,
+) {
+    let bounds = bounds.map_or(JsValue::NULL, |b| js_sys::Float64Array::from(&b[..]).into());
+    set_route_opt_selection_js(
+        selected.map(str::to_owned),
+        hovered.map(str::to_owned),
+        &bounds,
+    );
 }
 
 /// Mount corridor comparison map (variants + ORS lines).

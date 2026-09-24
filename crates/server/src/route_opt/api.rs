@@ -472,13 +472,24 @@ async fn corridor_map(
 
     let mut features = Vec::new();
 
-    let variants =
-        sqlx::query("SELECT id, label, rep_polyline FROM route_variants WHERE corridor_id = $1")
-            .bind(id)
-            .fetch_all(&state.pool)
-            .await?;
+    // Same rows and order as the detail's variant list (variants with trips, by
+    // label), so `color_index` lines up with the list swatches. `variant_id` ties
+    // a line to its list row for selection highlighting.
+    let variants = sqlx::query(
+        r#"
+        SELECT v.id, v.label, v.rep_polyline
+        FROM route_variants v
+        WHERE v.corridor_id = $1
+          AND EXISTS (SELECT 1 FROM route_trip_assignments a WHERE a.variant_id = v.id)
+        ORDER BY v.label
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
 
     for (i, v) in variants.iter().enumerate() {
+        let vid: Uuid = v.try_get("id")?;
         let label: String = v.try_get("label")?;
         let poly: Option<Value> = v.try_get("rep_polyline")?;
         if let Some(coords) = poly {
@@ -486,6 +497,7 @@ async fn corridor_map(
                 "type": "Feature",
                 "properties": {
                     "kind": "variant",
+                    "variant_id": vid,
                     "label": label,
                     "color_index": i,
                 },
@@ -498,7 +510,8 @@ async fn corridor_map(
     }
 
     let ors = sqlx::query(
-        "SELECT preference, geometry FROM route_ors_alternatives WHERE corridor_id = $1",
+        "SELECT preference, geometry FROM route_ors_alternatives WHERE corridor_id = $1 \
+         ORDER BY preference",
     )
     .bind(id)
     .fetch_all(&state.pool)
@@ -511,6 +524,7 @@ async fn corridor_map(
             "type": "Feature",
             "properties": {
                 "kind": "ors",
+                "preference": &pref,
                 "label": format!("ORS {pref}"),
                 "color_index": i,
             },
