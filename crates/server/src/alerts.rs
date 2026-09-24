@@ -283,7 +283,8 @@ pub async fn run_periodic(pool: &PgPool) -> AppResult<()> {
         .await;
     }
 
-    maintenance_reminders(pool).await
+    maintenance_reminders(pool).await?;
+    crate::digest::run(pool).await
 }
 
 /// Remind car owners of maintenance that is overdue or due soon.

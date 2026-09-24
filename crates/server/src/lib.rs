@@ -10,6 +10,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod devices;
+pub mod digest;
 pub mod driving;
 pub mod error;
 pub mod garage;
