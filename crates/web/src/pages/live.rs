@@ -57,6 +57,14 @@ pub(crate) fn ago(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
+/// The positions shown for a car filter; `""` shows every car.
+fn visible_positions(list: &[LivePosition], car_filter: &str) -> Vec<LivePosition> {
+    list.iter()
+        .filter(|p| car_filter.is_empty() || p.car_id == car_filter)
+        .cloned()
+        .collect()
+}
+
 /// Keep the newest position per car.
 fn upsert(list: &mut Vec<LivePosition>, pos: LivePosition) {
     match list.iter_mut().find(|p| p.car_id == pos.car_id) {
@@ -74,7 +82,11 @@ pub fn LiveCard(
     /// `(car_id, name)` for labels.
     #[prop(into)]
     cars: Signal<Vec<(String, String)>>,
+    /// Only this car's position, or every car's when empty.
+    #[prop(optional, into)]
+    car_filter: Option<Signal<String>>,
 ) -> impl IntoView {
+    let car_filter = car_filter.unwrap_or_else(|| Signal::derive(String::new));
     let prefs = use_unit_prefs();
     let positions = RwSignal::new(Vec::<LivePosition>::new());
     let loaded = RwSignal::new(false);
@@ -144,9 +156,12 @@ pub fn LiveCard(
         })
     };
 
+    let visible =
+        Memo::new(move |_| positions.with(|list| car_filter.with(|f| visible_positions(list, f))));
+
     let markers = Signal::derive(move || {
         let t = now.get();
-        positions.with(|list| {
+        visible.with(|list| {
             list.iter()
                 .map(|p| {
                     let label = name_of(&p.car_id);
@@ -165,7 +180,7 @@ pub fn LiveCard(
     });
 
     view! {
-        <Show when=move || loaded.get() && !positions.get().is_empty()>
+        <Show when=move || loaded.get() && visible.with(|v| !v.is_empty())>
             <section class="card live-card">
                 <div class="telemetry-section-head">
                     <h2 class="section-title">
@@ -177,7 +192,7 @@ pub fn LiveCard(
                 <LiveMap markers=markers />
                 <ul class="live-list">
                     <For
-                        each=move || positions.get()
+                        each=move || visible.get()
                         key=|p| format!("{}:{}:{}", p.car_id, p.recorded_at, p.trip_open)
                         children=move |p| {
                             let name = name_of(&p.car_id);
@@ -261,6 +276,25 @@ mod tests {
         assert_eq!(list[0].recorded_at, "2026-01-01T08:00:09Z");
         upsert(&mut list, pos("b", "2026-01-01T08:00:00Z"));
         assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn car_filter_limits_the_live_list() {
+        let list = vec![
+            pos("mine", "2026-01-01T08:00:00Z"),
+            pos("friend", "2026-01-01T08:00:00Z"),
+        ];
+        let ids = |f: &str| {
+            visible_positions(&list, f)
+                .into_iter()
+                .map(|p| p.car_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(""), ["mine", "friend"]);
+        assert_eq!(ids("mine"), ["mine"]);
+        // A default car with no live fix (or no longer shared) shows nothing
+        // rather than falling back to someone else's car.
+        assert!(ids("gone").is_empty());
     }
 
     #[test]

@@ -61,6 +61,8 @@ pub fn CarsPage() -> impl IntoView {
     let make_model = RwSignal::new(String::new());
     // Capture vault session in the reactive owner — not inside spawn_local after await.
     let vault = use_vault_session();
+    let default_car = crate::default_car::use_default_car();
+    let default_busy = RwSignal::new(false);
 
     Effect::new({
         let vault = vault.clone();
@@ -135,8 +137,14 @@ pub fn CarsPage() -> impl IntoView {
                                     let thumb_src = crate::api::car_photo_url(&id, None);
                                     let (fuel_class, fuel_type) = (c.fuel_class.clone(), c.fuel_type.clone());
                                     let role = c.role.clone();
+                                    let star_id = id.clone();
+                                    let is_default = Signal::derive(move || {
+                                        default_car.get().as_deref() == Some(star_id.as_str())
+                                    });
+                                    let toggle_id = id.clone();
+                                    let car_name = c.name.clone();
                                     view! {
-                                        <tr>
+                                        <tr class:car-row-default=move || is_default.get()>
                                             <td class="car-list-thumb-cell">
                                                 {if has_photo {
                                                     view! {
@@ -151,12 +159,38 @@ pub fn CarsPage() -> impl IntoView {
                                                 }}
                                             </td>
                                             <td>
-                                                {c.name.clone()}
-                                                {if c.vault_sealed {
-                                                    " 🔒".to_string()
-                                                } else {
-                                                    String::new()
-                                                }}
+                                                <span class="car-name-cell">
+                                                    <button
+                                                        type="button"
+                                                        class="btn icon-btn car-default-toggle"
+                                                        class:is-default=move || is_default.get()
+                                                        aria-pressed=move || is_default.get().to_string()
+                                                        aria-label=move || crate::i18n::tf("cars.default_toggle_aria", &[("name", &car_name)])
+                                                        title=move || if is_default.get() { t("cars.default_clear_hint") } else { t("cars.set_default") }
+                                                        disabled=move || default_busy.get()
+                                                        on:click=move |_| {
+                                                            let next = (!is_default.get_untracked()).then(|| toggle_id.clone());
+                                                            default_busy.set(true);
+                                                            leptos::task::spawn_local(async move {
+                                                                if let Err(e) = crate::default_car::set_default_car(default_car, next).await {
+                                                                    let _ = error.try_set(Some(e.to_string()));
+                                                                }
+                                                                let _ = default_busy.try_set(false);
+                                                            });
+                                                        }
+                                                    >
+                                                        <Icon name="star" size=IconSize::Sm />
+                                                    </button>
+                                                    {c.name.clone()}
+                                                    {if c.vault_sealed {
+                                                        " 🔒".to_string()
+                                                    } else {
+                                                        String::new()
+                                                    }}
+                                                    <Show when=move || is_default.get()>
+                                                        <span class="badge default-car-badge">{tr!("cars.default_badge")}</span>
+                                                    </Show>
+                                                </span>
                                             </td>
                                             <td>{c.make_model.clone()}</td>
                                             <td>
@@ -281,7 +315,12 @@ pub fn CarDetailPage() -> impl IntoView {
     let photo_input: NodeRef<leptos::html::Input> = NodeRef::new();
     // Cache-buster so the browser reloads the image after upload.
     let photo_rev = RwSignal::new(0u32);
-    let is_default = RwSignal::new(false);
+    let default_car = crate::default_car::use_default_car();
+    let default_busy = RwSignal::new(false);
+    let is_default = Signal::derive(move || {
+        let id = params.with(|p| p.get("id").unwrap_or_default());
+        !id.is_empty() && default_car.get().as_deref() == Some(id.as_str())
+    });
 
     let vault = use_vault_session();
 
@@ -336,10 +375,6 @@ pub fn CarDetailPage() -> impl IntoView {
                         density.set(c.density_gl.to_string());
                         displacement.set(c.displacement_l.to_string());
                         ve.set(c.ve.to_string());
-                        is_default.set(
-                            crate::default_car::load_default_car_id().as_deref()
-                                == Some(id2.as_str()),
-                        );
                         car.set(Some(c));
                     }
                     Err(e) => error.set(Some(e.to_string())),
@@ -558,16 +593,22 @@ pub fn CarDetailPage() -> impl IntoView {
                     <Icon name="floppy-disk" />
                     {tr!("common.save")}
                 </button>
-                <button class="btn secondary" on:click=move |_| {
-                    let id = params.with(|p| p.get("id").unwrap_or_default());
-                    if is_default.get_untracked() {
-                        crate::default_car::clear_default_car_id();
-                        is_default.set(false);
-                    } else {
-                        crate::default_car::save_default_car_id(&id);
-                        is_default.set(true);
+                <button
+                    class="btn secondary"
+                    aria-pressed=move || is_default.get().to_string()
+                    disabled=move || default_busy.get()
+                    on:click=move |_| {
+                        let id = params.with(|p| p.get("id").unwrap_or_default());
+                        let next = (!is_default.get_untracked()).then_some(id);
+                        default_busy.set(true);
+                        leptos::task::spawn_local(async move {
+                            if let Err(e) = crate::default_car::set_default_car(default_car, next).await {
+                                let _ = error.try_set(Some(e.to_string()));
+                            }
+                            let _ = default_busy.try_set(false);
+                        });
                     }
-                }>
+                >
                     <Icon name="star" />
                     {move || if is_default.get() { t("cars.default_set") } else { t("cars.set_default") }}
                 </button>

@@ -424,10 +424,11 @@ pub fn TripsPage() -> impl IntoView {
     // at mount — otherwise repeat navigations keep whatever car was selected
     // the first time this component was created.
     let query = use_query_map();
+    let default_car = crate::default_car::use_default_car();
     let initial_car_id = query
         .get_untracked()
         .get("car_id")
-        .or_else(crate::default_car::load_default_car_id);
+        .or_else(|| default_car.get_untracked());
     let car_filter_id = RwSignal::new(initial_car_id);
     if let Some(tag) = query.get_untracked().get("tag") {
         tag_filter.set(tag);
@@ -438,7 +439,7 @@ pub fn TripsPage() -> impl IntoView {
 
     Effect::new(move |_| {
         let url_car_id = query.with(|q| q.get("car_id"));
-        let id = url_car_id.or_else(crate::default_car::load_default_car_id);
+        let id = url_car_id.or_else(|| default_car.get());
         car_filter_id.set(id);
     });
 

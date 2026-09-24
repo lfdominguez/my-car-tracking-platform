@@ -854,6 +854,11 @@ label {
 }
 .badge.owner { color: var(--color-success); background: var(--color-success-subtle); border-color: color-mix(in srgb, var(--color-success) 26%, transparent); }
 .badge.editor { color: var(--color-info); background: var(--color-info-subtle); border-color: var(--color-border-accent); }
+/* Default car: the star next to its name in the cars list. */
+.car-name-cell { display: inline-flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.car-default-toggle { color: var(--color-fg-muted); }
+.car-default-toggle.is-default { color: var(--color-warning); }
+.badge.default-car-badge { color: var(--color-warning); background: var(--color-warning-subtle); border-color: color-mix(in srgb, var(--color-warning) 26%, transparent); }
 .badge.viewer { color: var(--color-warning); background: var(--color-warning-subtle); border-color: color-mix(in srgb, var(--color-warning) 26%, transparent); }
 
 /* ---- Map & chart frames -------------------------------------------------- */

@@ -64,7 +64,17 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
     let messages = RwSignal::new(Vec::<ChatMessage>::new());
     let live = RwSignal::new(Option::<LiveTurn>::None);
     let active_id = RwSignal::new(conversation_id.clone());
+    // A new conversation starts focused on the default car; "All cars" stays one
+    // click away. An opened conversation overwrites it with its own focus.
+    let focus_filter = crate::default_car::car_filter(None);
     let focus_car = RwSignal::new(Option::<String>::None);
+    let opened = conversation_id.is_some();
+    Effect::new(move |_| {
+        let v = focus_filter.get();
+        if !opened {
+            focus_car.set((!v.is_empty()).then_some(v));
+        }
+    });
     let draft = RwSignal::new(String::new());
     let error = RwSignal::new(Option::<String>::None);
     let can_chat = RwSignal::new(true);
@@ -358,13 +368,16 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                     <Show when=show_focus_picker>
                         <label class="chat-focus">
                             {tr!("chat.focus")}
-                            <select on:change=move |ev| {
-                                let value = event_target_value(&ev);
-                                focus_car.set((!value.is_empty()).then_some(value));
-                            }>
-                                <option value="">{tr!("common.all_cars")}</option>
+                            <select on:change=move |ev| focus_filter.set(event_target_value(&ev))>
+                                <option value="" selected=move || focus_car.get().is_none()>{tr!("common.all_cars")}</option>
                                 <For each=move || cars.get() key=|c| c.id.clone() let:car>
-                                    <option value=car.id.clone()>{car.name.clone()}</option>
+                                    <option
+                                        value=car.id.clone()
+                                        selected={
+                                            let id = car.id.clone();
+                                            move || focus_car.get().as_deref() == Some(id.as_str())
+                                        }
+                                    >{car.name.clone()}</option>
                                 </For>
                             </select>
                         </label>

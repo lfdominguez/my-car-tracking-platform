@@ -359,6 +359,15 @@ pub const TABLE: &[(&str, &str)] = &[
     ),
     ("cars.default_set", "Vehículo predeterminado ✓"),
     ("cars.set_default", "Establecer como predeterminado"),
+    ("cars.default_badge", "Predeterminado"),
+    (
+        "cars.default_toggle_aria",
+        "Vehículo predeterminado: {name}",
+    ),
+    (
+        "cars.default_clear_hint",
+        "Vehículo predeterminado. Haz clic para volver a ver todos",
+    ),
     ("cars.devices_qr", "Dispositivos y QR"),
     ("cars.create_token", "Crear token de dispositivo"),
     (
