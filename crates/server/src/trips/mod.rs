@@ -3,6 +3,7 @@
 mod edit;
 pub mod export;
 mod fuel_stats;
+pub(crate) use fuel_stats::economy_distance_m;
 pub mod stats;
 
 pub use shared::telemetry_sanitize::{SpeedRpmPoint, energy_from_soc_kwh, sanitize_speed_rpm};

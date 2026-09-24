@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_pool = pool.clone();
     let state = AppState::new(pool, config);
     server::trips::spawn_stale_finish_loop(state.clone());
+    server::analysis::spawn_ai_job_reaper(state.clone());
     server::middleware::spawn_rate_limit_pruner(state.rate_limits.clone());
     server::maintenance::spawn(state.pool.clone());
     server::alerts::spawn_periodic(state.pool.clone());

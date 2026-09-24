@@ -8,9 +8,9 @@ use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::analysis::context::economy_distance_m;
 use crate::error::{AppError, AppResult};
 use crate::shares::access::can_read_car;
+use crate::trips::economy_distance_m;
 use crate::trips::stats;
 use crate::units::{UnitLabels, UnitSystem, convert_fuel_l};
 

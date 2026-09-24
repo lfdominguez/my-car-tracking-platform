@@ -314,7 +314,7 @@ async fn build_context(
         finished: track.finished,
         point_count: stats.point_count,
         distance_m: stats.distance_m,
-        economy_distance_m: economy_distance_m(
+        economy_distance_m: crate::trips::economy_distance_m(
             stats.distance_m,
             stats.odo_start_km,
             stats.odo_end_km,
@@ -411,39 +411,6 @@ struct StatsRow {
     point_count: i64,
     odo_start_km: Option<f64>,
     odo_end_km: Option<f64>,
-}
-
-/// Distance to divide fuel by for economy: the odometer delta when it is sane,
-/// else the GPS length.
-///
-/// Mirrors `trips::fuel_stats::economy_distance_m` (private to that module) so the
-/// analysis quotes the same L/100 km the trip page does. Whole-km odometers
-/// under-report short trips, so a delta far below GPS is rejected as well as one far
-/// above it.
-pub(crate) fn economy_distance_m(
-    gps_m: Option<f64>,
-    odo_start_km: Option<f64>,
-    odo_end_km: Option<f64>,
-) -> Option<f64> {
-    const ODO_MIN_KM: f64 = 0.2;
-    let gps = gps_m.filter(|d| d.is_finite() && *d > 0.0);
-    let (Some(start), Some(end)) = (odo_start_km, odo_end_km) else {
-        return gps;
-    };
-    let d_km = end - start;
-    if !d_km.is_finite() || d_km < ODO_MIN_KM {
-        return gps;
-    }
-    let gps_km = gps.map(|g| g / 1000.0);
-    if gps_km.is_some_and(|g| d_km > g * 1.5 + 2.0) {
-        return gps;
-    }
-    if let Some(g) = gps_km
-        && d_km + 1e-9 < (g - 1.5).max(g * 0.5)
-    {
-        return gps;
-    }
-    Some(d_km * 1000.0)
 }
 
 fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
@@ -975,6 +942,7 @@ mod tests {
 
     #[test]
     fn economy_distance_prefers_a_sane_odometer() {
+        use crate::trips::economy_distance_m;
         // GPS 10 km, odometer 10.5 km: trust the odometer.
         assert_eq!(
             economy_distance_m(Some(10_000.0), Some(100.0), Some(110.5)),

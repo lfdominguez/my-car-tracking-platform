@@ -886,7 +886,7 @@ async fn run_vault_ai_job(
     let version: i32 = creds.try_get("openrouter_key_version").unwrap_or(1);
     let model: String = creds
         .try_get::<String, _>("openrouter_model")
-        .unwrap_or_else(|_| "anthropic/claude-3.7-sonnet".into());
+        .unwrap_or_else(|_| ai::DEFAULT_MODEL.into());
 
     let (Some(enc), Some(nonce)) = (enc, nonce) else {
         return Err(AppError::BadRequest(
