@@ -11,6 +11,7 @@ use crate::components::{Icon, IconColor, IconSize};
 use crate::pages::alerts::AlertsSection;
 use crate::pages::driving::CarScoreChart;
 use crate::pages::garage::GarageSection;
+use crate::pages::health::HealthSection;
 use crate::pages::sharing::SharingCard;
 use crate::vault::{
     CarProfileV1, VaultUnlockGate, decrypt_car_profile, put_car_profile, use_vault_session,
@@ -735,6 +736,21 @@ pub fn CarDetailPage() -> impl IntoView {
             car=car
             car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
             error=error
+        />
+
+        <HealthSection
+            car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
+            can_edit=Signal::derive(move || {
+                car.with(|c| c.as_ref().is_some_and(|c| c.role == "owner" || c.role == "editor"))
+            })
+            electrified=Signal::derive(move || {
+                car.with(|c| {
+                    c.as_ref().is_some_and(|c| {
+                        c.fuel_class.eq_ignore_ascii_case("FULL_ELECTRIC")
+                            || c.fuel_class.eq_ignore_ascii_case("HYBRID")
+                    })
+                })
+            })
         />
 
         <CarScoreChart car_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default())) />

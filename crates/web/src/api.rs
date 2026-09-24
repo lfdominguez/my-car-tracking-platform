@@ -1957,3 +1957,77 @@ pub async fn trip_speeding(id: &str, tolerance_pct: u32) -> Result<SpeedingRepor
     )))
     .await
 }
+
+// --- vehicle health: fault codes, engine flags, battery (#126, #127, #128) ----------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Dtc {
+    pub code: String,
+    pub pending: bool,
+    pub active: bool,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthFlag {
+    pub kind: String,
+    pub message: String,
+    pub track_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CarHealth {
+    #[serde(default)]
+    pub flags: Vec<HealthFlag>,
+    #[serde(default)]
+    pub active_dtcs: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BatteryTrip {
+    pub track_id: String,
+    pub started_at: String,
+    pub distance_m: Option<f64>,
+    pub soc_start_pct: Option<f64>,
+    pub soc_end_pct: Option<f64>,
+    pub energy_out_kwh: Option<f64>,
+    pub energy_regen_kwh: Option<f64>,
+    pub avg_ambient_c: Option<f64>,
+    pub ev_share: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BatteryReport {
+    pub capacity_kwh: Option<f64>,
+    #[serde(default)]
+    pub trips: Vec<BatteryTrip>,
+    /// `(first day of month, usable kWh)`.
+    #[serde(default)]
+    pub capacity_estimates: Vec<(String, f64)>,
+}
+
+pub async fn list_dtcs(car_id: &str) -> Result<Vec<Dtc>, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/dtcs"))).await
+}
+
+pub async fn dismiss_dtc(car_id: &str, code: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post(&format!(
+            "/api/cars/{car_id}/dtcs/{}/dismiss",
+            urlencoding_trip_query(code)
+        )),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn car_health(car_id: &str) -> Result<CarHealth, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/health"))).await
+}
+
+pub async fn car_battery(car_id: &str) -> Result<BatteryReport, ApiError> {
+    send_json(Request::get(&format!("/api/cars/{car_id}/battery"))).await
+}

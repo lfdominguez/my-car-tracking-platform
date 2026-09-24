@@ -2,8 +2,8 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 
 use crate::api::{
-    DashboardCarSummary, DashboardSummary, Trip, TripListOpts, get_dashboard, list_trips,
-    maintenance_due,
+    DashboardCarSummary, DashboardSummary, Trip, TripListOpts, get_dashboard, list_dtcs,
+    list_trips, maintenance_due,
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::pages::live::LiveCard;
@@ -330,11 +330,16 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoVie
 
     // Maintenance due counts (#113): one small request per card, best-effort.
     let due_counts = RwSignal::new((0usize, 0usize));
+    // Active fault codes (#126).
+    let active_dtcs = RwSignal::new(0usize);
     {
         let id = id.clone();
         leptos::task::spawn_local(async move {
             if let Ok(due) = maintenance_due(&id).await {
                 let _ = due_counts.try_set(due.counts());
+            }
+            if let Ok(d) = list_dtcs(&id).await {
+                let _ = active_dtcs.try_set(d.iter().filter(|x| x.active).count());
             }
         });
     }
@@ -359,8 +364,16 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoVie
                     <div class="dash-car-titles">
                         <div class="dash-car-name">{name}</div>
                         <div class="dash-car-sub muted">{format!("{make} · {trips_label}")}</div>
-                        <Show when=move || due_counts.get() != (0, 0)>
-                            <div class="dash-car-due" aria-label="Maintenance">
+                        <Show when=move || { due_counts.get() != (0, 0) || active_dtcs.get() > 0 }>
+                            <div class="dash-car-due" aria-label="Maintenance and faults">
+                                <Show when=move || { active_dtcs.get() > 0 }>
+                                    <span class="pill pill-danger">
+                                        {move || {
+                                            let n = active_dtcs.get();
+                                            format!("{n} fault code{}", if n == 1 { "" } else { "s" })
+                                        }}
+                                    </span>
+                                </Show>
                                 <Show when=move || { due_counts.get().0 > 0 }>
                                     <span class="pill pill-danger">
                                         {move || format!("{} overdue", due_counts.get().0)}

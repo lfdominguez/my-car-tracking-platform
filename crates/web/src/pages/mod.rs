@@ -5,6 +5,7 @@ pub mod compare;
 pub mod dashboard;
 pub mod driving;
 pub mod garage;
+pub mod health;
 pub mod landing;
 pub mod live;
 pub mod login;

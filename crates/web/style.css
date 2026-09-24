@@ -4724,3 +4724,21 @@ button.cal-day:hover { box-shadow: inset 0 0 0 1px var(--text); }
   cursor: pointer;
 }
 .speeding-item:hover { border-color: color-mix(in srgb, var(--color-danger) 40%, transparent); color: var(--text); }
+
+/* ---- Vehicle health (#126 #127 #128) --------------------------------------- */
+.health-card { margin-top: 1.25rem; }
+.health-flags { list-style: none; margin: 0.75rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.health-flag {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 30%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-subtle);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+.health-dtc-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.75rem; }
+.health-dtc-head .garage-subtitle { margin: 0; }
