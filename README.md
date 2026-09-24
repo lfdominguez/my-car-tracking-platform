@@ -41,6 +41,13 @@
 | 🌍 **Units** | Metric or Imperial — converted on the API; DB stays SI/raw |
 | 🐳 **Ship it** | Multi-stage Docker image on GHCR; compose with PostGIS |
 | 📱 **Installable web** | PWA manifest + icons · Add to Home Screen · light offline shell · update banner |
+| 📍 **Live map** | Latest position per car over SSE · owner can turn live sharing off per car |
+| 🔧 **Maintenance & fuel log** | Service schedule by km/months, odometer readings, fill-ups, cost and CO₂ |
+| 🔔 **Alerts & places** | Speed/idle/battery/DTC rules, geofences with enter/exit events, Web Push, email + in-app inbox, digest |
+| 🩺 **Vehicle health** | Stored/pending DTCs, battery voltage trend, driving score and speeding segments |
+| 🏷️ **Trip tools** | Tags, purpose (business/personal), notes, merge/split, GPX/KML/GeoJSON/CSV export, period stats |
+| 🔒 **Account** | Session list + revoke, audit log, new-sign-in notices, data export, account deletion |
+| 🗄️ **Retention & backups** | Per-car raw-data retention; `scripts/backup.sh` + [restore guide](docs/backup.md) |
 
 ---
 
@@ -101,6 +108,17 @@ cp .env.example .env
 # set SESSION_SECRET, SECRETS_KEY, DEVICE_TOKEN_PEPPER (≥32 chars each, independent),
 # GOOGLE_*, PUBLIC_BASE_URL, POSTGRES_PASSWORD, …
 ```
+
+Optional settings, all documented in `.env.example`:
+
+| Variable | Purpose |
+|----------|---------|
+| `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Web Push. Generate a key with `cargo run -p server -- vapid-keygen` |
+| `SMTP_URL`, `SMTP_FROM` | Email notifications (users opt in per account) |
+| `AUDIT_RETENTION_DAYS` | Audit rows kept (default 365) |
+| `DATABASE_MAX_CONNECTIONS` | Postgres pool size |
+| `CSP_EXTRA_HOSTS` | Extra hosts allowed by the Content-Security-Policy |
+| `TRIP_STALE_FINISH_AFTER_SECS` | Auto-finish trips whose phone went silent |
 
 ### 3️⃣ Run the API
 
@@ -247,7 +265,14 @@ Header: `Authorization: Basic <device_token>`. External track id = Android start
 | Method | Path | Notes |
 |--------|------|--------|
 | `GET` / `PATCH` | `/api/me` | profile, units, API key flags, MCP token status |
-| `POST` / `DELETE` | `/api/me/mcp-token` | rotate (plaintext once) / revoke MCP Bearer token |
+| `POST` / `DELETE` | `/api/me/mcp-token` | legacy single token: rotate (plaintext once) / revoke |
+| `GET` / `POST` / `DELETE` | `/api/me/mcp-tokens` · `…/{id}` | named MCP tokens, optionally scoped to cars |
+| `GET` / `PUT` | `/api/me/notification-prefs` | notification channels and digest |
+| `GET` / `DELETE` | `/api/me/sessions` · `…/{id}` · `…/revoke-others` · `…/revoke-all` | sessions |
+| `GET` | `/api/me/audit` · `/api/me/export` | own audit log · full data export (JSON) |
+| `DELETE` | `/api/me` | delete account |
+| `GET` / `POST` | `/api/notifications` · `…/unread-count` · `…/{id}/read` · `…/read-all` | inbox |
+| `GET` / `POST` / `DELETE` | `/api/push/config` · `/api/push/subscriptions` · `/api/push/test` | Web Push (needs `VAPID_*`) |
 | MCP | `/mcp` | Streamable HTTP MCP · `Authorization: Bearer <token>` · read-only tools · Host allow-list = loopback + host from `PUBLIC_BASE_URL` (+ optional `MCP_ALLOWED_HOSTS`) |
 | `POST` | `/auth/logout` | clear session |
 | `GET` / `POST` | `/api/cars` | list / create |
@@ -256,7 +281,17 @@ Header: `Authorization: Basic <device_token>`. External track id = Android start
 | `GET` / `POST` | `/api/cars/{id}/devices` | device tokens |
 | `POST` | `/api/cars/{id}/devices/{id}/provisioning` | JSON `{ "token": "…" }` → QR payload |
 | `GET` / `POST` | `/api/cars/{id}/shares` | sharing (unknown email → uniform 200) |
+| `GET` / `DELETE` · `POST` | `/api/cars/{id}/share-invites` · `/api/me/share-invites/{id}/accept` · `…/decline` | invitations; sharee leaves with `POST /api/cars/{id}/shares/me/leave` |
+| `GET` | `/api/cars/live` · `/api/cars/live/stream` (SSE) | latest positions; `PUT /api/cars/{id}/live-sharing` |
+| `GET` / `POST` / `PATCH` / `DELETE` | `/api/cars/{id}/maintenance/…` · `…/odometer` · `…/fuel-log` | garage |
+| `GET` / `POST` / `PATCH` / `DELETE` | `/api/cars/{id}/alert-rules` · `/api/geofences` | alerts and places |
+| `GET` | `/api/cars/{id}/health` · `…/dtcs` · `…/battery` · `…/score` | vehicle health, driving score |
+| `PUT` | `/api/cars/{id}/retention` | owner: `{ "raw_retention_days": 30+ \| null }` |
 | `GET` | `/api/trips` · `/api/trips/{id}` · `…/points` · `…/map` · `…/traffic/frames` | trips; traffic frames when ready |
+| `GET` / `PATCH` | `/api/trips/{id}` | detail · tags, purpose, notes |
+| `POST` | `/api/trips/merge` · `/api/trips/{id}/split` | owner/editor trip editing |
+| `GET` | `/api/trips/{id}/export?format=gpx\|kml\|geojson\|csv` · `…/score` · `…/speeding` · `/api/trips/geometries` | export, score, overlays |
+| `GET` | `/api/stats/periods` | week/month/year totals in the user's timezone |
 | `POST` | `/api/trips/{id}/finish` | owner/editor: mark open trip finished (same side effects as device `/stop`) |
 | `POST` | `/api/trips/{id}/traffic/analyze` | owner: run/retry traffic guessing (`traffic_analyzed` when ready) |
 | `POST` / `GET` | `/api/trips/{id}/analyze` · `…/analysis` | AI (owner) |
