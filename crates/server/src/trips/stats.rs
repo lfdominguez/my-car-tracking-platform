@@ -17,7 +17,7 @@ use crate::error::AppResult;
 
 /// Bump whenever [`TRACK_POINT_AGGREGATE`] changes meaning. Rows written by an older
 /// version stop being usable immediately and the sweeper recomputes them.
-pub const SCHEMA_VERSION: i16 = 2;
+pub const SCHEMA_VERSION: i16 = 3;
 
 /// The per-trip aggregate over `track_points`, as the body of a correlated subquery.
 ///
@@ -49,6 +49,8 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        -- Negative readings are adapter noise, as in analysis::context.
+                        WHEN tp2.fuel_consumption_rate < 0 THEN NULL
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
@@ -93,6 +95,8 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                       -- Keep in sync with fuel_stats::sanitize_fuel_rate_lph
                       CASE
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
+                        -- Negative readings are adapter noise, as in analysis::context.
+                        WHEN tp2.fuel_consumption_rate < 0 THEN NULL
                         WHEN COALESCE(t.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
                          AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
                         WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
