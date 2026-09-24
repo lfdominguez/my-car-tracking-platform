@@ -92,14 +92,25 @@ pub fn RoutesPage() -> impl IntoView {
         });
     });
 
+    // Bumped per car switch: a slow summary for the previous car must not land on
+    // top of the one now selected.
+    let fetch_gen = RwSignal::new(0u64);
     Effect::new(move |_| {
         let id = car_id.get();
         if id.is_empty() {
             return;
         }
+        let req = fetch_gen.get_untracked().wrapping_add(1);
+        fetch_gen.set(req);
+        summary.set(None);
+        message.set(None);
         error.set(None);
         leptos::task::spawn_local(async move {
-            match route_opt_summary(&id).await {
+            let result = route_opt_summary(&id).await;
+            if fetch_gen.try_get_untracked() != Some(req) {
+                return;
+            }
+            match result {
                 Ok(s) => summary.set(Some(s)),
                 Err(e) => {
                     summary.set(None);
@@ -110,7 +121,7 @@ pub fn RoutesPage() -> impl IntoView {
     });
 
     let recompute = move |_| {
-        let id = car_id.get();
+        let id = car_id.get_untracked();
         if id.is_empty() {
             return;
         }
@@ -118,14 +129,22 @@ pub fn RoutesPage() -> impl IntoView {
         message.set(None);
         error.set(None);
         leptos::task::spawn_local(async move {
+            let still_selected = || car_id.try_get_untracked().as_deref() == Some(id.as_str());
             match route_opt_recompute(&id).await {
-                Ok(r) => {
+                Ok(r) if still_selected() => {
                     message.set(Some(format!("Recomputed {} trips.", r.processed)));
-                    if let Ok(s) = route_opt_summary(&id).await {
+                    if let Ok(s) = route_opt_summary(&id).await
+                        && still_selected()
+                    {
                         summary.set(Some(s));
                     }
                 }
-                Err(e) => error.set(Some(e.to_string())),
+                Ok(_) => {}
+                Err(e) => {
+                    if still_selected() {
+                        error.set(Some(e.to_string()));
+                    }
+                }
             }
             busy.set(false);
         });
@@ -280,26 +299,44 @@ pub fn RouteCorridorPage() -> impl IntoView {
     let prefs = use_unit_prefs();
     let map_host = NodeRef::<leptos::html::Div>::new();
 
+    // The page is reused when only `:id` changes: reset what belongs to the old
+    // corridor and drop responses that arrive after the next navigation.
+    let fetch_gen = RwSignal::new(0u64);
     Effect::new(move |_| {
         let id = params.with(|p| p.get("id").unwrap_or_default());
         if id.is_empty() {
             return;
         }
+        let req = fetch_gen.get_untracked().wrapping_add(1);
+        fetch_gen.set(req);
+        detail.set(None);
+        map_geo.set(None);
+        error.set(None);
+        let current = move || fetch_gen.try_get_untracked() == Some(req);
         leptos::task::spawn_local(async move {
-            match route_opt_corridor(&id).await {
+            let corridor = route_opt_corridor(&id).await;
+            if !current() {
+                return;
+            }
+            match corridor {
                 Ok(d) => detail.set(Some(d)),
                 Err(e) => error.set(Some(e.to_string())),
             }
-            match route_opt_corridor_map(&id).await {
-                Ok(g) => map_geo.set(Some(g)),
-                Err(_) => map_geo.set(None),
+            let geo = route_opt_corridor_map(&id).await;
+            if !current() {
+                return;
             }
+            map_geo.set(geo.ok());
         });
     });
 
     Effect::new(move |_| {
         let geo = map_geo.get();
-        let Some(geo) = geo else { return };
+        let Some(geo) = geo else {
+            // Between corridors: don't leave the previous one's lines on the map.
+            crate::components::map::dispose_route_opt_map();
+            return;
+        };
         let Some(el) = map_host.get() else { return };
         crate::components::map::mount_route_opt_map(&el, &geo);
     });
