@@ -135,7 +135,9 @@ fn insight_kind_class(kind: &str) -> &'static str {
 #[component]
 pub fn RoutesPage() -> impl IntoView {
     let cars = RwSignal::new(Vec::<Car>::new());
-    let car_id = RwSignal::new(String::new());
+    // One car at a time here, so no "all cars": start at the default car.
+    let car_id = crate::default_car::car_filter(None);
+    let default_car = crate::default_car::use_default_car();
     let summary = RwSignal::new(Option::<RouteOptSummary>::None);
     let error = RwSignal::new(Option::<String>::None);
     let busy = RwSignal::new(false);
@@ -146,10 +148,17 @@ pub fn RoutesPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             match list_cars().await {
                 Ok(list) => {
-                    if car_id.get_untracked().is_empty()
-                        && let Some(c) = list.first()
-                    {
-                        car_id.set(c.id.clone());
+                    // Keep the default car only while it's still in the list;
+                    // otherwise fall back to the first car.
+                    let current = car_id.get_untracked();
+                    if !list.iter().any(|c| c.id == current) {
+                        let pick = default_car
+                            .get_untracked()
+                            .filter(|d| list.iter().any(|c| &c.id == d))
+                            .or_else(|| list.first().map(|c| c.id.clone()));
+                        if let Some(id) = pick {
+                            car_id.set(id);
+                        }
                     }
                     cars.set(list);
                 }
