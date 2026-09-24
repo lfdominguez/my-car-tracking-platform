@@ -2067,7 +2067,9 @@ pub fn TripTelemetryDashboard(
                             }}
 
                             <div class="telemetry-toolbar">
-                                <div class="telemetry-cat-scroll" role="tablist" aria-label="Telemetry category">
+                                // Category filter as toggle buttons: the charts below are
+                                // one list filtered in place, not tab panels.
+                                <div class="telemetry-cat-scroll" role="group" aria-label="Telemetry category">
                                     {CATEGORY_TABS
                                         .iter()
                                         .filter(|(key, _)| {
@@ -2083,7 +2085,6 @@ pub fn TripTelemetryDashboard(
                                             view! {
                                                 <button
                                                     type="button"
-                                                    role="tab"
                                                     class=move || {
                                                         if category.get() == key_active {
                                                             "telemetry-cat-btn is-active"
@@ -2091,7 +2092,7 @@ pub fn TripTelemetryDashboard(
                                                             "telemetry-cat-btn"
                                                         }
                                                     }
-                                                    prop:aria-selected=move || category.get() == key_s
+                                                    aria-pressed=move || (category.get() == key_s).to_string()
                                                     on:click=move |_| {
                                                         category.set(key_click.clone());
                                                         save_category_filter(&key_click);

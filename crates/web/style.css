@@ -1293,6 +1293,40 @@ label {
   opacity: 1;
   color: var(--text);
 }
+.stat-row-info {
+  position: relative;
+}
+/* Hint text for the info marker: visible on hover and on keyboard focus, and
+   referenced by aria-describedby so assistive tech reads it without either. */
+.stat-row-tip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 0.4rem);
+  transform: translateX(-50%);
+  z-index: 5;
+  width: max-content;
+  max-width: 16rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-chip);
+  background: var(--color-bg-surface-overlay);
+  color: var(--text);
+  box-shadow: var(--shadow-overlay);
+  font-size: var(--text-xs);
+  font-weight: normal;
+  line-height: 1.35;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.stat-row-info:hover .stat-row-tip,
+.stat-row-info:focus-visible .stat-row-tip {
+  visibility: visible;
+  opacity: 1;
+}
 
 .route-card {
   margin-bottom: 1.25rem;

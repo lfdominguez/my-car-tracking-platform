@@ -415,12 +415,13 @@ pub fn TripsPage() -> impl IntoView {
         </div>
 
         <div class="trips-filter-bar">
-            <div class="trips-filter-chips" role="tablist" aria-label="Trip time filter">
+            // A filter, not tabs: there is no tabpanel and no arrow-key model, so these
+            // are toggle buttons in a labelled group with aria-pressed.
+            <div class="trips-filter-chips" role="group" aria-label="Trip time filter">
                 {TripListFilter::all().into_iter().map(|chip| {
                     view! {
                         <button
                             type="button"
-                            role="tab"
                             class=move || {
                                 if filter.get() == chip {
                                     "trips-filter-chip is-active".to_string()
@@ -428,7 +429,7 @@ pub fn TripsPage() -> impl IntoView {
                                     "trips-filter-chip".to_string()
                                 }
                             }
-                            aria-selected=move || (filter.get() == chip).to_string()
+                            aria-pressed=move || (filter.get() == chip).to_string()
                             on:click=move |_| filter.set(chip)
                         >
                             {chip.label()}
@@ -691,32 +692,40 @@ pub fn TripsPage() -> impl IntoView {
 /// `hint` renders as a tooltip on an info marker rather than a third line, so
 /// every row keeps the same height — the card grid this replaced stretched all
 /// eight tiles to match whichever one carried the longest explanation.
+///
+/// The tooltip is real text shown on hover *and* keyboard focus (a `title`
+/// attribute is neither), and the value points at it with `aria-describedby`, so a
+/// screen reader announces the explanation with the number it qualifies.
 #[component]
 fn StatRow(
     label: &'static str,
     value: String,
     #[prop(optional_no_strip)] hint: Option<String>,
 ) -> impl IntoView {
+    static NEXT_HINT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let hint_id = hint.as_ref().map(|_| {
+        let n = NEXT_HINT_ID.fetch_add(1, Ordering::Relaxed);
+        format!("stat-hint-{n}")
+    });
+    let described_by = hint_id.clone();
     view! {
         <div class="stat-row">
             <dt class="stat-row-label">
                 {label}
                 {hint
-                    .map(|h| {
+                    .zip(hint_id)
+                    .map(|(h, id)| {
+                        let tip_id = id.clone();
                         view! {
-                            <span
-                                class="stat-row-info"
-                                title=h.clone()
-                                aria-label=h
-                                tabindex="0"
-                                role="note"
-                            >
+                            <span class="stat-row-info" tabindex="0" aria-describedby=id>
                                 <Icon name="info" size=IconSize::Sm />
+                                <span class="sr-only">"More about this value"</span>
+                                <span class="stat-row-tip" role="tooltip" id=tip_id>{h}</span>
                             </span>
                         }
                     })}
             </dt>
-            <dd class="stat-row-value">{value}</dd>
+            <dd class="stat-row-value" aria-describedby=described_by>{value}</dd>
         </div>
     }
 }

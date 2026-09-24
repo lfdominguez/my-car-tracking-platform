@@ -91,7 +91,9 @@ pub fn DashboardPage() -> impl IntoView {
                         <div class="card empty-state">
                             <Icon name="car" size=IconSize::Xl color=IconColor::Device />
                             <div>"No cars yet — add one under Cars, then track from the phone."</div>
-                            <A href="/app/cars"><button type="button" class="btn primary">"Manage cars"</button></A>
+                            // A link styled as a button, not a <button> inside <a>
+                            // (nested interactive content, two tab stops).
+                            <A href="/app/cars"><span class="btn primary">"Manage cars"</span></A>
                         </div>
                     }
                 >
