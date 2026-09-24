@@ -1,5 +1,6 @@
 //! Trip list/detail/points/map APIs.
 
+mod edit;
 pub mod export;
 mod fuel_stats;
 pub mod stats;
@@ -28,7 +29,12 @@ use crate::units::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/trips", get(list_trips))
-        .route("/api/trips/{id}", get(get_trip).delete(delete_trip))
+        .route(
+            "/api/trips/{id}",
+            get(get_trip).delete(delete_trip).patch(edit::update_trip),
+        )
+        .route("/api/trips/merge", post(edit::merge_trips))
+        .route("/api/trips/{id}/split", post(edit::split_trip))
         .route("/api/trips/{id}/finish", post(finish_trip))
         .route("/api/trips/{id}/points", get(trip_points))
         .route("/api/trips/{id}/export", get(export::export_trip))
@@ -384,6 +390,12 @@ pub struct TripListQuery {
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
     pub limit: Option<i64>,
+    /// Exclusive upper bound on `started_at`: pass the last trip of a page to get
+    /// the next one.
+    pub before: Option<DateTime<Utc>>,
+    /// `business` or `personal`.
+    pub purpose: Option<String>,
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -419,6 +431,9 @@ pub struct TripSummary {
     pub vault_sealed: bool,
     /// Latest sample time (for stale / in-progress UI).
     pub last_point_at: Option<DateTime<Utc>>,
+    pub purpose: Option<String>,
+    pub notes: Option<String>,
+    pub tags: Vec<String>,
 }
 
 /// Row shape from list/detail SQL before fuel cross-check enrichment.
@@ -450,6 +465,9 @@ struct TripSummaryRow {
     traffic_analyzed: bool,
     vault_sealed: bool,
     last_point_at: Option<DateTime<Utc>>,
+    purpose: Option<String>,
+    notes: Option<String>,
+    tags: Vec<String>,
 }
 
 impl TripSummaryRow {
@@ -485,6 +503,9 @@ impl TripSummaryRow {
             traffic_analyzed: self.traffic_analyzed,
             vault_sealed: self.vault_sealed,
             last_point_at: self.last_point_at,
+            purpose: self.purpose,
+            notes: self.notes,
+            tags: self.tags,
         }
     }
 }
@@ -689,6 +710,9 @@ async fn list_trips(
             AND ($2::uuid IS NULL OR t.car_id = $2)
             AND ($3::timestamptz IS NULL OR t.started_at >= $3)
             AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+            AND ($6::timestamptz IS NULL OR t.started_at < $6)
+            AND ($7::text IS NULL OR t.purpose = $7)
+            AND ($8::text IS NULL OR $8 = ANY(t.tags))
             ORDER BY t.started_at DESC
             LIMIT $5
         )
@@ -723,7 +747,10 @@ async fn list_trips(
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
             t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed,
-            COALESCE(s.last_point_at, live.last_at) AS last_point_at
+            COALESCE(s.last_point_at, live.last_at) AS last_point_at,
+            t.purpose,
+            t.notes,
+            t.tags
         FROM page
         JOIN tracks t ON t.id = page.id
         JOIN cars c ON c.id = t.car_id
@@ -741,6 +768,9 @@ async fn list_trips(
         .bind(q.from)
         .bind(q.to)
         .bind(limit)
+        .bind(q.before)
+        .bind(q.purpose.as_deref())
+        .bind(q.tag.as_deref())
         .fetch_all(&state.pool)
         .await?;
 
@@ -794,7 +824,10 @@ async fn get_trip(
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
             t.traffic_analyzed,
             (ou.vault_status = 'active') AS vault_sealed,
-            COALESCE(s.last_point_at, live.last_at) AS last_point_at
+            COALESCE(s.last_point_at, live.last_at) AS last_point_at,
+            t.purpose,
+            t.notes,
+            t.tags
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
         JOIN users ou ON ou.id = c.owner_user_id
