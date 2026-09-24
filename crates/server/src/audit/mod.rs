@@ -1,7 +1,13 @@
 //! Structured audit event writer (best-effort; never fails callers).
 
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::http::request::Parts;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+use crate::state::AppState;
 
 pub mod actions {
     pub const AUTH_LOGIN: &str = "auth.login";
@@ -25,6 +31,47 @@ pub mod actions {
     pub const VAULT_JOB_SUBMITTED: &str = "vault.job_submitted";
     pub const TRIP_DELETED: &str = "trip.deleted";
     pub const TRIP_FINISHED: &str = "trip.finished";
+    pub const AUTH_LOGIN_FAILED: &str = "auth.login_failed";
+    pub const SHARE_UPDATED: &str = "share.updated";
+    pub const CAR_CREATED: &str = "car.created";
+    pub const CAR_DELETED: &str = "car.deleted";
+    pub const CAR_PHOTO_UPDATED: &str = "car.photo_updated";
+}
+
+/// Client address and user agent for audit rows, resolved the same way as the
+/// rate limiter (honouring `TRUST_FORWARDED_HEADERS`).
+#[derive(Debug, Clone)]
+pub struct ClientMeta {
+    pub ip: String,
+    pub user_agent: Option<String>,
+}
+
+impl FromRequestParts<AppState> for ClientMeta {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let connect = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| c.0);
+        let ip = crate::middleware::client_ip(
+            &parts.headers,
+            connect,
+            state.config.trust_forwarded_headers,
+        );
+        let user_agent = parts
+            .headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.chars().take(512).collect());
+        Ok(Self {
+            ip: ip.to_string(),
+            user_agent,
+        })
+    }
 }
 
 pub struct AuditEvent<'a> {

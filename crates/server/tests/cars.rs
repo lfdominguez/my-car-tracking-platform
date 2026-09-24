@@ -82,3 +82,66 @@ async fn battery_capacity_can_be_cleared_and_bad_numbers_are_rejected() {
         assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST, "{bad}");
     }
 }
+
+/// Real encoder output (Pillow) with an EXIF "Make" tag: the stored photo must
+/// come back without it and still be the same kind of image.
+#[tokio::test]
+async fn uploaded_photos_lose_their_exif() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let owner = login(&base).await;
+    let car_id = create_car(&base, &owner).await;
+
+    for (name, bytes, mime) in [
+        (
+            "exif.jpg",
+            &include_bytes!("fixtures/exif.jpg")[..],
+            "image/jpeg",
+        ),
+        (
+            "exif.png",
+            &include_bytes!("fixtures/exif.png")[..],
+            "image/png",
+        ),
+        (
+            "exif.webp",
+            &include_bytes!("fixtures/exif.webp")[..],
+            "image/webp",
+        ),
+    ] {
+        assert!(
+            bytes.windows(9).any(|w| w == b"SECRETCAM"),
+            "fixture {name}"
+        );
+        let form = reqwest::multipart::Form::new().part(
+            "photo",
+            reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(name),
+        );
+        let resp = owner
+            .client
+            .post(format!("{base}/api/cars/{car_id}/photo"))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "{name}: {}", resp.status());
+
+        let got = owner
+            .client
+            .get(format!("{base}/api/cars/{car_id}/photo"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(got.headers()["content-type"], mime);
+        let stored = got.bytes().await.unwrap();
+        assert!(
+            !stored.windows(9).any(|w| w == b"SECRETCAM"),
+            "{name} kept its EXIF"
+        );
+        if let Ok(dir) = std::env::var("PHOTO_DUMP_DIR") {
+            std::fs::write(format!("{dir}/stripped-{name}"), &stored).unwrap();
+        }
+    }
+}

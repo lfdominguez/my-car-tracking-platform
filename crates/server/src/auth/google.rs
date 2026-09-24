@@ -58,6 +58,38 @@ struct CallbackQuery {
 
 async fn google_callback(
     State(state): State<AppState>,
+    client: crate::audit::ClientMeta,
+    connect_info: ConnectInfo<SocketAddr>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    query: Query<CallbackQuery>,
+) -> AppResult<Response> {
+    let result =
+        google_callback_inner(State(state.clone()), connect_info, jar, headers, query).await;
+    // Failed sign-ins (bad state, unverified email, token exchange errors) were
+    // invisible; record them without a user so repeated attempts show up.
+    if let Err(e) = &result {
+        let reason: String = e.to_string().chars().take(200).collect();
+        audit::record(
+            &state.pool,
+            AuditEvent {
+                user_id: None,
+                actor_session_id: None,
+                action: actions::AUTH_LOGIN_FAILED,
+                resource_type: None,
+                resource_id: None,
+                ip: Some(&client.ip),
+                user_agent: client.user_agent.as_deref(),
+                meta: serde_json::json!({ "method": "google", "reason": reason }),
+            },
+        )
+        .await;
+    }
+    result
+}
+
+async fn google_callback_inner(
+    State(state): State<AppState>,
     connect_info: ConnectInfo<SocketAddr>,
     jar: CookieJar,
     headers: HeaderMap,

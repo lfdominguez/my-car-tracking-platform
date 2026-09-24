@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, AuditEvent, ClientMeta};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::shares::access::{CarAccess, can_edit_car, can_read_car, require_owner};
@@ -166,6 +166,7 @@ pub struct VaultEnableRequest {
 async fn vault_enable(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Json(body): Json<VaultEnableRequest>,
 ) -> AppResult<Json<VaultStatusResponse>> {
     if !state.config.vault_ui_enabled {
@@ -216,8 +217,8 @@ async fn vault_enable(
             action: audit::actions::VAULT_ENABLED,
             resource_type: Some("user"),
             resource_id: Some(&user.id.to_string()),
-            ip: None,
-            user_agent: None,
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
             meta: serde_json::json!({ "identity_version": version }),
         },
     )
@@ -229,6 +230,7 @@ async fn vault_enable(
 async fn vault_activate(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
 ) -> AppResult<Json<VaultStatusResponse>> {
     let current = user_vault_status(&state.pool, user.id).await?;
     if current != "migrating" {
@@ -256,8 +258,8 @@ async fn vault_activate(
             action: audit::actions::VAULT_ACTIVATED,
             resource_type: Some("user"),
             resource_id: Some(&user.id.to_string()),
-            ip: None,
-            user_agent: None,
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
             meta: serde_json::json!({}),
         },
     )
@@ -549,6 +551,7 @@ pub struct UpsertDekRequest {
 async fn upsert_dek(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Path(car_id): Path<Uuid>,
     Json(body): Json<UpsertDekRequest>,
 ) -> AppResult<Json<DekWrapResponse>> {
@@ -590,8 +593,8 @@ async fn upsert_dek(
             action: audit::actions::VAULT_WRAP_ADDED,
             resource_type: Some("car"),
             resource_id: Some(&car_id.to_string()),
-            ip: None,
-            user_agent: None,
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
             meta: serde_json::json!({ "recipient_user_id": rid }),
         },
     )
@@ -603,6 +606,7 @@ async fn upsert_dek(
 async fn delete_dek(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Path((car_id, recipient_user_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_owner(&state.pool, user.id, car_id).await?;
@@ -626,8 +630,8 @@ async fn delete_dek(
             action: audit::actions::VAULT_WRAP_REMOVED,
             resource_type: Some("car"),
             resource_id: Some(&car_id.to_string()),
-            ip: None,
-            user_agent: None,
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
             meta: serde_json::json!({ "recipient_user_id": rid }),
         },
     )
@@ -641,6 +645,7 @@ async fn delete_dek(
 async fn migration_clear_car(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Path(car_id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_owner(&state.pool, user.id, car_id).await?;
@@ -704,8 +709,8 @@ async fn migration_clear_car(
             action: audit::actions::VAULT_MIGRATION_CLEAR_CAR,
             resource_type: Some("car"),
             resource_id: Some(&car_id.to_string()),
-            ip: None,
-            user_agent: None,
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
             meta: serde_json::json!({}),
         },
     )
@@ -737,6 +742,7 @@ pub struct VaultJobResponse {
 async fn create_job(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Json(body): Json<VaultJobRequest>,
 ) -> AppResult<Json<VaultJobResponse>> {
     let kind = body.kind.trim().to_ascii_lowercase();
@@ -779,8 +785,8 @@ async fn create_job(
             action: audit::actions::VAULT_JOB_SUBMITTED,
             resource_type: Some("vault_job"),
             resource_id: Some(&id.to_string()),
-            ip: None,
-            user_agent: None,
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
             meta: serde_json::json!({ "kind": kind }),
         },
     )

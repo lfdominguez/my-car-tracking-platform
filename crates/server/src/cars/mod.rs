@@ -13,10 +13,13 @@ use serde::{Deserialize, Serialize};
 use shared::defaults;
 use uuid::Uuid;
 
+use crate::audit::{self, AuditEvent, ClientMeta, actions};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::shares::access::{can_edit_car, can_read_car, require_owner};
 use crate::state::AppState;
+
+mod photo_meta;
 
 const MAX_PHOTO_BYTES: usize = 8 * 1024 * 1024;
 
@@ -250,6 +253,7 @@ async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<J
 async fn create_car(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Json(body): Json<CreateCarRequest>,
 ) -> AppResult<Json<CarRow>> {
     if body.name.trim().is_empty() {
@@ -321,6 +325,21 @@ async fn create_car(
     } else {
         row
     };
+    let car_id = id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::CAR_CREATED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id),
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
+            meta: serde_json::json!({}),
+        },
+    )
+    .await;
     Ok(Json(seal_car_if_vault(row)))
 }
 
@@ -473,16 +492,39 @@ async fn update_car(
 async fn delete_car(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     AxumPath(id): AxumPath<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_owner(&state.pool, user.id, id).await?;
-    let res = sqlx::query("DELETE FROM cars WHERE id = $1")
-        .bind(id)
-        .execute(&state.pool)
-        .await?;
-    if res.rows_affected() == 0 {
-        return Err(AppError::NotFound);
+    let photo_path: Option<String> =
+        sqlx::query_scalar("DELETE FROM cars WHERE id = $1 RETURNING photo_path")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    // The row is gone, so nothing would ever serve or clean up the file.
+    if let Some(rel) = photo_path
+        && let Ok(abs) = resolve_photo_file(&state.config.upload_dir, &rel)
+        && let Err(e) = tokio::fs::remove_file(&abs).await
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(car_id = %id, error = %e, "removing car photo failed");
     }
+    let car_id = id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::CAR_DELETED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id),
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
+            meta: serde_json::json!({}),
+        },
+    )
+    .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -528,6 +570,7 @@ async fn get_photo(
 async fn upload_photo(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     AxumPath(id): AxumPath<Uuid>,
     mut multipart: Multipart,
 ) -> AppResult<Json<CarRow>> {
@@ -560,6 +603,10 @@ async fn upload_photo(
     }
     let kind = sniff_image(&bytes)
         .ok_or_else(|| AppError::BadRequest("photo must be a jpeg, png, or webp image".into()))?;
+    // Viewers of a shared car can fetch this file; do not hand them the EXIF GPS
+    // position the phone recorded when the picture was taken.
+    let bytes = photo_meta::strip_metadata(kind, &bytes)
+        .ok_or_else(|| AppError::BadRequest("photo file is damaged or truncated".into()))?;
 
     let rel = format!("cars/{id}.{}", kind.extension());
     // config.upload_dir was created and canonicalized at startup; keep every path
@@ -607,6 +654,21 @@ async fn upload_photo(
     .bind(&rel)
     .fetch_one(&state.pool)
     .await?;
+    let car_id = id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::CAR_PHOTO_UPDATED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id),
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
+            meta: serde_json::json!({ "bytes": bytes.len() }),
+        },
+    )
+    .await;
     Ok(Json(seal_car_if_vault(row)))
 }
 

@@ -45,10 +45,14 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
     // can allow that exact script without script-src 'unsafe-inline'.
     let dist = std::env::var("WEB_DIST").unwrap_or_else(|_| "crates/web/dist".into());
     let script_hashes = inline_script_csp_hashes_from_dist(std::path::Path::new(&dist));
+    let extra_hosts = std::env::var("CSP_EXTRA_HOSTS")
+        .map(|v| crate::middleware::parse_extra_hosts(&v))
+        .unwrap_or_default();
     let (nosniff, referrer, frame, csp, permissions, hsts) = security_headers_layer(
         enable_hsts,
         &script_hashes,
         state.config.csp_cloudflare_analytics,
+        &extra_hosts,
     );
 
     let photo_routes = Router::new()

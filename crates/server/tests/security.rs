@@ -222,3 +222,39 @@ async fn maintenance_removes_expired_sessions() {
         .unwrap();
     assert_eq!(left, 0);
 }
+
+#[tokio::test]
+async fn car_lifecycle_is_audited_with_the_client_address() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let owner = login(&base).await;
+    let car_id = create_car(&base, &owner).await;
+    let resp = owner
+        .client
+        .delete(format!("{base}/api/cars/{car_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let audit: Value = owner
+        .client
+        .get(format!("{base}/api/me/audit"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for action in ["car.created", "car.deleted"] {
+        let ev = audit
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["action"] == action && e["resource_id"] == car_id)
+            .unwrap_or_else(|| panic!("missing {action}: {audit}"));
+        assert_eq!(ev["ip"], "127.0.0.1", "{ev}");
+    }
+}

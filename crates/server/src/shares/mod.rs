@@ -12,7 +12,7 @@ use shared::ShareRole;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent, actions};
+use crate::audit::{self, AuditEvent, ClientMeta, actions};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::middleware::client_ip;
@@ -184,6 +184,7 @@ async fn create_share(
 async fn update_share(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Path((car_id, target_user_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<UpdateShareRequest>,
 ) -> AppResult<Json<ShareRow>> {
@@ -213,9 +214,31 @@ async fn update_share(
     .ok_or(AppError::NotFound)?;
 
     // A viewer cannot create devices, so it must not keep the ones it made as editor.
-    if role == ShareRole::Viewer {
-        crate::devices::revoke_devices_created_by(&state.pool, car_id, target_user_id).await?;
-    }
+    let devices_revoked = if role == ShareRole::Viewer {
+        crate::devices::revoke_devices_created_by(&state.pool, car_id, target_user_id).await?
+    } else {
+        0
+    };
+
+    let car_id_str = car_id.to_string();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(&user.session_id),
+            action: actions::SHARE_UPDATED,
+            resource_type: Some("car"),
+            resource_id: Some(&car_id_str),
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
+            meta: serde_json::json!({
+                "shared_user_id": target_user_id.to_string(),
+                "role": role.as_str(),
+                "devices_revoked": devices_revoked,
+            }),
+        },
+    )
+    .await;
 
     Ok(Json(row))
 }
@@ -223,6 +246,7 @@ async fn update_share(
 async fn delete_share(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Path((car_id, target_user_id)): Path<(Uuid, Uuid)>,
     connect_info: ConnectInfo<SocketAddr>,
     headers: HeaderMap,
@@ -259,8 +283,8 @@ async fn delete_share(
                 action: actions::VAULT_WRAP_REMOVED,
                 resource_type: Some("car"),
                 resource_id: Some(&car_id_str),
-                ip: None,
-                user_agent: None,
+                ip: Some(&client.ip),
+                user_agent: client.user_agent.as_deref(),
                 meta: serde_json::json!({ "shared_user_id": shared_user_id }),
             },
         )

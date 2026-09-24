@@ -95,7 +95,33 @@ pub const CLOUDFLARE_INSIGHTS_SCRIPT_HOST: &str = "https://static.cloudflareinsi
 /// When `allow_cloudflare_analytics` is true, `script-src` also allows the Cloudflare
 /// Web Analytics beacon host. Does **not** add `'unsafe-eval'` or `'unsafe-inline'`.
 /// Residual beacon `eval` console noise is expected; the external script can load.
-pub fn build_csp(script_hashes: &[String], allow_cloudflare_analytics: bool) -> String {
+/// Hosts the basemap style (OpenFreeMap Liberty) loads tiles, glyphs and sprites from.
+pub const MAP_TILE_HOSTS: &[&str] = &["https://tiles.openfreemap.org"];
+/// Where the Cloudflare Web Analytics beacon reports to.
+pub const CLOUDFLARE_INSIGHTS_REPORT_HOST: &str = "https://cloudflareinsights.com";
+
+/// Parse `CSP_EXTRA_HOSTS` (comma-separated). Only `https://host[:port]` origins are
+/// accepted, so the variable cannot widen the policy back to a scheme wildcard.
+pub fn parse_extra_hosts(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|h| {
+            h.strip_prefix("https://").is_some_and(|rest| {
+                !rest.is_empty()
+                    && rest
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+            })
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn build_csp(
+    script_hashes: &[String],
+    allow_cloudflare_analytics: bool,
+    extra_hosts: &[String],
+) -> String {
     let mut script_src = String::from("script-src 'self' 'wasm-unsafe-eval'");
     for h in script_hashes {
         let token = h.trim();
@@ -117,17 +143,27 @@ pub fn build_csp(script_hashes: &[String], allow_cloudflare_analytics: bool) -> 
         script_src.push_str(CLOUDFLARE_INSIGHTS_SCRIPT_HOST);
     }
     // CSP aligned with self-hosted SPA assets under `/` and `/vendor/*`.
-    // Map tiles may still load from third-party hosts used by map styles.
     // Trunk injects an inline module bootstrap into index.html — allow via hash
     // (not 'unsafe-inline') so rebuilds work after server restart rescans dist.
-    // connect-src already allows https: (CF RUM endpoints included).
+    //
+    // connect-src and img-src name the hosts the app really talks to instead of
+    // `https:`: with a wildcard, an injected script or an attacker-chosen markdown
+    // image in an AI answer could send the viewer's data to any server.
+    // style-src keeps 'unsafe-inline' because Leptos views and MapLibre set inline
+    // style attributes.
+    let mut remote: Vec<&str> = MAP_TILE_HOSTS.to_vec();
+    if allow_cloudflare_analytics {
+        remote.push(CLOUDFLARE_INSIGHTS_REPORT_HOST);
+    }
+    remote.extend(extra_hosts.iter().map(String::as_str));
+    let remote = remote.join(" ");
     format!(
         "default-src 'self'; \
 {script_src}; \
 style-src 'self' 'unsafe-inline'; \
-img-src 'self' data: blob: https:; \
+img-src 'self' data: blob: {remote}; \
 font-src 'self' data:; \
-connect-src 'self' https:; \
+connect-src 'self' {remote}; \
 worker-src 'self' blob:; \
 child-src 'self' blob:; \
 frame-ancestors 'none'; \
@@ -158,6 +194,7 @@ pub fn security_headers_layer(
     enable_hsts: bool,
     script_hashes: &[String],
     allow_cloudflare_analytics: bool,
+    extra_hosts: &[String],
 ) -> SecurityHeaderLayers {
     let nosniff = SetResponseHeaderLayer::overriding(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -171,7 +208,7 @@ pub fn security_headers_layer(
         header::X_FRAME_OPTIONS,
         HeaderValue::from_static("DENY"),
     );
-    let csp_value = build_csp(script_hashes, allow_cloudflare_analytics);
+    let csp_value = build_csp(script_hashes, allow_cloudflare_analytics, extra_hosts);
     let csp_header = HeaderValue::from_str(&csp_value).unwrap_or_else(|_| {
         tracing::error!("invalid CSP header bytes; falling back to strict default");
         HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'none'")
@@ -234,7 +271,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
     #[test]
     fn build_csp_allows_trunk_inline_via_hash_not_unsafe_inline() {
-        let csp = build_csp(&[TRUNK_BOOTSTRAP_HASH.to_string()], false);
+        let csp = build_csp(&[TRUNK_BOOTSTRAP_HASH.to_string()], false, &[]);
         assert!(csp.contains("script-src 'self' 'wasm-unsafe-eval'"));
         // Prefer quoted hash token form in CSP.
         assert!(
@@ -263,8 +300,8 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
     #[test]
     fn build_csp_optional_cloudflare_analytics_script_host() {
-        let off = build_csp(&[], false);
-        let on = build_csp(&[], true);
+        let off = build_csp(&[], false, &[]);
+        let on = build_csp(&[], true, &[]);
         let off_script = off
             .split(';')
             .map(str::trim)
@@ -297,5 +334,25 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         let hashes = inline_script_csp_hashes(&html);
         assert_eq!(hashes.len(), 1);
         assert_eq!(hashes[0], TRUNK_BOOTSTRAP_HASH);
+    }
+
+    #[test]
+    fn csp_names_hosts_instead_of_https_wildcard() {
+        let csp = build_csp(
+            &[],
+            false,
+            &parse_extra_hosts("https://tiles.example.com, http://x, https:, javascript:x"),
+        );
+        for directive in ["connect-src", "img-src"] {
+            let d = csp
+                .split(';')
+                .map(str::trim)
+                .find(|d| d.starts_with(directive))
+                .unwrap();
+            assert!(!d.split_whitespace().any(|t| t == "https:"), "{d}");
+            assert!(d.contains("https://tiles.openfreemap.org"), "{d}");
+            assert!(d.contains("https://tiles.example.com"), "{d}");
+            assert!(!d.contains("http://x"), "{d}");
+        }
     }
 }
