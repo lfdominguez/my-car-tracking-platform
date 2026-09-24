@@ -45,8 +45,12 @@ pub struct TripOverview {
     pub finished_at: Option<DateTime<Utc>>,
     pub finished: bool,
     pub point_count: i64,
-    /// Meters (raw).
+    /// Meters (raw), GPS track length.
     pub distance_m: Option<f64>,
+    /// Meters to divide fuel by for economy: the odometer delta when sane, else GPS.
+    /// Matches the trip page's L/100 km; prefer it over `distance_m` for economy.
+    #[serde(default)]
+    pub economy_distance_m: Option<f64>,
     pub duration_secs: Option<f64>,
     pub avg_speed_kph: Option<f64>,
     pub max_speed_kph: Option<f64>,

@@ -831,6 +831,7 @@ mod tests {
                 finished: true,
                 point_count: 2,
                 distance_m: Some(10_000.0),
+                economy_distance_m: Some(10_000.0),
                 duration_secs: Some(1800.0),
                 avg_speed_kph: Some(40.0),
                 max_speed_kph: Some(80.0),

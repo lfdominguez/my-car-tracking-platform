@@ -19,6 +19,7 @@ use crate::http_client;
 use crate::traffic::{
     fetch_ways_around_points, match_way, position_type_from_highway, upsert_ways,
 };
+use crate::trips::stats;
 use crate::units::UnitSystem;
 
 const ROUTE_POSITION_STEP_PCT: u8 = 5;
@@ -218,119 +219,36 @@ pub async fn build_trip_analysis_context(
     .await?;
     let raw_speed = sanitize_analysis_points(&mut points);
 
-    // Distance / duration / fuel similar to trips module
-    let stats = sqlx::query_as::<_, StatsRow>(
+    // Distance, fuel and point count come from the one definition in trips::stats
+    // (stored row when usable, the same aggregate computed live otherwise), so the
+    // analysis quotes exactly the figures the trip list and dashboard show. This
+    // used to be a private copy of that SQL, and copies drift: it lacked the
+    // two-coordinate distance guard and read RPM in the opposite column order.
+    let stats_sql = format!(
         r#"
         SELECT
-            (
-                SELECT ST_Length(ST_MakeLine(gps::geometry ORDER BY recorded_at)::geography)::float8
-                FROM track_points WHERE track_id = $1 AND gps IS NOT NULL
-            ) AS distance_m,
+            COALESCE(s.distance_m, live.distance_m) AS distance_m,
             EXTRACT(EPOCH FROM (
-                COALESCE(t.finished_at, (
-                    SELECT MAX(recorded_at) FROM track_points WHERE track_id = t.id
-                )) - t.started_at
+                COALESCE(t.finished_at, s.last_point_at, live.last_at) - t.started_at
             ))::float8 AS duration_secs,
-            (
-                SELECT SUM(
-                    rate * EXTRACT(EPOCH FROM (lead_t - t)) / 3600.0
-                )::float8
-                FROM (
-                    SELECT
-                      CASE
-                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
-                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
-                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
-                         AND COALESCE(tr.displacement_l_snapshot, c.displacement_l, 0) > 0
-                         AND COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
-                         AND COALESCE(tr.density_gl_snapshot, c.density_gl, 740) > 0
-                         AND tp2.fuel_consumption_rate >= 0.7 * (
-                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            )
-                        THEN (
-                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            ) * COALESCE(tr.ve_snapshot, c.ve, 0.85) * 0.14
-                        ELSE tp2.fuel_consumption_rate
-                      END AS rate,
-                      tp2.recorded_at AS t,
-                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
-                    FROM track_points tp2
-                    JOIN tracks tr ON tr.id = tp2.track_id
-                    JOIN cars c ON c.id = tr.car_id
-                    WHERE tp2.track_id = $1
-                ) s
-                WHERE rate IS NOT NULL
-                  AND lead_t IS NOT NULL
-                  AND lead_t > t
-                  AND lead_t <= t + interval '5 minutes'
-            ) AS fuel_used_l,
-            (
-                SELECT SUM(
-                    rate * EXTRACT(EPOCH FROM (lead_t - t)) / 3600.0
-                )::float8
-                FROM (
-                    SELECT
-                      CASE
-                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
-                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
-                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
-                         AND COALESCE(tr.displacement_l_snapshot, c.displacement_l, 0) > 0
-                         AND COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
-                         AND COALESCE(tr.density_gl_snapshot, c.density_gl, 740) > 0
-                         AND tp2.fuel_consumption_rate >= 0.7 * (
-                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            )
-                        THEN (
-                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            ) * COALESCE(tr.ve_snapshot, c.ve, 0.85) * 0.14
-                        ELSE tp2.fuel_consumption_rate
-                      END AS rate,
-                      COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0)::float8 AS spd,
-                      tp2.recorded_at AS t,
-                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
-                    FROM track_points tp2
-                    JOIN tracks tr ON tr.id = tp2.track_id
-                    JOIN cars c ON c.id = tr.car_id
-                    WHERE tp2.track_id = $1
-                ) s
-                WHERE rate IS NOT NULL
-                  AND spd >= 1
-                  AND lead_t IS NOT NULL
-                  AND lead_t > t
-                  AND lead_t <= t + interval '5 minutes'
-            ) AS fuel_used_moving_l,
-            (SELECT COUNT(*) FROM track_points WHERE track_id = $1)::bigint AS point_count
+            COALESCE(s.fuel_used_l, live.fuel_used_l) AS fuel_used_l,
+            COALESCE(s.fuel_used_moving_l, live.fuel_used_moving_l) AS fuel_used_moving_l,
+            COALESCE(s.point_count, live.point_count, 0)::bigint AS point_count,
+            COALESCE(s.odo_start_km, live.odo_start_km) AS odo_start_km,
+            COALESCE(s.odo_end_km, live.odo_end_km) AS odo_end_km
         FROM tracks t
+        JOIN cars c ON c.id = t.car_id
+        {stats_join}
+        {lateral}
         WHERE t.id = $1
         "#,
-    )
-    .bind(track_id)
-    .fetch_one(pool)
-    .await?;
+        stats_join = stats::stats_join("s"),
+        lateral = stats::lateral("live", "AND s.track_id IS NULL"),
+    );
+    let stats = sqlx::query_as::<_, StatsRow>(sqlx::AssertSqlSafe(stats_sql.as_str()))
+        .bind(track_id)
+        .fetch_one(pool)
+        .await?;
 
     let class = FuelClass::parse(&track.fuel_class);
     // From the sanitized series, like the graphs: a raw AVG/MAX lets one isolated
@@ -358,8 +276,13 @@ pub async fn build_trip_analysis_context(
         started_at: Some(track.started_at),
         finished_at: track.finished_at,
         finished: track.finished,
-        point_count: stats.point_count.unwrap_or(0),
+        point_count: stats.point_count,
         distance_m: stats.distance_m,
+        economy_distance_m: economy_distance_m(
+            stats.distance_m,
+            stats.odo_start_km,
+            stats.odo_end_km,
+        ),
         duration_secs: stats.duration_secs,
         avg_speed_kph,
         max_speed_kph,
@@ -441,7 +364,42 @@ struct StatsRow {
     duration_secs: Option<f64>,
     fuel_used_l: Option<f64>,
     fuel_used_moving_l: Option<f64>,
-    point_count: Option<i64>,
+    point_count: i64,
+    odo_start_km: Option<f64>,
+    odo_end_km: Option<f64>,
+}
+
+/// Distance to divide fuel by for economy: the odometer delta when it is sane,
+/// else the GPS length.
+///
+/// Mirrors `trips::fuel_stats::economy_distance_m` (private to that module) so the
+/// analysis quotes the same L/100 km the trip page does. Whole-km odometers
+/// under-report short trips, so a delta far below GPS is rejected as well as one far
+/// above it.
+fn economy_distance_m(
+    gps_m: Option<f64>,
+    odo_start_km: Option<f64>,
+    odo_end_km: Option<f64>,
+) -> Option<f64> {
+    const ODO_MIN_KM: f64 = 0.2;
+    let gps = gps_m.filter(|d| d.is_finite() && *d > 0.0);
+    let (Some(start), Some(end)) = (odo_start_km, odo_end_km) else {
+        return gps;
+    };
+    let d_km = end - start;
+    if !d_km.is_finite() || d_km < ODO_MIN_KM {
+        return gps;
+    }
+    let gps_km = gps.map(|g| g / 1000.0);
+    if gps_km.is_some_and(|g| d_km > g * 1.5 + 2.0) {
+        return gps;
+    }
+    if let Some(g) = gps_km
+        && d_km + 1e-9 < (g - 1.5).max(g * 0.5)
+    {
+        return gps;
+    }
+    Some(d_km * 1000.0)
 }
 
 fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
@@ -968,6 +926,31 @@ mod tests {
         let profile = compute_speed_profile(&pts, &raw, Some(10_000.0));
         assert_eq!(profile.hard_brake_events, None);
         assert_eq!(profile.hard_accel_events, None);
+    }
+
+    #[test]
+    fn economy_distance_prefers_a_sane_odometer() {
+        // GPS 10 km, odometer 10.4 km: trust the odometer.
+        assert_eq!(
+            economy_distance_m(Some(10_000.0), Some(100.0), Some(110.4)),
+            Some(10_400.0)
+        );
+        // Whole-km odometer says 1 km for an 8.6 km drive: fall back to GPS.
+        assert_eq!(
+            economy_distance_m(Some(8_600.0), Some(100.0), Some(101.0)),
+            Some(8_600.0)
+        );
+        // Wildly above GPS (odometer rollover or glitch): GPS.
+        assert_eq!(
+            economy_distance_m(Some(5_000.0), Some(100.0), Some(200.0)),
+            Some(5_000.0)
+        );
+        // No GPS fix at all: a plausible odometer delta still counts.
+        assert_eq!(
+            economy_distance_m(None, Some(100.0), Some(103.0)),
+            Some(3_000.0)
+        );
+        assert_eq!(economy_distance_m(None, None, Some(3.0)), None);
     }
 
     #[test]

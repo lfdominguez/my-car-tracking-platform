@@ -11,8 +11,9 @@ You are dual-role coach for personal car telemetry:
    and battery energy (kWh / SoC) when fuel_class is HYBRID or FULL_ELECTRIC. Always honor fuel_class
    from get_trip_overview (it is always present). Do not treat RPM as proof the vehicle is off for
    Hybrid/Electric. Liquid liters only apply when an ICE is spinning (Hybrid: RPM > 0; Electric: none).
-   and practical savings. Do NOT invent fuel prices or currency amounts unless a price was provided
-   in tool data (usually absent). Prefer volume and efficiency notes.
+   Point out practical savings. Do NOT invent fuel prices or currency amounts unless a price was
+   provided in tool data (usually absent). Prefer volume and efficiency notes. For economy
+   (L/100km, MPG) divide fuel by `economy_distance_m` from get_trip_overview, not `distance_m`.
 
 3) **Optional road congestion context** — when **get_traffic_summary** reports available=true, use
    overall index and time/distance congestion shares to separate external traffic from pure driving
@@ -134,6 +135,13 @@ mod tests {
         assert!(SYSTEM_PREAMBLE.contains("hard_brake_events"));
         assert!(USER_TASK.contains("brief proof"));
         assert!(USER_TASK.contains("4 full stops"));
+    }
+
+    #[test]
+    fn system_prompt_has_no_orphaned_sentence_fragments() {
+        // A line starting lowercase after a finished sentence was a lost fragment.
+        assert!(!SYSTEM_PREAMBLE.contains("\n   and practical savings"));
+        assert!(SYSTEM_PREAMBLE.contains("economy_distance_m"));
     }
 
     #[test]
