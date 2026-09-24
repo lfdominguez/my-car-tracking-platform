@@ -314,6 +314,9 @@ async fn finalize(ctx: &JobCtx, track_id: Uuid) -> AppResult<Outcome> {
         return Ok(Outcome::RecheckAt((now + EMPTY_RECHECK).min(purge_at)));
     }
 
+    if let Err(e) = crate::geofences::label_trip(&ctx.pool, track_id).await {
+        tracing::warn!(%track_id, error = %e, "labelling trip places failed");
+    }
     enqueue(
         &ctx.pool,
         &[track_id],

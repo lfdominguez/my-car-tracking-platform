@@ -63,6 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     server::trips::spawn_stale_finish_loop(state.clone());
     server::middleware::spawn_rate_limit_pruner(state.rate_limits.clone());
     server::maintenance::spawn(state.pool.clone());
+    server::alerts::spawn_periodic(state.pool.clone());
     server::jobs::spawn_worker(server::jobs::JobCtx::new(
         &state.pool,
         &state.keyring,

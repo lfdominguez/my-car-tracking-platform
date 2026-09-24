@@ -1,4 +1,5 @@
 pub mod account;
+pub mod alerts;
 pub mod analysis;
 pub mod analytics;
 pub mod audit;
@@ -11,6 +12,7 @@ pub mod db;
 pub mod devices;
 pub mod error;
 pub mod garage;
+pub mod geofences;
 pub mod http_client;
 pub mod ingest;
 pub mod jobs;
@@ -73,6 +75,8 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(notifications::router())
         .merge(cars::router())
         .merge(garage::router())
+        .merge(alerts::router())
+        .merge(geofences::router())
         .merge(photo_routes)
         .merge(devices::router())
         .merge(shares::router())

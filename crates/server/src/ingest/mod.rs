@@ -326,12 +326,15 @@ async fn track_samples(
 
     // Pass 2: one write for every valid sample.
     let results = insert_points(&state, &points).await;
+    let mut stored = Vec::new();
     for ((i, point), result) in indices.into_iter().zip(&points).zip(results) {
         if result.is_ok() {
             touched.insert(point.track_id);
+            stored.push(point.for_alerts());
         }
         outcomes[i] = Some(result);
     }
+    crate::alerts::on_points(&state, device.car_id, stored);
 
     for (sample, outcome) in body.samples.iter().zip(outcomes) {
         let outcome = outcome.unwrap_or(Ok(()));
@@ -450,7 +453,7 @@ async fn insert_sample(
     sample: &TrackSampleRequest,
 ) -> Result<TrackRef, SampleError> {
     let track = resolve_track(state, car_id, &sample.tracking_id).await?;
-    insert_sample_for_track(state, &track, sample).await?;
+    insert_sample_for_track(state, &track, sample, car_id).await?;
     Ok(track)
 }
 
@@ -507,6 +510,23 @@ struct PreparedPoint<'a> {
     sample: &'a TrackSampleRequest,
 }
 
+impl PreparedPoint<'_> {
+    fn for_alerts(&self) -> crate::alerts::IngestedPoint {
+        let s = self.sample;
+        crate::alerts::IngestedPoint {
+            track_id: self.track_id,
+            recorded_at: self.recorded_at,
+            lat: self.coords.map(|(lat, _)| lat),
+            lon: self.coords.map(|(_, lon)| lon),
+            speed_kph: s.vehicle_speed_kph,
+            rpm: s.vehicle_engine_rpm,
+            voltage: s.control_module_voltage,
+            coolant_c: s.engine_coolant_temp_c,
+            fuel_level_pct: s.fuel_level_pct,
+        }
+    }
+}
+
 /// Validate one sample against the track it targets.
 fn prepare_sample<'a>(
     track: &TrackRef,
@@ -533,10 +553,15 @@ async fn insert_sample_for_track(
     state: &AppState,
     track: &TrackRef,
     sample: &TrackSampleRequest,
+    car_id: Uuid,
 ) -> Result<(), SampleError> {
     let point = prepare_sample(track, sample)?;
     let mut outcomes = insert_points(state, std::slice::from_ref(&point)).await;
-    outcomes.pop().unwrap_or(Ok(()))
+    let outcome = outcomes.pop().unwrap_or(Ok(()));
+    if outcome.is_ok() {
+        crate::alerts::on_points(state, car_id, vec![point.for_alerts()]);
+    }
+    outcome
 }
 
 /// Write `points` and return one outcome per point, in order.
