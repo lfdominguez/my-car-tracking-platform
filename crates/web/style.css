@@ -4457,3 +4457,35 @@ button.cal-day:hover { box-shadow: inset 0 0 0 1px var(--text); }
   font-size: var(--text-xs);
 }
 .cal-legend-note { display: inline-flex; align-items: center; gap: 0.3rem; margin-left: auto; }
+
+/* ---- Trip replay (#119) ---------------------------------------------------- */
+.replay-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 0.9rem;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--inset);
+}
+.replay-seek {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+.replay-seek:focus { background: transparent; box-shadow: none; }
+.replay-seek:focus-visible { box-shadow: var(--ring); }
+.replay-clock {
+  font-family: var(--font-family-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

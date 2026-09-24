@@ -15,6 +15,7 @@ use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
 use crate::pages::trip_export::TripExportMenu;
+use crate::pages::trip_replay::TripReplay;
 use crate::pages::trips_views::{TripsCalendar, TripsOverlayMap};
 use crate::units::{
     avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, point_si_to_display,
@@ -1746,6 +1747,7 @@ pub fn TripDetailPage() -> impl IntoView {
                     traffic_busy,
                     traffic_err,
                 )}
+                <TripReplay points=Signal::derive(move || clean_points.get()) />
                 <TripMap
                     geojson=geojson.into()
                     points=clean_points
