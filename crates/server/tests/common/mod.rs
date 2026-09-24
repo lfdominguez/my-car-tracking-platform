@@ -122,3 +122,9 @@ pub async fn create_car(base: &str, owner: &User) -> String {
         .unwrap();
     car["id"].as_str().expect("car id").to_string()
 }
+
+/// A direct pool on the test database, for assertions the API does not expose.
+pub async fn pool() -> sqlx::PgPool {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    db::connect(&url).await.expect("connect")
+}

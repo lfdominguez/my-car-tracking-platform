@@ -198,3 +198,27 @@ async fn same_site_post_with_the_session_cookie_is_rejected() {
         .unwrap();
     assert!(genuine.status().is_success());
 }
+
+#[tokio::test]
+async fn maintenance_removes_expired_sessions() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let user = login(&base).await;
+    let pool = common::pool().await;
+    sqlx::query(
+        "UPDATE sessions SET expires_at = NOW() - interval '1 day' WHERE user_id = $1::uuid",
+    )
+    .bind(&user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    server::maintenance::run_once(&pool).await.unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = $1::uuid")
+        .bind(&user.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}

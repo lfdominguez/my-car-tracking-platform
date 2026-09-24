@@ -47,9 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listen_addr = config.listen_addr;
     let upload_dir = config.upload_dir.clone();
+    let shutdown_pool = pool.clone();
     let state = AppState::new(pool, config);
     server::trips::spawn_stale_finish_loop(state.clone());
     server::middleware::spawn_rate_limit_pruner(state.rate_limits.clone());
+    server::maintenance::spawn(state.pool.clone());
     server::jobs::spawn_worker(server::jobs::JobCtx::new(
         &state.pool,
         &state.keyring,
@@ -64,6 +66,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
+
+    // In-flight requests have finished; let background jobs wrap up (or hand them
+    // back to the queue) before the process exits.
+    tracing::info!("shutting down: draining background jobs");
+    server::jobs::drain(&shutdown_pool, std::time::Duration::from_secs(20)).await;
     Ok(())
+}
+
+/// Resolves on Ctrl-C or SIGTERM (what `docker stop` sends).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("shutdown signal received");
 }

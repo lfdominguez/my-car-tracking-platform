@@ -487,7 +487,7 @@ impl TripSummaryRow {
     }
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Default, Serialize, sqlx::FromRow)]
 pub struct TripPoint {
     pub recorded_at: DateTime<Utc>,
     /// `None` when the sample was recorded without a usable GPS fix.
@@ -1001,10 +1001,25 @@ async fn trip_traffic_frames(
     Ok(Json(out))
 }
 
+#[derive(Debug, Deserialize)]
+struct TripPointsQuery {
+    /// Downsample to about this many points, keeping each bucket's slowest and
+    /// fastest sample so peaks and stops survive. Omit for every point.
+    max_points: Option<usize>,
+    /// Only points at or after this time (for zooming into part of a trip).
+    from: Option<DateTime<Utc>>,
+    /// Only points at or before this time.
+    to: Option<DateTime<Utc>>,
+}
+
+/// Smallest `max_points` honoured; below this the curve stops meaning anything.
+const MIN_DOWNSAMPLE_POINTS: usize = 50;
+
 async fn trip_points(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    Query(q): Query<TripPointsQuery>,
 ) -> AppResult<Json<Vec<TripPoint>>> {
     let car_id = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
         .bind(id)
@@ -1056,19 +1071,73 @@ async fn trip_points(
             device_tilt_delta_deg
         FROM track_points
         WHERE track_id = $1
+          AND ($2::timestamptz IS NULL OR recorded_at >= $2)
+          AND ($3::timestamptz IS NULL OR recorded_at <= $3)
         ORDER BY recorded_at
         "#,
     )
     .bind(id)
+    .bind(q.from)
+    .bind(q.to)
     .fetch_all(&state.pool)
     .await?;
+    // Sanitize before thinning, so a spike cannot be picked as a bucket's maximum.
     sanitize_trip_points(&mut rows);
+    if let Some(max) = q.max_points {
+        rows = downsample_min_max(rows, max.max(MIN_DOWNSAMPLE_POINTS));
+    }
     let system = user.unit_system;
     let rows = rows
         .into_iter()
         .map(|p| apply_trip_point_units(p, system))
         .collect();
     Ok(Json(rows))
+}
+
+/// Thin a chronological series to about `max` points: split it into `max / 2`
+/// buckets and keep the slowest and fastest sample of each (in time order), plus
+/// the first and last point. Unlike keeping every Nth sample, this cannot drop a
+/// stop or a top speed.
+fn downsample_min_max(rows: Vec<TripPoint>, max: usize) -> Vec<TripPoint> {
+    let n = rows.len();
+    if n <= max || max < 4 {
+        return rows;
+    }
+    let speed = |p: &TripPoint| p.vehicle_speed_kph.or(p.engine_vel);
+    let buckets = max / 2;
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    for b in 0..buckets {
+        let lo = b * n / buckets;
+        let hi = ((b + 1) * n / buckets).min(n);
+        if lo >= hi {
+            continue;
+        }
+        let with_speed = (lo..hi).filter(|&i| speed(&rows[i]).is_some());
+        let min = with_speed.clone().min_by(|&a, &b| {
+            speed(&rows[a])
+                .partial_cmp(&speed(&rows[b]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let max_i = with_speed.max_by(|&a, &b| {
+            speed(&rows[a])
+                .partial_cmp(&speed(&rows[b]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        match (min, max_i) {
+            (Some(a), Some(b)) => {
+                keep[a] = true;
+                keep[b] = true;
+            }
+            // No speed in this bucket (GPS-only stretch): keep its first point.
+            _ => keep[lo] = true,
+        }
+    }
+    rows.into_iter()
+        .zip(keep)
+        .filter_map(|(p, k)| k.then_some(p))
+        .collect()
 }
 
 fn sanitize_trip_points(rows: &mut [TripPoint]) {
@@ -1147,7 +1216,8 @@ async fn _unused() {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_TRIP_LIST_LIMIT, MAX_TRIP_LIST_LIMIT, is_stale_open_trip, trip_list_limit,
+        DEFAULT_TRIP_LIST_LIMIT, MAX_TRIP_LIST_LIMIT, TripPoint, downsample_min_max,
+        is_stale_open_trip, trip_list_limit,
     };
     use chrono::{Duration, TimeZone, Utc};
 
@@ -1165,6 +1235,30 @@ mod tests {
             trip_list_limit(Some(MAX_TRIP_LIST_LIMIT + 50)),
             MAX_TRIP_LIST_LIMIT
         );
+    }
+
+    #[test]
+    fn downsampling_keeps_extremes_and_endpoints() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let rows: Vec<TripPoint> = (0..1000)
+            .map(|i| TripPoint {
+                recorded_at: t0 + Duration::seconds(i),
+                vehicle_speed_kph: Some(match i {
+                    537 => 190.0,
+                    800 => 0.0,
+                    _ => 50.0 + (i % 7) as f64,
+                }),
+                ..Default::default()
+            })
+            .collect();
+        let out = downsample_min_max(rows, 100);
+        assert!(out.len() <= 102, "kept {}", out.len());
+        let speeds: Vec<f64> = out.iter().filter_map(|p| p.vehicle_speed_kph).collect();
+        assert!(speeds.contains(&190.0), "lost the top speed");
+        assert!(speeds.contains(&0.0), "lost the stop");
+        assert_eq!(out.first().unwrap().recorded_at, t0);
+        assert_eq!(out.last().unwrap().recorded_at, t0 + Duration::seconds(999));
+        assert!(out.windows(2).all(|w| w[0].recorded_at < w[1].recorded_at));
     }
 
     #[test]

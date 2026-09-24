@@ -8,7 +8,9 @@
 //! failures with exponential backoff. A row left 'running' by a crashed process is
 //! reclaimed once its lock expires.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -34,6 +36,12 @@ const EMPTY_RECHECK: chrono::Duration = chrono::Duration::hours(1);
 /// usually arrives as several batches, so wait for it to settle before re-running
 /// the post-finish work on the now-complete trip.
 pub const LATE_SAMPLE_SETTLE: chrono::Duration = chrono::Duration::minutes(2);
+
+/// Set once shutdown starts: no new jobs are claimed after it.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+/// Jobs this process is running, so a shutdown can wait for them or hand them back.
+static IN_FLIGHT: LazyLock<Mutex<HashSet<(Uuid, String)>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobKind {
@@ -171,6 +179,9 @@ pub async fn run_due(ctx: &JobCtx, limit: i64) -> AppResult<usize> {
 }
 
 async fn claim_and_run(ctx: &JobCtx, limit: i64, only: Option<&[Uuid]>) -> AppResult<usize> {
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return Ok(0);
+    }
     let claimed: Vec<Claimed> = sqlx::query_as(
         r#"
         UPDATE track_jobs j
@@ -203,6 +214,8 @@ async fn claim_and_run(ctx: &JobCtx, limit: i64, only: Option<&[Uuid]>) -> AppRe
         let Some(kind) = JobKind::parse(&job.kind) else {
             return;
         };
+        let key = (job.track_id, job.kind.clone());
+        in_flight().insert(key.clone());
         let outcome =
             match tokio::time::timeout(JOB_TIMEOUT, run_one(ctx, job.track_id, kind)).await {
                 Ok(outcome) => outcome,
@@ -212,9 +225,40 @@ async fn claim_and_run(ctx: &JobCtx, limit: i64, only: Option<&[Uuid]>) -> AppRe
             tracing::warn!(track_id = %job.track_id, kind = %job.kind, error = %e,
                 "recording track job outcome failed");
         }
+        in_flight().remove(&key);
     }))
     .await;
     Ok(n)
+}
+
+fn in_flight() -> std::sync::MutexGuard<'static, HashSet<(Uuid, String)>> {
+    IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Stop claiming jobs, give running ones up to `grace` to finish, then hand the
+/// rest back to the queue so the next process picks them up at once instead of
+/// waiting out their claim lock.
+pub async fn drain(pool: &PgPool, grace: Duration) {
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + grace;
+    while !in_flight().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let left: Vec<(Uuid, String)> = in_flight().iter().cloned().collect();
+    for (track_id, kind) in left {
+        let res = sqlx::query(
+            "UPDATE track_jobs SET status = 'queued', attempts = GREATEST(attempts - 1, 0),
+                    locked_until = NULL, run_after = NOW(), updated_at = NOW()
+             WHERE track_id = $1 AND kind = $2 AND status = 'running'",
+        )
+        .bind(track_id)
+        .bind(&kind)
+        .execute(pool)
+        .await;
+        if let Err(e) = res {
+            tracing::warn!(%track_id, %kind, error = %e, "releasing interrupted job failed");
+        }
+    }
 }
 
 async fn run_one(ctx: &JobCtx, track_id: Uuid, kind: JobKind) -> Outcome {

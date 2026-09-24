@@ -17,7 +17,7 @@ use crate::error::AppResult;
 
 /// Bump whenever [`TRACK_POINT_AGGREGATE`] changes meaning. Rows written by an older
 /// version stop being usable immediately and the sweeper recomputes them.
-pub const SCHEMA_VERSION: i16 = 1;
+pub const SCHEMA_VERSION: i16 = 2;
 
 /// The per-trip aggregate over `track_points`, as the body of a correlated subquery.
 ///
@@ -148,8 +148,13 @@ pub const TRACK_POINT_AGGREGATE: &str = r#"
                   FILTER (WHERE tp.battery_soc_pct IS NOT NULL))[1]::float8 AS battery_soc_end_pct,
                 (array_agg(tp.recorded_at ORDER BY tp.recorded_at DESC)
                   FILTER (WHERE tp.battery_soc_pct IS NOT NULL))[1] AS battery_soc_end_at,
+                -- Fixes worse than 50 m are GPS wander (tunnel exits, garages, cold
+                -- starts) and zig-zag the line, inflating distance. gps_acc_m < 0 is the
+                -- "accuracy unknown" sentinel and is kept.
                 CASE
-                  WHEN COUNT(tp.gps) >= 2 THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)::geography)::float8
+                  WHEN COUNT(tp.gps) FILTER (WHERE tp.gps_acc_m <= 50 OR tp.gps_acc_m < 0) >= 2
+                  THEN ST_Length(ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at)
+                         FILTER (WHERE tp.gps_acc_m <= 50 OR tp.gps_acc_m < 0)::geography)::float8
                   ELSE 0::float8
                 END AS distance_m
 "#;
