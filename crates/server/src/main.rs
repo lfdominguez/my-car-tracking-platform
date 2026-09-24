@@ -8,6 +8,12 @@ use server::{build_router, db};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `server healthcheck` is the container HEALTHCHECK, so the runtime image needs
+    // no curl.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        std::process::exit(if healthcheck() { 0 } else { 1 });
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -100,4 +106,31 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     tracing::info!("shutdown signal received");
+}
+
+/// GET /health on the local listener; true on a 200 within five seconds.
+fn healthcheck() -> bool {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    let port = std::env::var("LISTEN_ADDR")
+        .ok()
+        .and_then(|a| a.parse::<SocketAddr>().ok())
+        .map(|a| a.port())
+        .unwrap_or(8080);
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let timeout = Duration::from_secs(5);
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, timeout) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut head = [0u8; 16];
+    matches!(stream.read(&mut head), Ok(n) if head[..n].starts_with(b"HTTP/1.1 200"))
 }

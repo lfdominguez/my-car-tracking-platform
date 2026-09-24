@@ -7,7 +7,7 @@ use axum_extra::extract::CookieJar;
 use oauth2::basic::BasicClient;
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, HttpRequest, HttpResponse,
-    RedirectUrl, Scope, TokenResponse, TokenUrl,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -21,7 +21,7 @@ use crate::auth::session::{
     NewSessionMeta, clear_oauth_state_cookie, oauth_state_from_jar, set_oauth_state_cookie,
 };
 use crate::error::{AppError, AppResult};
-use crate::http_client::outbound_client;
+use crate::http_client::outbound_client_no_redirect;
 use crate::middleware::client_ip;
 use crate::state::AppState;
 
@@ -39,14 +39,23 @@ async fn start_google(State(state): State<AppState>, jar: CookieJar) -> AppResul
         ));
     }
     let client = build_oauth_client(&state)?;
+    // PKCE binds the authorization code to this browser: an intercepted code is
+    // useless without the verifier, which never leaves our HttpOnly cookie.
+    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let (auth_url, csrf) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new("openid".into()))
         .add_scope(Scope::new("email".into()))
         .add_scope(Scope::new("profile".into()))
+        .set_pkce_challenge(pkce_challenge)
         .url();
     let secure = state.config.public_base_url.starts_with("https");
-    let jar = set_oauth_state_cookie(jar, csrf.secret(), secure);
+    let cookie = encode_oauth_cookie(
+        &state.config.session_secret,
+        csrf.secret(),
+        pkce_verifier.secret(),
+    );
+    let jar = set_oauth_state_cookie(jar, &cookie, secure);
     Ok((jar, Redirect::temporary(auth_url.as_str())).into_response())
 }
 
@@ -95,19 +104,26 @@ async fn google_callback_inner(
     headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
 ) -> AppResult<Response> {
-    let cookie_state = oauth_state_from_jar(&jar);
+    let cookie = oauth_state_from_jar(&jar)
+        .and_then(|c| decode_oauth_cookie(&state.config.session_secret, &c));
     let query_state = q.state.as_deref();
-    if !oauth_state_matches(cookie_state.as_deref(), query_state) {
+    let Some((cookie_state, pkce_verifier)) = cookie else {
+        return Err(AppError::BadRequest(
+            "invalid or missing OAuth state".into(),
+        ));
+    };
+    if !oauth_state_matches(Some(&cookie_state), query_state) {
         return Err(AppError::BadRequest(
             "invalid or missing OAuth state".into(),
         ));
     }
 
     let client = build_oauth_client(&state)?;
-    let http = outbound_client().map_err(|e| AppError::internal(e.to_string()))?;
+    let http = outbound_client_no_redirect().map_err(|e| AppError::internal(e.to_string()))?;
     let adapter = |req: HttpRequest| reqwest_oauth2_adapter(http.clone(), req);
     let token = client
         .exchange_code(AuthorizationCode::new(q.code))
+        .set_pkce_verifier(PkceCodeVerifier::new(pkce_verifier))
         .request_async(&adapter)
         .await
         .map_err(|e| AppError::internal(format!("token exchange failed: {e}")))?;
@@ -156,6 +172,37 @@ async fn google_callback_inner(
 }
 
 /// Constant-time compare of OAuth CSRF cookie vs query `state`.
+/// MAC over the OAuth cookie so a planted cookie (e.g. from a sibling subdomain)
+/// cannot pair an attacker-chosen state with an attacker-known PKCE verifier.
+fn oauth_cookie_mac(secret: &str, payload: &str) -> String {
+    let key = blake3::derive_key("ctp oauth cookie v1", secret.as_bytes());
+    blake3::keyed_hash(&key, payload.as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+/// `state.verifier.mac` — all three parts are URL-safe base64 or hex, so `.` is
+/// an unambiguous separator.
+pub fn encode_oauth_cookie(secret: &str, state: &str, verifier: &str) -> String {
+    let payload = format!("{state}.{verifier}");
+    let mac = oauth_cookie_mac(secret, &payload);
+    format!("{payload}.{mac}")
+}
+
+/// Inverse of [`encode_oauth_cookie`]; `None` if malformed or the MAC is wrong.
+pub fn decode_oauth_cookie(secret: &str, cookie: &str) -> Option<(String, String)> {
+    let (payload, mac) = cookie.rsplit_once('.')?;
+    let (state, verifier) = payload.split_once('.')?;
+    let expected = oauth_cookie_mac(secret, payload);
+    if state.is_empty()
+        || verifier.is_empty()
+        || !bool::from(expected.as_bytes().ct_eq(mac.as_bytes()))
+    {
+        return None;
+    }
+    Some((state.to_string(), verifier.to_string()))
+}
+
 pub fn oauth_state_matches(cookie_state: Option<&str>, query_state: Option<&str>) -> bool {
     match (cookie_state, query_state) {
         (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() && a.len() == b.len() => {
@@ -231,7 +278,7 @@ struct GoogleProfile {
 }
 
 async fn fetch_google_profile(access_token: &str) -> AppResult<GoogleProfile> {
-    let client = outbound_client().map_err(|e| AppError::internal(e.to_string()))?;
+    let client = outbound_client_no_redirect().map_err(|e| AppError::internal(e.to_string()))?;
     let resp = client
         .get("https://openidconnect.googleapis.com/v1/userinfo")
         .bearer_auth(access_token)
@@ -345,7 +392,20 @@ fn build_oauth_client(state: &AppState) -> AppResult<OAuthClient> {
 
 #[cfg(test)]
 mod tests {
-    use super::oauth_state_matches;
+    use super::{decode_oauth_cookie, encode_oauth_cookie, oauth_state_matches};
+
+    #[test]
+    fn oauth_cookie_round_trips_and_rejects_tampering() {
+        let c = encode_oauth_cookie("secret", "st-ate_1", "verifier-XYZ_2");
+        assert_eq!(
+            decode_oauth_cookie("secret", &c),
+            Some(("st-ate_1".into(), "verifier-XYZ_2".into()))
+        );
+        assert_eq!(decode_oauth_cookie("other-secret", &c), None);
+        let forged = c.replacen("st-ate_1", "attacker", 1);
+        assert_eq!(decode_oauth_cookie("secret", &forged), None);
+        assert_eq!(decode_oauth_cookie("secret", "plain-state"), None);
+    }
 
     #[test]
     fn oauth_state_requires_both_sides() {
