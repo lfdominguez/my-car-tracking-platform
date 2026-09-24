@@ -262,7 +262,7 @@ fn group(digits: &str, sep: Option<char>) -> String {
     };
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(sep);
         }
         out.push(ch);

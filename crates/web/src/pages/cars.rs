@@ -373,7 +373,7 @@ pub fn CarDetailPage() -> impl IntoView {
             <div class="error">{move || error.get().unwrap_or_default()}</div>
         </Show>
         <Show when=move || car.get().map(|c| c.vault_sealed).unwrap_or(false) && !use_vault_session().unlocked().get()>
-            <VaultUnlockGate message=t("cars.unlock_to_view").to_string()/>
+            <VaultUnlockGate message="cars.unlock_to_view"/>
         </Show>
 
 

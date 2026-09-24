@@ -16,6 +16,7 @@ use crate::api::{
     set_live_sharing, vault_list_deks,
 };
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{role_label, t, tf, tp};
 use crate::vault::{load_car_dek, use_vault_session, wrap_and_upload_dek};
 
 fn confirm(msg: &str) -> bool {
@@ -27,11 +28,12 @@ fn confirm(msg: &str) -> bool {
 fn date_only(iso: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(iso.trim())
         .map(|d| {
-            d.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d")
-                .to_string()
+            crate::i18n::date(
+                &d.with_timezone(&chrono::Local).date_naive(),
+                crate::i18n::date_pattern(),
+            )
         })
-        .unwrap_or_else(|_| iso.split('T').next().unwrap_or(iso).to_string())
+        .unwrap_or_else(|_| crate::i18n::iso_date(iso.split('T').next().unwrap_or(iso)))
 }
 
 /// The car page's Sharing card.
@@ -105,7 +107,7 @@ pub fn SharingCard(
                 Ok(resp) => {
                     let _ = email.try_set(String::new());
                     let msg = if resp.message.trim().is_empty() {
-                        format!("Invitation sent to {to}.")
+                        tf("share.invitation_sent", &[("email", &to)])
                     } else {
                         resp.message
                     };
@@ -122,9 +124,7 @@ pub fn SharingCard(
 
     let leave = move |_| {
         let name = car.with_untracked(|c| c.as_ref().map(|c| c.name.clone()).unwrap_or_default());
-        if !confirm(&format!(
-            "Leave “{name}”? You lose access to its trips until the owner invites you again."
-        )) {
+        if !confirm(&tf("share.confirm_leave", &[("name", &name)])) {
             return;
         }
         let id = car_id.get_untracked();
@@ -145,7 +145,7 @@ pub fn SharingCard(
             <div class="telemetry-section-head">
                 <h2 class="section-title">
                     <Icon name="share-network" color=IconColor::Accent />
-                    "Sharing"
+                    {tr!("share.title")}
                 </h2>
                 <Show when=move || car.with(|c| c.is_some()) && !is_owner()>
                     <button
@@ -155,7 +155,7 @@ pub fn SharingCard(
                         on:click=leave
                     >
                         <Icon name="sign-out" size=IconSize::Sm />
-                        "Leave this car"
+                        {tr!("share.leave")}
                     </button>
                 </Show>
             </div>
@@ -165,18 +165,18 @@ pub fn SharingCard(
                     <div>
                         <div class="live-sharing-title">
                             <Icon name="broadcast" size=IconSize::Sm color=IconColor::Accent />
-                            "Live position"
+                            {tr!("share.live_position")}
                         </div>
                         <div class="muted field-hint">
                             {move || match car.with(|c| c.as_ref().and_then(|c| c.share_live_position)) {
-                                Some(true) => "People this car is shared with can see where it is now.",
-                                Some(false) => "Only you see where this car is now.",
-                                None => "Choose whether people this car is shared with can see where it is now.",
+                                Some(true) => t("share.live_on"),
+                                Some(false) => t("share.live_off"),
+                                None => t("share.live_unset"),
                             }}
                         </div>
                     </div>
-                    <div class="seg-control" role="group" aria-label="Share live position">
-                        {[(true, "Shared"), (false, "Private")]
+                    <div class="seg-control" role="group" aria-label=tr!("share.live_group")>
+                        {[(true, "share.shared"), (false, "share.private")]
                             .into_iter()
                             .map(|(value, label)| {
                                 let active = move || {
@@ -208,7 +208,7 @@ pub fn SharingCard(
                                             });
                                         }
                                     >
-                                        {label}
+                                        {move || t(label)}
                                     </button>
                                 }
                             })
@@ -220,24 +220,24 @@ pub fn SharingCard(
             <Show when=is_owner>
                 <div class="row">
                     <input style="max-width:260px" type="email" placeholder="user@email.com"
-                        aria-label="Email to invite"
+                        aria-label=tr!("share.email_to_invite")
                         prop:value=move || email.get()
                         on:input=move |ev| email.set(event_target_value(&ev))/>
-                    <select style="max-width:140px" aria-label="Role" prop:value=move || role.get()
+                    <select style="max-width:140px" aria-label=tr!("cars.role") prop:value=move || role.get()
                         on:change=move |ev| role.set(event_target_value(&ev))>
-                        <option value="viewer">"viewer"</option>
-                        <option value="editor">"editor"</option>
+                        <option value="viewer">{tr!("role.viewer")}</option>
+                        <option value="editor">{tr!("role.editor")}</option>
                     </select>
                     <button class="btn" prop:disabled=move || busy.get() || email.get().trim().is_empty() on:click=invite>
                         <Icon name="user-plus" />
-                        "Invite"
+                        {tr!("share.invite")}
                     </button>
                 </div>
                 <p class="field-hint">
                     {move || if sealed() {
-                        "They get access once they accept. For this vault car, share the vault key with them afterwards."
+                        t("share.hint_vault")
                     } else {
-                        "They get access once they accept the invitation."
+                        t("share.hint")
                     }}
                 </p>
             </Show>
@@ -246,9 +246,9 @@ pub fn SharingCard(
             </Show>
 
             <Show when=move || is_owner() && !invites.get().is_empty()>
-                <h3 class="garage-subtitle">"Pending invitations"</h3>
+                <h3 class="garage-subtitle">{tr!("share.pending")}</h3>
                 <table class="table">
-                    <thead><tr><th>"Email"</th><th>"Role"</th><th>"Sent"</th><th></th></tr></thead>
+                    <thead><tr><th>{tr!("share.email")}</th><th>{tr!("cars.role")}</th><th>{tr!("share.sent")}</th><th></th></tr></thead>
                     <tbody>
                         <For
                             each=move || invites.get()
@@ -256,18 +256,19 @@ pub fn SharingCard(
                             children=move |i| {
                                 let invite_id = i.id.clone();
                                 let who = i.email.clone();
+                                let (role, created) = (i.role.clone(), i.created_at.clone());
                                 view! {
                                     <tr>
-                                        <td data-label="Email">{i.email.clone()}</td>
-                                        <td data-label="Role"><span class=format!("badge {}", i.role)>{i.role.clone()}</span></td>
-                                        <td class="num" data-label="Sent">{date_only(&i.created_at)}</td>
+                                        <td data-label=tr!("share.email")>{i.email.clone()}</td>
+                                        <td data-label=tr!("cars.role")><span class=format!("badge {}", i.role)>{move || role_label(&role)}</span></td>
+                                        <td class="num" data-label=tr!("share.sent")>{move || date_only(&created)}</td>
                                         <td data-label="">
                                             <button
                                                 type="button"
                                                 class="btn ghost btn-sm err"
                                                 prop:disabled=move || busy.get()
                                                 on:click=move |_| {
-                                                    if !confirm(&format!("Cancel the invitation to {who}?")) {
+                                                    if !confirm(&tf("share.confirm_cancel", &[("email", &who)])) {
                                                         return;
                                                     }
                                                     let car = car_id.get_untracked();
@@ -284,7 +285,7 @@ pub fn SharingCard(
                                                     });
                                                 }
                                             >
-                                                "Cancel"
+                                                {tr!("common.cancel")}
                                             </button>
                                         </td>
                                     </tr>
@@ -295,21 +296,21 @@ pub fn SharingCard(
                 </table>
             </Show>
 
-            <h3 class="garage-subtitle">"Members"</h3>
+            <h3 class="garage-subtitle">{tr!("share.members")}</h3>
             <Show
                 when=move || !shares.get().is_empty()
                 fallback=move || view! {
-                    <p class="muted">{move || if is_owner() { "Not shared with anyone yet." } else { "—" }}</p>
+                    <p class="muted">{move || if is_owner() { t("share.not_shared") } else { "—" }}</p>
                 }
             >
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>"User"</th>
-                            <th>"Email"</th>
-                            <th>"Role"</th>
+                            <th>{tr!("share.user")}</th>
+                            <th>{tr!("share.email")}</th>
+                            <th>{tr!("cars.role")}</th>
                             <Show when=move || is_owner() && sealed()>
-                                <th>"Vault key"</th>
+                                <th>{tr!("share.vault_key")}</th>
                             </Show>
                         </tr>
                     </thead>
@@ -346,49 +347,50 @@ pub fn SharingCard(
                                         match res {
                                             Ok(()) => {
                                                 let _ = wrapped_for.try_update(|w| w.push(uid));
-                                                let _ = notice.try_set(Some("Vault key shared.".into()));
+                                                let _ = notice.try_set(Some(t("share.key_shared").into()));
                                             }
                                             Err(e) => {
-                                                let _ = error.try_set(Some(format!("Could not share the vault key: {e}")));
+                                                let _ = error.try_set(Some(tf("share.key_failed", &[("error", &e)])));
                                             }
                                         }
                                         let _ = busy.try_set(false);
                                     });
                                 };
+                                let role = s.role.clone();
                                 view! {
                                     <tr>
-                                        <td data-label="User">{s.name.clone()}</td>
-                                        <td data-label="Email">{s.email.clone()}</td>
-                                        <td data-label="Role">
+                                        <td data-label=tr!("share.user")>{s.name.clone()}</td>
+                                        <td data-label=tr!("share.email")>{s.email.clone()}</td>
+                                        <td data-label=tr!("cars.role")>
                                             <span class=format!("badge {}", s.role)>
                                                 <span class="icon-label">
                                                     <Icon name=role_icon size=IconSize::Sm />
-                                                    {s.role.clone()}
+                                                    {move || role_label(&role)}
                                                 </span>
                                             </span>
                                         </td>
                                         <Show when=move || is_owner() && sealed()>
-                                            <td data-label="Vault key">
+                                            <td data-label=tr!("share.vault_key")>
                                                 {
                                                     let has_key = has_key.clone();
                                                     let share_key = share_key.clone();
                                                     move || {
                                                         if has_key() {
-                                                            view! { <span class="pill pill-ok">"Shared"</span> }.into_any()
+                                                            view! { <span class="pill pill-ok">{tr!("share.shared")}</span> }.into_any()
                                                         } else if !has_pubkey {
-                                                            view! { <span class="muted">"No vault identity yet"</span> }.into_any()
+                                                            view! { <span class="muted">{tr!("share.no_identity")}</span> }.into_any()
                                                         } else {
                                                             let share_key = share_key.clone();
                                                             view! {
                                                                 <button
                                                                     type="button"
                                                                     class="btn secondary btn-sm"
-                                                                    title=move || if unlocked.get() { "" } else { "Unlock the vault first" }
+                                                                    title=move || if unlocked.get() { "" } else { t("share.unlock_first") }
                                                                     prop:disabled=move || busy.get() || !unlocked.get()
                                                                     on:click=share_key
                                                                 >
                                                                     <Icon name="key" size=IconSize::Sm />
-                                                                    "Share vault key"
+                                                                    {tr!("share.share_key")}
                                                                 </button>
                                                             }
                                                             .into_any()
@@ -468,12 +470,18 @@ pub fn PendingInvites(#[prop(optional)] compact: bool) -> impl IntoView {
                     children=move |i| {
                         let (ia, id_busy) = (i.clone(), i.id.clone());
                         let idecline = i.clone();
-                        let by = i
-                            .invited_by
-                            .clone()
-                            .filter(|s| !s.is_empty())
-                            .map(|s| format!(" · from {s}"))
-                            .unwrap_or_default();
+                        let invited_by = i.invited_by.clone().filter(|s| !s.is_empty());
+                        let (role, created, car_name) = (i.role.clone(), i.created_at.clone(), i.car_name.clone());
+                        let meta = move || {
+                            let by = invited_by
+                                .as_ref()
+                                .map(|s| tf("share.from", &[("name", s)]))
+                                .unwrap_or_default();
+                            tf(
+                                "share.as_role",
+                                &[("role", &role_label(&role)), ("by", &by), ("date", &date_only(&created))],
+                            )
+                        };
                         let is_busy = move || busy.get().as_deref() == Some(id_busy.as_str());
                         let is_busy2 = is_busy.clone();
                         view! {
@@ -481,22 +489,20 @@ pub fn PendingInvites(#[prop(optional)] compact: bool) -> impl IntoView {
                                 <div>
                                     <div class="invite-car">
                                         <Icon name="car" size=IconSize::Sm color=IconColor::Device />
-                                        {if i.car_name.is_empty() { "A car".to_string() } else { i.car_name.clone() }}
+                                        {move || if car_name.is_empty() { t("places.a_car").to_string() } else { car_name.clone() }}
                                     </div>
-                                    <div class="muted invite-meta">
-                                        {format!("as {}{by} · {}", i.role, date_only(&i.created_at))}
-                                    </div>
+                                    <div class="muted invite-meta">{meta}</div>
                                 </div>
                                 <div class="row">
                                     <button type="button" class="btn primary btn-sm"
                                         prop:disabled=is_busy
                                         on:click=move |_| respond(ia.clone(), true)>
-                                        "Accept"
+                                        {tr!("share.accept")}
                                     </button>
                                     <button type="button" class="btn ghost btn-sm"
                                         prop:disabled=is_busy2
                                         on:click=move |_| respond(idecline.clone(), false)>
-                                        "Decline"
+                                        {tr!("share.decline")}
                                     </button>
                                 </div>
                             </li>
@@ -511,8 +517,9 @@ pub fn PendingInvites(#[prop(optional)] compact: bool) -> impl IntoView {
         accepted.get().map(|(id, name)| {
             view! {
                 <div class="success" role="status">
-                    {format!("You now have access to {}. ", if name.is_empty() { "the car".to_string() } else { name })}
-                    <A href=format!("/app/cars/{id}")>"Open it"</A>
+                    {tf("share.now_access", &[("name", &if name.is_empty() { t("share.the_car").to_string() } else { name })])}
+                    " "
+                    <A href=format!("/app/cars/{id}")>{tr!("share.open_it")}</A>
                 </div>
             }
         })
@@ -522,13 +529,10 @@ pub fn PendingInvites(#[prop(optional)] compact: bool) -> impl IntoView {
         view! {
             {accepted_note}
             <Show when=move || !invites.get().is_empty()>
-                <section class="card invite-banner" aria-label="Car invitations">
+                <section class="card invite-banner" aria-label=tr!("share.car_invitations")>
                     <h2 class="section-title">
                         <Icon name="envelope-simple" color=IconColor::Accent />
-                        {move || {
-                            let n = invites.get().len();
-                            format!("{n} car invitation{} waiting", if n == 1 { "" } else { "s" })
-                        }}
+                        {move || tp("share.waiting", invites.get().len() as i64)}
                     </h2>
                     {list}
                     <Show when=move || error.get().is_some()>
@@ -543,14 +547,14 @@ pub fn PendingInvites(#[prop(optional)] compact: bool) -> impl IntoView {
             <div class="card settings-card" id="invites" style="margin-top:1rem">
                 <h2 class="section-title">
                     <Icon name="envelope-simple" color=IconColor::Accent />
-                    "Invitations"
+                    {tr!("share.invitations")}
                 </h2>
-                <p class="muted">"Cars other people invited you to. Accepting gives you access with the role they chose."</p>
+                <p class="muted">{tr!("share.invitations_lead")}</p>
                 {accepted_note}
                 <Show
                     when=move || !invites.get().is_empty()
                     fallback=move || view! {
-                        <p class="muted">{move || if loaded.get() { "No pending invitations." } else { "Loading…" }}</p>
+                        <p class="muted">{move || if loaded.get() { t("share.no_pending") } else { t("common.loading") }}</p>
                     }
                 >
                     {list}

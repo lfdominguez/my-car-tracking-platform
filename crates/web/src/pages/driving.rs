@@ -10,6 +10,7 @@ use crate::api::{
 use crate::components::echart::{EChart, chart_chrome};
 use crate::components::map::set_trip_map_highlights;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{num, t, tf};
 use crate::pages::trip_replay::select_time;
 use crate::units::{UnitPrefs, UnitSystem, km_to_display, use_unit_prefs};
 
@@ -26,13 +27,13 @@ fn score_tone(score: f64) -> &'static str {
 }
 
 fn pct(v: f64) -> String {
-    format!("{:.0}%", (v * 100.0).clamp(0.0, 100.0))
+    format!("{}%", num((v * 100.0).clamp(0.0, 100.0), 0))
 }
 
 fn speed_label(kph: f64, prefs: &UnitPrefs) -> String {
     format!(
-        "{:.0} {}",
-        km_to_display(kph, prefs.system),
+        "{} {}",
+        num(km_to_display(kph, prefs.system), 0),
         prefs.labels.speed
     )
 }
@@ -49,9 +50,9 @@ fn clock(iso: &str) -> String {
 
 fn dist_label(m: f64, prefs: &UnitPrefs) -> String {
     match prefs.system {
-        UnitSystem::Metric if m < 1000.0 => format!("{m:.0} m"),
-        UnitSystem::Metric => format!("{:.2} km", m / 1000.0),
-        UnitSystem::Us => format!("{:.2} mi", m / crate::units::METERS_PER_MILE),
+        UnitSystem::Metric if m < 1000.0 => format!("{} m", num(m, 0)),
+        UnitSystem::Metric => format!("{} km", num(m / 1000.0, 2)),
+        UnitSystem::Us => format!("{} mi", num(m / crate::units::METERS_PER_MILE, 2)),
     }
 }
 
@@ -124,22 +125,22 @@ pub fn TripDrivingCard(trip: RwSignal<Option<Trip>>) -> impl IntoView {
                 <div class="telemetry-section-head">
                     <h2 class="section-title">
                         <Icon name="steering-wheel" color=IconColor::Accent />
-                        "Driving"
+                        {tr!("driving.title")}
                     </h2>
                     {move || score.get().map(|s| view! {
-                        <span class=score_tone(s.score) title="Driving score, 0–100">
-                            {format!("Score {:.0}", s.score)}
+                        <span class=score_tone(s.score) title=tr!("driving.score_title")>
+                            {tf("driving.score", &[("n", &num(s.score, 0))])}
                         </span>
                     })}
                 </div>
                 <div class="driving-grid">
                     {move || score.get().map(|s| {
                         let rows = [
-                            ("Harsh acceleration", s.harsh_accel.to_string()),
-                            ("Harsh braking", s.harsh_brake.to_string()),
-                            ("Idling", pct(s.idle_share)),
-                            ("High RPM", pct(s.high_rpm_share)),
-                            ("Over the limit", s.speeding_share.map(pct).unwrap_or_else(|| "—".into())),
+                            (t("driving.harsh_accel"), s.harsh_accel.to_string()),
+                            (t("driving.harsh_brake"), s.harsh_brake.to_string()),
+                            (t("driving.idling"), pct(s.idle_share)),
+                            (t("driving.high_rpm"), pct(s.high_rpm_share)),
+                            (t("driving.over_limit"), s.speeding_share.map(pct).unwrap_or_else(|| "—".into())),
                         ];
                         view! {
                             <dl class="stat-rows">
@@ -158,7 +159,7 @@ pub fn TripDrivingCard(trip: RwSignal<Option<Trip>>) -> impl IntoView {
                             match speeding.get() {
                                 None => ().into_any(),
                                 Some(r) if !r.analyzed => view! {
-                                    <p class="muted">"Speed limits are matched during traffic analysis — run it on the route card to see speeding."</p>
+                                    <p class="muted">{tr!("driving.limits_hint")}</p>
                                 }
                                 .into_any(),
                                 Some(r) => {
@@ -170,12 +171,11 @@ pub fn TripDrivingCard(trip: RwSignal<Option<Trip>>) -> impl IntoView {
                                     };
                                     view! {
                                         <div class="driving-speeding-head">
-                                            <strong>{format!("{} over the limit (+{TOLERANCE_PCT}%)", dist_label(r.distance_over_m, &p))}</strong>
+                                            <strong>{tf("driving.over_head", &[("dist", &dist_label(r.distance_over_m, &p)), ("tol", &TOLERANCE_PCT)])}</strong>
                                             <span class="muted">
-                                                {format!(
-                                                    "{} of the distance with a known limit · {:.0} s",
-                                                    pct(share),
-                                                    r.time_over_s
+                                                {tf(
+                                                    "driving.over_share",
+                                                    &[("pct", &pct(share)), ("secs", &num(r.time_over_s, 0))],
                                                 )}
                                             </span>
                                         </div>
@@ -183,23 +183,25 @@ pub fn TripDrivingCard(trip: RwSignal<Option<Trip>>) -> impl IntoView {
                                             <label class="trip-select-toggle">
                                                 <input type="checkbox" prop:checked=move || show_on_map.get()
                                                     on:change=move |ev| show_on_map.set(event_target_checked(&ev)) />
-                                                <span>"Mark on the map"</span>
+                                                <span>{tr!("driving.mark_map")}</span>
                                             </label>
                                         </Show>
                                         <ul class="speeding-list">
                                             {r.segments.iter().take(30).map(|s| {
                                                 let iso = s.t_start.clone();
-                                                let text = format!(
-                                                    "{} · {} in a {} zone · {}",
-                                                    clock(&s.t_start),
-                                                    speed_label(s.peak_kph, &p),
-                                                    speed_label(s.limit_kph, &p),
-                                                    dist_label(s.distance_m, &p),
+                                                let text = tf(
+                                                    "driving.segment",
+                                                    &[
+                                                        ("time", &clock(&s.t_start)),
+                                                        ("speed", &speed_label(s.peak_kph, &p)),
+                                                        ("limit", &speed_label(s.limit_kph, &p)),
+                                                        ("dist", &dist_label(s.distance_m, &p)),
+                                                    ],
                                                 );
                                                 view! {
                                                     <li>
                                                         <button type="button" class="speeding-item"
-                                                            title="Show this moment on the charts and map"
+                                                            title=tr!("driving.show_moment")
                                                             on:click=move |_| select_time(&iso)>
                                                             <Icon name="warning" size=IconSize::Sm color=IconColor::Danger />
                                                             {text}
@@ -251,7 +253,7 @@ pub fn CarScoreChart(#[prop(into)] car_id: Signal<String>) -> impl IntoView {
             .iter()
             .map(|x| {
                 chrono::NaiveDate::parse_from_str(&x.week, "%Y-%m-%d")
-                    .map(|d| d.format("%d %b").to_string())
+                    .map(|d| crate::i18n::date(&d, "%d %b"))
                     .unwrap_or_else(|_| x.week.clone())
             })
             .collect();
@@ -271,15 +273,15 @@ pub fn CarScoreChart(#[prop(into)] car_id: Signal<String>) -> impl IntoView {
             "grid": { "left": 44, "right": 44, "top": 36, "bottom": 30 },
             "xAxis": { "type": "category", "data": labels, "axisLabel": ch.axis_label, "axisLine": ch.axis_line },
             "yAxis": [
-                { "type": "value", "min": 0, "max": 100, "name": "score", "nameTextStyle": { "color": ch.muted },
+                { "type": "value", "min": 0, "max": 100, "name": t("driving.axis_score"), "nameTextStyle": { "color": ch.muted },
                   "axisLabel": ch.axis_label, "splitLine": ch.split_line },
-                { "type": "value", "name": "per 100 km", "nameTextStyle": { "color": ch.muted },
+                { "type": "value", "name": t("driving.axis_per100"), "nameTextStyle": { "color": ch.muted },
                   "axisLabel": ch.axis_label, "splitLine": { "show": false } },
             ],
             "series": [
-                { "name": "Score", "type": "line", "smooth": true, "data": w.iter().map(|x| (x.score * 10.0).round() / 10.0).collect::<Vec<_>>(),
+                { "name": t("driving.series_score"), "type": "line", "smooth": true, "data": w.iter().map(|x| (x.score * 10.0).round() / 10.0).collect::<Vec<_>>(),
                   "lineStyle": { "color": color, "width": 2 }, "itemStyle": { "color": color } },
-                { "name": "Harsh events / 100 km", "type": "bar", "yAxisIndex": 1, "barMaxWidth": 18,
+                { "name": t("driving.series_harsh"), "type": "bar", "yAxisIndex": 1, "barMaxWidth": 18,
                   "data": w.iter().map(|x| (x.harsh_events_per_100km * 10.0).round() / 10.0).collect::<Vec<_>>(),
                   "itemStyle": { "color": color2, "borderRadius": [3, 3, 0, 0] } },
             ],
@@ -292,11 +294,11 @@ pub fn CarScoreChart(#[prop(into)] car_id: Signal<String>) -> impl IntoView {
                 <div class="telemetry-section-head">
                     <h2 class="section-title">
                         <Icon name="steering-wheel" color=IconColor::Accent />
-                        "Driving score"
+                        {tr!("driving.weekly_title")}
                     </h2>
-                    <span class="muted">"Last 12 weeks · finished trips"</span>
+                    <span class="muted">{tr!("driving.weekly_lead")}</span>
                 </div>
-                <EChart id="car-score-chart" option=option label="Weekly driving score" />
+                <EChart id="car-score-chart" option=option label="driving.chart_label" />
             </section>
         </Show>
     }

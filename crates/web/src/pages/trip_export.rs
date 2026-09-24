@@ -9,12 +9,14 @@ use wasm_bindgen::JsCast;
 
 use crate::api::{Trip, TripPoint};
 use crate::components::{Icon, IconSize};
+use crate::i18n::t;
 
+/// `(format, i18n key of its menu label)`.
 const FORMATS: [(&str, &str); 4] = [
-    ("gpx", "GPX track"),
-    ("kml", "KML (Google Earth)"),
-    ("geojson", "GeoJSON"),
-    ("csv", "CSV (all telemetry)"),
+    ("gpx", "export.gpx"),
+    ("kml", "export.kml"),
+    ("geojson", "export.geojson"),
+    ("csv", "export.csv"),
 ];
 
 fn speed(p: &TripPoint) -> Option<f64> {
@@ -253,7 +255,7 @@ pub fn TripExportMenu(
             <summary class="btn secondary sm">
                 <span class="icon-label">
                     <Icon name="download-simple" size=IconSize::Sm />
-                    "Export"
+                    {tr!("export.export")}
                 </span>
             </summary>
             <div class="export-menu-list" role="menu">
@@ -271,7 +273,7 @@ pub fn TripExportMenu(
                                     });
                                     view! {
                                         <a class="export-menu-item" role="menuitem" href=href download="" rel="nofollow">
-                                            {label}
+                                            {move || t(label)}
                                         </a>
                                     }
                                 }
@@ -294,7 +296,7 @@ pub fn TripExportMenu(
                                         download_text(&file, mime, &body);
                                     }
                                 >
-                                    {label}
+                                    {move || t(label)}
                                 </button>
                             </Show>
                         }
@@ -309,14 +311,14 @@ pub fn TripExportMenu(
                         print_page(theme);
                     }
                 >
-                    "Print / Save as PDF"
+                    {tr!("export.print")}
                 </button>
                 <Show when=sealed>
                     <p class="export-menu-note muted">
                         {move || if vault_points.with(|p| p.is_some()) {
-                            "Built in this browser from the decrypted trip."
+                            t("export.built_here")
                         } else {
-                            "Unlock the vault to export this trip."
+                            t("export.unlock")
                         }}
                     </p>
                 </Show>

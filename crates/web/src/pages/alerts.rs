@@ -9,43 +9,50 @@ use crate::api::{
     AlertRule, delete_alert_rule, list_alert_rules, toggle_alert_rule, upsert_alert_rule,
 };
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{t, tf};
 use crate::units::{UnitSystem, use_unit_prefs};
 
-/// `(kind, title, description, default SI threshold, icon)`.
+/// `(kind, title key, description key, default SI threshold, icon)`.
 const KINDS: [(&str, &str, &str, f64, &str); 6] = [
     (
         "speeding",
-        "Speeding",
-        "Driving faster than",
+        "alerts.speeding",
+        "alerts.speeding_desc",
         120.0,
         "speedometer",
     ),
     (
         "low_voltage",
-        "Low battery voltage",
-        "12 V system below",
+        "alerts.low_voltage",
+        "alerts.low_voltage_desc",
         11.8,
         "battery-warning",
     ),
     (
         "coolant_high",
-        "Engine running hot",
-        "Coolant above",
+        "alerts.coolant_high",
+        "alerts.coolant_high_desc",
         110.0,
         "thermometer-hot",
     ),
-    ("low_fuel", "Low fuel", "Tank level below", 15.0, "gas-pump"),
+    (
+        "low_fuel",
+        "alerts.low_fuel",
+        "alerts.low_fuel_desc",
+        15.0,
+        "gas-pump",
+    ),
     (
         "device_offline",
-        "Tracker offline",
-        "No data for more than",
+        "alerts.device_offline",
+        "alerts.device_offline_desc",
         3.0,
         "wifi-slash",
     ),
     (
         "trip_open",
-        "Trip left open",
-        "A trip recording for more than",
+        "alerts.trip_open",
+        "alerts.trip_open_desc",
         6.0,
         "clock-countdown",
     ),
@@ -109,9 +116,9 @@ pub fn AlertsSection(#[prop(into)] car_id: Signal<String>) -> impl IntoView {
             <div class="telemetry-section-head">
                 <h2 class="section-title">
                     <Icon name="bell-ringing" color=IconColor::Warn />
-                    "Alerts"
+                    {tr!("alerts.title")}
                 </h2>
-                <span class="muted">"Personal to you · delivered to the bell and push"</span>
+                <span class="muted">{tr!("alerts.lead")}</span>
             </div>
             <Show when=move || error.get().is_some()>
                 <div class="error">{move || error.get().unwrap_or_default()}</div>
@@ -163,7 +170,11 @@ fn AlertRuleRow(
     });
 
     let enabled = move || rule.with(|r| r.as_ref().is_some_and(|r| r.enabled));
-    let unit = move || to_display(kind, 0.0, prefs.with(|p| p.system)).1;
+    let unit = move || match to_display(kind, 0.0, prefs.with(|p| p.system)).1 {
+        "days" => t("alerts.days"),
+        "hours" => t("alerts.hours"),
+        other => other,
+    };
 
     let save = move |enable: bool| {
         let system = prefs.with_untracked(|p| p.system);
@@ -175,7 +186,7 @@ fn AlertRuleRow(
             .ok()
             .filter(|v| v.is_finite() && *v > 0.0)
         else {
-            error.set(Some(format!("{title}: enter a threshold above zero.")));
+            error.set(Some(tf("alerts.threshold_error", &[("title", &t(title))])));
             return;
         };
         let id = car_id.get_untracked();
@@ -252,11 +263,11 @@ fn AlertRuleRow(
                 />
                 <span class="alert-rule-title">
                     <Icon name=icon size=IconSize::Sm color=IconColor::Accent />
-                    {title}
+                    {move || t(title)}
                 </span>
             </label>
             <div class="alert-rule-threshold">
-                <label class="muted" for=input_id.clone()>{desc}</label>
+                <label class="muted" for=input_id.clone()>{move || t(desc)}</label>
                 <input
                     id=input_id
                     type="number"
@@ -275,13 +286,13 @@ fn AlertRuleRow(
                     prop:disabled=move || busy.get()
                     on:click=move |_| save(true)
                 >
-                    {move || if rule.with(|r| r.is_some()) { "Save" } else { "Turn on" }}
+                    {move || if rule.with(|r| r.is_some()) { t("common.save") } else { t("alerts.turn_on") }}
                 </button>
                 <Show when=move || rule.with(|r| r.is_some())>
                     <button
                         type="button"
                         class="btn ghost btn-sm"
-                        aria-label=format!("Remove the {title} alert")
+                        aria-label=move || tf("alerts.remove", &[("title", &t(title))])
                         prop:disabled=move || busy.get()
                         on:click=remove
                     >

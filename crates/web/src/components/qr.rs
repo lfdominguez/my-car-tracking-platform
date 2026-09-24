@@ -120,7 +120,7 @@ pub fn QrCode(#[prop(into)] payload: Signal<Option<String>>) -> impl IntoView {
         <div
             id=id
             class="qr-box"
-            aria-label="Device provisioning QR code"
+            aria-label=tr!("qr.label")
             // Keep the node mounted so canvas draw is reliable; hide until we have payload.
             style=move || {
                 if hidden.get() {

@@ -872,9 +872,14 @@ pub fn TripsPage() -> impl IntoView {
                     let started = move || pretty_started(&started_raw);
                     let places = t.places_label();
                     let purpose_raw = t.purpose.clone();
-                    let purpose = t.purpose.as_deref().and_then(purpose_label).is_some().then(move || {
-                        move || purpose_raw.as_deref().and_then(purpose_label).unwrap_or_default()
-                    });
+                    let purpose = t
+                        .purpose
+                        .as_deref()
+                        .and_then(purpose_label)
+                        .is_some()
+                        .then_some(move || {
+                            purpose_raw.as_deref().and_then(purpose_label).unwrap_or_default()
+                        });
                     let purpose_class = format!(
                         "pill pill-purpose is-{}",
                         t.purpose.clone().unwrap_or_default()
@@ -1725,7 +1730,7 @@ pub fn TripDetailPage() -> impl IntoView {
 
 
             <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !vault_unlocked.get()>
-                <VaultUnlockGate message=i18n::t("trip.unlock_points").to_string()/>
+                <VaultUnlockGate message="trip.unlock_points"/>
             </Show>
 
             <TripAiPanel

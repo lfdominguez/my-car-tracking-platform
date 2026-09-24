@@ -50,10 +50,10 @@ pub(crate) fn ago(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
         .num_seconds()
         .max(0);
     match secs {
-        0..=59 => "just now".into(),
-        60..=3599 => format!("{} min ago", secs / 60),
-        3600..=86_399 => format!("{} h ago", secs / 3600),
-        _ => format!("{} d ago", secs / 86_400),
+        0..=59 => crate::i18n::t("ago.just_now").into(),
+        60..=3599 => crate::i18n::tf("ago.minutes", &[("n", &(secs / 60))]),
+        3600..=86_399 => crate::i18n::tf("ago.hours", &[("n", &(secs / 3600))]),
+        _ => crate::i18n::tf("ago.days", &[("n", &(secs / 86_400))]),
     }
 }
 
@@ -140,7 +140,7 @@ pub fn LiveCard(
                 .find(|(id, _)| id == car_id)
                 .map(|(_, n)| n.clone())
                 .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| "Car".into())
+                .unwrap_or_else(|| crate::i18n::t("common.car").into())
         })
     };
 
@@ -170,9 +170,9 @@ pub fn LiveCard(
                 <div class="telemetry-section-head">
                     <h2 class="section-title">
                         <Icon name="broadcast" color=IconColor::Accent />
-                        "Live"
+                        {tr!("live.title")}
                     </h2>
-                    <span class="muted">"Last known position of each car · updates while driving"</span>
+                    <span class="muted">{tr!("live.lead")}</span>
                 </div>
                 <LiveMap markers=markers />
                 <ul class="live-list">
@@ -182,18 +182,22 @@ pub fn LiveCard(
                         children=move |p| {
                             let name = name_of(&p.car_id);
                             let recorded = p.recorded_at.clone();
-                            let seen = move || format!("Last seen {}", ago(&recorded, now.get()));
+                            let seen = move || crate::i18n::tf("live.last_seen", &[("ago", &ago(&recorded, now.get()))]);
                             let speed_kph = p.speed_kph;
                             let speed = move || {
                                 let pr = prefs.get();
                                 speed_kph
-                                    .map(|v| format!("{:.0} {}", km_to_display(v, pr.system), pr.labels.speed))
+                                    .map(|v| format!("{} {}", crate::i18n::num(km_to_display(v, pr.system), 0), pr.labels.speed))
                                     .unwrap_or_default()
                             };
-                            let level = p
-                                .battery_soc_pct
-                                .map(|v| format!("Battery {v:.0}%"))
-                                .or_else(|| p.fuel_level_pct.map(|v| format!("Fuel {v:.0}%")));
+                            let (battery_pct, fuel_pct) = (p.battery_soc_pct, p.fuel_level_pct);
+                            let level = battery_pct.or(fuel_pct).is_some().then_some(move || {
+                                let pct = |v: f64| crate::i18n::num(v, 0);
+                                battery_pct
+                                    .map(|v| crate::i18n::tf("live.battery_pct", &[("pct", &pct(v))]))
+                                    .or_else(|| fuel_pct.map(|v| crate::i18n::tf("live.fuel_pct", &[("pct", &pct(v))])))
+                                    .unwrap_or_default()
+                            });
                             let trip_href = format!("/app/trips/{}", p.track_id);
                             let driving = p.trip_open;
                             view! {
@@ -201,9 +205,9 @@ pub fn LiveCard(
                                     <div class="live-item-main">
                                         <span class="live-item-name">{name}</span>
                                         {if driving {
-                                            view! { <span class="pill pill-live">"Driving"</span> }.into_any()
+                                            view! { <span class="pill pill-live">{tr!("live.driving")}</span> }.into_any()
                                         } else {
-                                            view! { <span class="pill">"Parked"</span> }.into_any()
+                                            view! { <span class="pill">{tr!("live.parked")}</span> }.into_any()
                                         }}
                                     </div>
                                     <div class="live-item-meta muted">
@@ -214,7 +218,7 @@ pub fn LiveCard(
                                     {driving.then(|| view! {
                                         <A href=trip_href.clone()>
                                             <span class="icon-label">
-                                                "Open trip"
+                                                {tr!("live.open_trip")}
                                                 <Icon name="caret-right" size=IconSize::Sm />
                                             </span>
                                         </A>
@@ -267,5 +271,8 @@ mod tests {
         assert_eq!(ago("2026-01-01T09:59:30Z", now), "just now");
         assert_eq!(ago("2026-01-01T09:55:00Z", now), "5 min ago");
         assert_eq!(ago("2026-01-01T07:00:00Z", now), "3 h ago");
+        crate::i18n::with_locale(crate::i18n::Locale::Es, || {
+            assert_eq!(ago("2026-01-01T09:55:00Z", now), "hace 5 min");
+        });
     }
 }

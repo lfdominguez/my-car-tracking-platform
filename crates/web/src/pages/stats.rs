@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use crate::api::{Car, PeriodStats, list_cars, stats_periods};
 use crate::components::echart::{EChart, chart_chrome};
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{num, t, tf, tp};
 use crate::pages::trips::{local_midnight, to_rfc3339};
 use crate::units::{UnitPrefs, UnitSystem, use_unit_prefs};
 
@@ -28,9 +29,9 @@ impl Bucket {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Week => "Weekly",
-            Self::Month => "Monthly",
-            Self::Year => "Yearly",
+            Self::Week => t("stats.weekly"),
+            Self::Month => t("stats.monthly"),
+            Self::Year => t("stats.yearly"),
         }
     }
 
@@ -69,8 +70,8 @@ impl Bucket {
             return start.to_string();
         };
         match self {
-            Self::Week => d.format("%d %b").to_string(),
-            Self::Month => d.format("%b %Y").to_string(),
+            Self::Week => crate::i18n::date(&d, "%d %b"),
+            Self::Month => crate::i18n::date(&d, "%b %Y"),
             Self::Year => d.format("%Y").to_string(),
         }
     }
@@ -178,11 +179,7 @@ fn bar_option(
 
 fn fmt_hours(s: f64) -> String {
     let h = s / 3600.0;
-    if h >= 10.0 {
-        format!("{h:.0} h")
-    } else {
-        format!("{h:.1} h")
-    }
+    format!("{} h", num(h, if h >= 10.0 { 0 } else { 1 }))
 }
 
 #[component]
@@ -287,7 +284,7 @@ pub fn StatsPage() -> impl IntoView {
                 "distance" => bar_option(
                     &l,
                     r.iter().map(|x| distance_value(x.distance, &p)).collect(),
-                    "Distance",
+                    t("common.distance"),
                     p.labels.distance,
                     0,
                     1,
@@ -295,15 +292,15 @@ pub fn StatsPage() -> impl IntoView {
                 "trips" => bar_option(
                     &l,
                     r.iter().map(|x| x.trips as f64).collect(),
-                    "Trips",
-                    "trips",
+                    t("nav.trips"),
+                    t("stats.trips_unit"),
                     3,
                     0,
                 ),
                 "fuel" => bar_option(
                     &l,
                     r.iter().map(|x| x.fuel_used).collect(),
-                    "Fuel",
+                    t("common.fuel"),
                     p.labels.fuel_volume,
                     1,
                     2,
@@ -312,8 +309,8 @@ pub fn StatsPage() -> impl IntoView {
                 _ => bar_option(
                     &l,
                     r.iter().map(|x| x.fuel_cost.unwrap_or(0.0)).collect(),
-                    "Fuel cost",
-                    "cost",
+                    t("stats.fuel_cost"),
+                    t("stats.cost_unit"),
                     5,
                     2,
                 ),
@@ -326,14 +323,14 @@ pub fn StatsPage() -> impl IntoView {
             <div>
                 <h1 class="section-title">
                     <Icon name="chart-bar" color=IconColor::Accent />
-                    "Statistics"
+                    {tr!("nav.statistics")}
                 </h1>
-                <p class="muted">"Trips, distance, fuel and CO₂ per week, month or year — finished trips, in your timezone"</p>
+                <p class="muted">{tr!("stats.lead")}</p>
             </div>
         </div>
 
         <div class="trips-filter-bar">
-            <div class="trips-filter-chips" role="group" aria-label="Period">
+            <div class="trips-filter-chips" role="group" aria-label=tr!("stats.period")>
                 {[Bucket::Week, Bucket::Month, Bucket::Year]
                     .into_iter()
                     .map(|b| view! {
@@ -352,19 +349,19 @@ pub fn StatsPage() -> impl IntoView {
                                 }
                             }
                         >
-                            {b.label()}
+                            {move || b.label()}
                         </button>
                     })
                     .collect_view()}
             </div>
-            <div class="trips-range" role="group" aria-label="Date range">
+            <div class="trips-range" role="group" aria-label=tr!("stats.date_range")>
                 <label class="trips-range-field">
-                    <span>"From"</span>
+                    <span>{tr!("common.from")}</span>
                     <input type="date" prop:value=move || from.get()
                         on:change=move |ev| from.set(event_target_value(&ev)) />
                 </label>
                 <label class="trips-range-field">
-                    <span>"To"</span>
+                    <span>{tr!("common.to")}</span>
                     <input type="date" prop:value=move || to.get()
                         on:change=move |ev| to.set(event_target_value(&ev)) />
                 </label>
@@ -372,14 +369,14 @@ pub fn StatsPage() -> impl IntoView {
             <div class="trips-filter-tools">
                 <select
                     class="trips-car-select"
-                    aria-label="Car"
+                    aria-label=tr!("common.car")
                     prop:value=move || {
                         cars.track();
                         car_id.get()
                     }
                     on:change=move |ev| car_id.set(event_target_value(&ev))
                 >
-                    <option value="">"All cars"</option>
+                    <option value="">{tr!("common.all_cars")}</option>
                     <For
                         each=move || cars.get()
                         key=|c| c.id.clone()
@@ -387,7 +384,7 @@ pub fn StatsPage() -> impl IntoView {
                     />
                 </select>
                 <span class="trips-filter-meta muted">
-                    {move || if loading.get() { "Loading…".to_string() } else { format!("{} periods", rows.get().len()) }}
+                    {move || if loading.get() { t("common.loading").to_string() } else { tp("stats.periods", rows.get().len() as i64) }}
                 </span>
             </div>
         </div>
@@ -401,18 +398,18 @@ pub fn StatsPage() -> impl IntoView {
                 let p = prefs.get();
                 let (trips, dist, dur, fuel, co2, cost) = totals.get();
                 let tiles = [
-                    ("Trips", trips.to_string(), "road-horizon"),
+                    (t("nav.trips"), crate::i18n::int(trips), "road-horizon"),
                     (
-                        "Distance",
-                        format!("{:.0} {}", distance_value(dist, &p), p.labels.distance),
+                        t("common.distance"),
+                        format!("{} {}", num(distance_value(dist, &p), 0), p.labels.distance),
                         "ruler",
                     ),
-                    ("Driving time", fmt_hours(dur), "timer"),
-                    ("Fuel", format!("{fuel:.1} {}", p.labels.fuel_volume), "gas-pump"),
-                    ("CO₂", format!("{co2:.0} kg"), "leaf"),
+                    (t("stats.driving_time"), fmt_hours(dur), "timer"),
+                    (t("common.fuel"), format!("{} {}", num(fuel, 1), p.labels.fuel_volume), "gas-pump"),
+                    ("CO₂", format!("{} kg", num(co2, 0)), "leaf"),
                     (
-                        "Est. fuel cost",
-                        cost.map(|c| format!("{c:.2}")).unwrap_or_else(|| "—".into()),
+                        t("stats.est_fuel_cost"),
+                        cost.map(|c| num(c, 2)).unwrap_or_else(|| "—".into()),
                         "coins",
                     ),
                 ];
@@ -436,25 +433,25 @@ pub fn StatsPage() -> impl IntoView {
             fallback=move || view! {
                 <div class="stats-grid">
                     <section class="card stats-chart-card">
-                        <h2 class="stats-chart-title">{move || format!("Distance ({})", prefs.get().labels.distance)}</h2>
-                        <EChart id="stats-distance" option=chart("distance") label="Distance per period" />
+                        <h2 class="stats-chart-title">{move || tf("dash.distance_unit", &[("unit", &prefs.get().labels.distance)])}</h2>
+                        <EChart id="stats-distance" option=chart("distance") label="stats.chart_distance" />
                     </section>
                     <section class="card stats-chart-card">
-                        <h2 class="stats-chart-title">"Trips"</h2>
-                        <EChart id="stats-trips" option=chart("trips") label="Trips per period" />
+                        <h2 class="stats-chart-title">{tr!("nav.trips")}</h2>
+                        <EChart id="stats-trips" option=chart("trips") label="stats.chart_trips" />
                     </section>
                     <section class="card stats-chart-card">
-                        <h2 class="stats-chart-title">{move || format!("Fuel ({})", prefs.get().labels.fuel_volume)}</h2>
-                        <EChart id="stats-fuel" option=chart("fuel") label="Fuel per period" />
+                        <h2 class="stats-chart-title">{move || tf("dash.fuel_unit", &[("unit", &prefs.get().labels.fuel_volume)])}</h2>
+                        <EChart id="stats-fuel" option=chart("fuel") label="stats.chart_fuel" />
                     </section>
                     <section class="card stats-chart-card">
                         <h2 class="stats-chart-title">"CO₂ (kg)"</h2>
-                        <EChart id="stats-co2" option=chart("co2") label="CO₂ per period" />
+                        <EChart id="stats-co2" option=chart("co2") label="stats.chart_co2" />
                     </section>
                     <Show when=has_cost>
                         <section class="card stats-chart-card">
-                            <h2 class="stats-chart-title">"Estimated fuel cost"</h2>
-                            <EChart id="stats-cost" option=chart("cost") label="Fuel cost per period" />
+                            <h2 class="stats-chart-title">{tr!("stats.estimated_cost")}</h2>
+                            <EChart id="stats-cost" option=chart("cost") label="stats.chart_cost" />
                         </section>
                     </Show>
                 </div>
@@ -463,7 +460,7 @@ pub fn StatsPage() -> impl IntoView {
             <div class="card">
                 <div class="empty-state">
                     <Icon name="chart-bar" size=IconSize::Xl color=IconColor::Accent />
-                    <div>"No finished trips in this range — widen the dates or pick another car."</div>
+                    <div>{tr!("stats.empty")}</div>
                 </div>
             </div>
         </Show>
@@ -472,19 +469,19 @@ pub fn StatsPage() -> impl IntoView {
             <div class="card">
                 <h2 class="section-title">
                     <Icon name="table" color=IconColor::Accent />
-                    "By period"
+                    {tr!("stats.by_period")}
                 </h2>
                 <div class="table-scroll">
                     <table class="table">
                         <thead>
                             <tr>
-                                <th>"Period"</th>
-                                <th>"Trips"</th>
-                                <th>{move || format!("Distance ({})", prefs.get().labels.distance)}</th>
-                                <th>"Time"</th>
-                                <th>{move || format!("Fuel ({})", prefs.get().labels.fuel_volume)}</th>
+                                <th>{tr!("stats.period")}</th>
+                                <th>{tr!("nav.trips")}</th>
+                                <th>{move || tf("dash.distance_unit", &[("unit", &prefs.get().labels.distance)])}</th>
+                                <th>{tr!("common.time")}</th>
+                                <th>{move || tf("dash.fuel_unit", &[("unit", &prefs.get().labels.fuel_volume)])}</th>
                                 <th>"CO₂ (kg)"</th>
-                                <th>"Est. cost"</th>
+                                <th>{tr!("stats.est_cost")}</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -497,14 +494,14 @@ pub fn StatsPage() -> impl IntoView {
                                     .filter(|r| r.trips > 0)
                                     .map(|r| view! {
                                         <tr>
-                                            <td data-label="Period">{b.period_label(&r.period_start)}</td>
-                                            <td class="num" data-label="Trips">{r.trips}</td>
-                                            <td class="num" data-label="Distance">{format!("{:.1}", distance_value(r.distance, &p))}</td>
-                                            <td class="num" data-label="Time">{fmt_hours(r.duration_s)}</td>
-                                            <td class="num" data-label="Fuel">{format!("{:.2}", r.fuel_used)}</td>
-                                            <td class="num" data-label="CO₂">{format!("{:.1}", r.co2_kg)}</td>
-                                            <td class="num" data-label="Est. cost">
-                                                {r.fuel_cost.map(|c| format!("{c:.2}")).unwrap_or_else(|| "—".into())}
+                                            <td data-label=tr!("stats.period")>{b.period_label(&r.period_start)}</td>
+                                            <td class="num" data-label=tr!("nav.trips")>{crate::i18n::int(r.trips)}</td>
+                                            <td class="num" data-label=tr!("common.distance")>{num(distance_value(r.distance, &p), 1)}</td>
+                                            <td class="num" data-label=tr!("common.time")>{fmt_hours(r.duration_s)}</td>
+                                            <td class="num" data-label=tr!("common.fuel")>{num(r.fuel_used, 2)}</td>
+                                            <td class="num" data-label="CO₂">{num(r.co2_kg, 1)}</td>
+                                            <td class="num" data-label=tr!("stats.est_cost")>
+                                                {r.fuel_cost.map(|c| num(c, 2)).unwrap_or_else(|| "—".into())}
                                             </td>
                                         </tr>
                                     })
@@ -513,7 +510,7 @@ pub fn StatsPage() -> impl IntoView {
                         </tbody>
                     </table>
                 </div>
-                <p class="field-hint">"Cost uses each car's newest price per litre from its fuel log."</p>
+                <p class="field-hint">{tr!("stats.cost_hint")}</p>
             </div>
         </Show>
     }
@@ -554,5 +551,10 @@ mod tests {
         assert_eq!(Bucket::Month.period_label("2026-03-01"), "Mar 2026");
         assert_eq!(Bucket::Year.period_label("2026-01-01"), "2026");
         assert_eq!(Bucket::Week.period_label("2026-03-02"), "02 Mar");
+        crate::i18n::with_locale(crate::i18n::Locale::Es, || {
+            assert_eq!(Bucket::Month.period_label("2026-01-01"), "ene 2026");
+            assert_eq!(Bucket::Week.period_label("2026-08-03"), "03 ago");
+            assert_eq!(fmt_hours(5400.0), "1,5 h");
+        });
     }
 }

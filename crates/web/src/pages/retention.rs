@@ -10,11 +10,12 @@ use crate::components::{Icon, IconColor, IconSize};
 
 /// Smallest retention the server accepts.
 const MIN_DAYS: i32 = 30;
+/// `(days, i18n key of the button label)`.
 const PRESETS: [(Option<i32>, &str); 4] = [
-    (None, "Keep all"),
-    (Some(90), "90 days"),
-    (Some(180), "180 days"),
-    (Some(365), "1 year"),
+    (None, "retention.keep_all"),
+    (Some(90), "retention.days_90"),
+    (Some(180), "retention.days_180"),
+    (Some(365), "retention.one_year"),
 ];
 
 /// Parse the custom field: a whole number of days, at least [`MIN_DAYS`].
@@ -42,10 +43,8 @@ pub fn RetentionCard(car: RwSignal<Option<Car>>, error: RwSignal<Option<String>>
         if value.is_some()
             && !web_sys::window()
                 .and_then(|w| {
-                    w.confirm_with_message(
-                        "Older trips will lose their per-second samples: point graphs, replay and export stop working for them. Continue?",
-                    )
-                    .ok()
+                    w.confirm_with_message(crate::i18n::t("retention.confirm"))
+                        .ok()
                 })
                 .unwrap_or(false)
         {
@@ -77,16 +76,16 @@ pub fn RetentionCard(car: RwSignal<Option<Car>>, error: RwSignal<Option<String>>
             <section class="card retention-card">
                 <h2 class="section-title">
                     <Icon name="archive" color=IconColor::Accent />
-                    "Raw data retention"
+                    {tr!("retention.title")}
                 </h2>
                 <p class="muted">
                     {move || match current() {
-                        None => "Every per-second sample is kept.".to_string(),
-                        Some(d) => format!("Per-second samples are pruned from trips older than {d} days."),
+                        None => crate::i18n::t("retention.all_kept").to_string(),
+                        Some(d) => crate::i18n::tf("retention.pruned_after", &[("n", &d)]),
                     }}
                 </p>
                 <div class="row">
-                    <div class="seg-control" role="group" aria-label="Keep raw samples for">
+                    <div class="seg-control" role="group" aria-label=tr!("retention.group")>
                         {PRESETS
                             .into_iter()
                             .map(|(value, label)| view! {
@@ -97,7 +96,7 @@ pub fn RetentionCard(car: RwSignal<Option<Car>>, error: RwSignal<Option<String>>
                                         custom_mode.set(false);
                                         choice.set(Some(value));
                                     }>
-                                    {label}
+                                    {move || crate::i18n::t(label)}
                                 </button>
                             })
                             .collect_view()}
@@ -113,19 +112,19 @@ pub fn RetentionCard(car: RwSignal<Option<Car>>, error: RwSignal<Option<String>>
                                     custom.set(selected().unwrap_or(730).to_string());
                                 }
                             }>
-                            "Custom"
+                            {tr!("retention.custom")}
                         </button>
                     </div>
                     <Show when=move || custom_mode.get()>
                         <label class="retention-custom">
                             <input type="number" min=MIN_DAYS step="1"
-                                aria-label="Days to keep"
+                                aria-label=tr!("retention.days_to_keep")
                                 prop:value=move || custom.get()
                                 on:input=move |ev| {
                                     custom.set(event_target_value(&ev));
                                     choice.set(Some(parse_days(&custom.get_untracked())));
                                 } />
-                            <span class="muted">"days"</span>
+                            <span class="muted">{tr!("retention.days")}</span>
                         </label>
                     </Show>
                     <button type="button" class="btn primary btn-sm"
@@ -146,16 +145,14 @@ pub fn RetentionCard(car: RwSignal<Option<Car>>, error: RwSignal<Option<String>>
                             save(value);
                         }>
                         <Icon name="floppy-disk" size=IconSize::Sm />
-                        "Save"
+                        {tr!("common.save")}
                     </button>
                     <Show when=move || saved.get()>
-                        <span class="muted" role="status">"Saved."</span>
+                        <span class="muted" role="status">{tr!("trip.saved")}</span>
                     </Show>
                 </div>
                 <p class="field-hint">
-                    {format!("At least {MIN_DAYS} days. ")}
-                    "Pruned trips keep their summary, statistics and a simplified route on the map, "
-                    "but point graphs, replay and export stop working for them."
+                    {move || crate::i18n::tf("retention.hint", &[("n", &MIN_DAYS)])}
                 </p>
             </section>
         </Show>

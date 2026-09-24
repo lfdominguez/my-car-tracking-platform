@@ -105,7 +105,7 @@ fn decrypt_obj(dek: &Dek, obj: &VaultObject) -> Result<Vec<u8>, String> {
 /// Load and unwrap the caller's DEK wrap for a car (must be unlocked).
 pub async fn load_car_dek(session: &VaultSession, car_id: &str) -> Result<Dek, String> {
     if !session.is_unlocked() {
-        return Err("Vault is locked".into());
+        return Err(crate::i18n::t("vault.locked").into());
     }
     let me = get_me().await.map_err(|e| e.to_string())?;
     let wraps = vault_list_deks(car_id).await.map_err(|e| e.to_string())?;
@@ -117,7 +117,7 @@ pub async fn load_car_dek(session: &VaultSession, car_id: &str) -> Result<Dek, S
                 .map(|id| id == me.id)
                 .unwrap_or(false)
         })
-        .ok_or_else(|| "No DEK wrap for this account — ask the owner to share keys".to_string())?;
+        .ok_or_else(|| crate::i18n::t("vault.no_wrap").to_string())?;
     let b64 = mine
         .get("wrapped_dek_b64")
         .and_then(|v| v.as_str())
@@ -128,7 +128,7 @@ pub async fn load_car_dek(session: &VaultSession, car_id: &str) -> Result<Dek, S
     let wrapped = WrappedDek::from_blob(blob).map_err(|e| e.to_string())?;
     session
         .with_secret(|secret, _| unwrap_dek(&wrapped, secret).map_err(|e| e.to_string()))
-        .ok_or_else(|| "Vault is locked".to_string())?
+        .ok_or_else(|| crate::i18n::t("vault.locked").to_string())?
 }
 
 /// Wrap `dek` to a recipient X25519 public key (base64) and upload.
@@ -167,7 +167,7 @@ pub async fn ensure_owner_dek(session: &VaultSession, car_id: &str) -> Result<De
             let me = get_me().await.map_err(|e| e.to_string())?;
             let pubkey_b64 = session
                 .public_b64()
-                .ok_or_else(|| "Vault is locked".to_string())?;
+                .ok_or_else(|| crate::i18n::t("vault.locked").to_string())?;
             wrap_and_upload_dek(session, car_id, &me.id, &pubkey_b64, &dek).await?;
             Ok(dek)
         }
@@ -495,12 +495,12 @@ const POINTS_CHUNK: usize = 250;
 /// Migrate one owned car: DEK, profile, tracks/points → vault objects, then clear plaintext.
 pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String> {
     if car.role != "owner" {
-        return Err("only owner can migrate".into());
+        return Err(crate::i18n::t("vault.owner_only").into());
     }
     if !session.is_unlocked() {
         // Unlock with the identity we just enabled: device cache should hold secret after enable.
         if !session.try_unlock_from_device_cache() {
-            return Err("Unlock vault before migrating".into());
+            return Err(crate::i18n::t("vault.unlock_before_migrating").into());
         }
     }
 
@@ -508,7 +508,7 @@ pub async fn migrate_car(session: &VaultSession, car: &Car) -> Result<(), String
     let me = get_me().await.map_err(|e| e.to_string())?;
     let pubkey_b64 = session
         .public_b64()
-        .ok_or_else(|| "Vault is locked".to_string())?;
+        .ok_or_else(|| crate::i18n::t("vault.locked").to_string())?;
     wrap_and_upload_dek(session, &car.id, &me.id, &pubkey_b64, &dek).await?;
 
     // Fresh plaintext read (still available while status=migrating).
@@ -609,5 +609,5 @@ pub async fn migrate_all_owned(session: &VaultSession) -> Result<String, String>
             .await
             .map_err(|e| format!("car {} ({}/{}): {e}", car.name, i + 1, total))?;
     }
-    Ok(format!("Migrated {total} car(s)"))
+    Ok(crate::i18n::tp("vault.migrated", total as i64))
 }

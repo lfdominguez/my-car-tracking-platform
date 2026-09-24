@@ -22,6 +22,7 @@ use crate::api::{
     push_unsubscribe, put_notification_prefs, unread_notification_count,
 };
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{t, tf};
 use crate::pages::live::ago;
 
 const POLL_MS: u32 = 60_000;
@@ -104,7 +105,8 @@ fn NotificationRow(item: NotificationItem, on_open: Callback<()>) -> impl IntoVi
     let id = item.id.clone();
     let target = safe_target(item.url.as_deref());
     let icon = kind_icon(&item.kind);
-    let when = ago(&item.created_at, chrono::Utc::now());
+    let created = item.created_at.clone();
+    let when = move || ago(&created, chrono::Utc::now());
     let open = move |_| {
         if !read.get_untracked() {
             read.set(true);
@@ -167,7 +169,7 @@ pub fn NotificationBell() -> impl IntoView {
                 aria-expanded=move || open.get().to_string()
                 aria-label=move || {
                     let n = state.unread.get();
-                    if n > 0 { format!("Notifications, {n} unread") } else { "Notifications".to_string() }
+                    if n > 0 { tf("notif.bell_unread", &[("n", &n)]) } else { t("notif.title").to_string() }
                 }
                 on:click=move |_| {
                     let next = !open.get_untracked();
@@ -189,9 +191,9 @@ pub fn NotificationBell() -> impl IntoView {
             </button>
             <Show when=move || open.get()>
                 <div class="notif-backdrop" aria-hidden="true" on:click=move |_| open.set(false)></div>
-                <div class="notif-panel" role="dialog" aria-label="Notifications">
+                <div class="notif-panel" role="dialog" aria-label=tr!("notif.title")>
                     <div class="notif-panel-head">
-                        <strong>"Notifications"</strong>
+                        <strong>{tr!("notif.title")}</strong>
                         <button
                             type="button"
                             class="btn ghost btn-sm"
@@ -209,14 +211,14 @@ pub fn NotificationBell() -> impl IntoView {
                                 });
                             }
                         >
-                            "Mark all read"
+                            {tr!("notif.mark_all")}
                         </button>
                     </div>
                     <Show
                         when=move || !items.get().is_empty()
                         fallback=move || view! {
                             <p class="muted notif-empty">
-                                {move || if loading.get() { "Loading…" } else { "You're all caught up." }}
+                                {move || if loading.get() { t("common.loading") } else { t("notif.caught_up") }}
                             </p>
                         }
                     >
@@ -229,7 +231,7 @@ pub fn NotificationBell() -> impl IntoView {
                         </ul>
                     </Show>
                     <a class="notif-all" href="/app/notifications" on:click=move |_| open.set(false)>
-                        "All notifications"
+                        {tr!("notif.all")}
                     </a>
                 </div>
             </Show>
@@ -271,20 +273,20 @@ pub fn NotificationsPage() -> impl IntoView {
             <div>
                 <h1 class="section-title">
                     <Icon name="bell" color=IconColor::Accent />
-                    "Notifications"
+                    {tr!("notif.title")}
                 </h1>
-                <p class="muted">"Alerts, reminders and account events — newest first"</p>
+                <p class="muted">{tr!("notif.lead")}</p>
             </div>
             <div class="row">
-                <div class="seg-control" role="group" aria-label="Show">
+                <div class="seg-control" role="group" aria-label=tr!("notif.show")>
                     <button type="button"
                         class=move || if unread_only.get() { "seg-btn" } else { "seg-btn is-active" }
                         aria-pressed=move || (!unread_only.get()).to_string()
-                        on:click=move |_| unread_only.set(false)>"All"</button>
+                        on:click=move |_| unread_only.set(false)>{tr!("common.all")}</button>
                     <button type="button"
                         class=move || if unread_only.get() { "seg-btn is-active" } else { "seg-btn" }
                         aria-pressed=move || unread_only.get().to_string()
-                        on:click=move |_| unread_only.set(true)>"Unread"</button>
+                        on:click=move |_| unread_only.set(true)>{tr!("notif.unread")}</button>
                 </div>
                 <button
                     type="button"
@@ -301,7 +303,7 @@ pub fn NotificationsPage() -> impl IntoView {
                     }
                 >
                     <Icon name="checks" size=IconSize::Sm />
-                    "Mark all read"
+                    {tr!("notif.mark_all")}
                 </button>
             </div>
         </div>
@@ -314,7 +316,7 @@ pub fn NotificationsPage() -> impl IntoView {
                 fallback=move || view! {
                     <div class="empty-state">
                         <Icon name="bell" size=IconSize::Xl color=IconColor::Accent />
-                        <div>{move || if loading.get() { "Loading…" } else { "Nothing here yet." }}</div>
+                        <div>{move || if loading.get() { t("common.loading") } else { t("notif.nothing") }}</div>
                     </div>
                 }
             >
@@ -331,6 +333,11 @@ pub fn NotificationsPage() -> impl IntoView {
 }
 
 #[wasm_bindgen(inline_js = r#"
+/** UI text published by the app (src/i18n.rs) for the current language. */
+function tt(key, fallback) {
+  const table = window.__ctpI18n;
+  return (table && table[key]) || fallback;
+}
 function b64urlToBytes(s) {
   const pad = '='.repeat((4 - (s.length % 4)) % 4);
   const raw = atob((s + pad).replace(/-/g, '+').replace(/_/g, '/'));
@@ -354,9 +361,9 @@ export async function pushStatus() {
 /** Ask permission and subscribe; resolves to the subscription JSON string. */
 export async function pushEnable(vapidKey) {
   const reg = await registration();
-  if (!reg) throw new Error('This browser does not support push notifications.');
+  if (!reg) throw new Error(tt('js.push.unsupported', 'This browser does not support push notifications.'));
   const perm = await Notification.requestPermission();
-  if (perm !== 'granted') throw new Error('Notifications are blocked for this site.');
+  if (perm !== 'granted') throw new Error(tt('js.push.blocked', 'Notifications are blocked for this site.'));
   let sub = await reg.pushManager.getSubscription();
   if (!sub) {
     sub = await reg.pushManager.subscribe({
@@ -390,7 +397,7 @@ fn js_err(e: JsValue) -> String {
     e.dyn_ref::<js_sys::Error>()
         .map(|e| String::from(e.message()))
         .or_else(|| e.as_string())
-        .unwrap_or_else(|| "Push setup failed.".into())
+        .unwrap_or_else(|| t("notif.push_failed").into())
 }
 
 /// Settings card: turn browser push on or off, send a test.
@@ -441,7 +448,7 @@ pub fn PushSettingsCard() -> impl IntoView {
             match res {
                 Ok(()) => {
                     let _ = status.try_set("on".into());
-                    let _ = msg.try_set(Some("Push notifications are on for this browser.".into()));
+                    let _ = msg.try_set(Some(t("notif.push_on_msg").into()));
                 }
                 Err(e) => {
                     let _ = err.try_set(Some(e));
@@ -465,8 +472,7 @@ pub fn PushSettingsCard() -> impl IntoView {
                         let _ = err.try_set(Some(e.to_string()));
                     }
                     let _ = status.try_set("off".into());
-                    let _ =
-                        msg.try_set(Some("Push notifications are off for this browser.".into()));
+                    let _ = msg.try_set(Some(t("notif.push_off_msg").into()));
                 }
                 Err(e) => {
                     let _ = err.try_set(Some(js_err(e)));
@@ -483,10 +489,7 @@ pub fn PushSettingsCard() -> impl IntoView {
         leptos::task::spawn_local(async move {
             match push_test().await {
                 Ok(()) => {
-                    let _ = msg.try_set(Some(
-                        "Test sent — it shows in the bell, and as a system notification where push is on."
-                            .into(),
-                    ));
+                    let _ = msg.try_set(Some(t("notif.test_sent").into()));
                 }
                 Err(e) => {
                     let _ = err.try_set(Some(e.to_string()));
@@ -500,26 +503,23 @@ pub fn PushSettingsCard() -> impl IntoView {
         <div class="card settings-card" id="notifications" style="margin-top:1rem">
             <h2 class="section-title">
                 <Icon name="bell" color=IconColor::Accent />
-                "Notifications"
+                {tr!("notif.title")}
             </h2>
-            <p class="muted">
-                "Alerts, maintenance reminders and security events always land in the bell. "
-                "Turn on push to also get them as system notifications on this device."
-            </p>
+            <p class="muted">{tr!("notif.settings_lead")}</p>
             <div class="settings-kv">
-                <span class="muted">"Push on this browser"</span>
+                <span class="muted">{tr!("notif.push_here")}</span>
                 <strong>
                     {move || match status.get().as_str() {
-                        "on" => "On",
-                        "off" => "Off",
-                        "denied" => "Blocked in browser settings",
-                        "unsupported" => "Not supported here",
+                        "on" => t("notif.on"),
+                        "off" => t("notif.off"),
+                        "denied" => t("notif.blocked"),
+                        "unsupported" => t("notif.unsupported"),
                         _ => "…",
                     }}
                 </strong>
             </div>
             <Show when=move || vapid.get().is_none() && status.get() != "…">
-                <p class="field-hint">"Push is not configured on this server yet; notifications still appear in the bell."</p>
+                <p class="field-hint">{tr!("notif.not_configured")}</p>
             </Show>
             <div class="row">
                 <Show
@@ -534,18 +534,18 @@ pub fn PushSettingsCard() -> impl IntoView {
                             on:click=enable
                         >
                             <Icon name="bell-ringing" />
-                            "Turn on push"
+                            {tr!("notif.turn_on")}
                         </button>
                     }
                 >
                     <button type="button" class="btn ghost" prop:disabled=move || busy.get() on:click=disable>
                         <Icon name="bell-slash" />
-                        "Turn off push"
+                        {tr!("notif.turn_off")}
                     </button>
                 </Show>
                 <button type="button" class="btn secondary" prop:disabled=move || busy.get() on:click=test>
                     <Icon name="paper-plane-tilt" />
-                    "Send a test"
+                    {tr!("notif.send_test")}
                 </button>
             </div>
             <Show when=move || prefs.get().is_some()>
@@ -561,15 +561,15 @@ pub fn PushSettingsCard() -> impl IntoView {
     }
 }
 
-/// Notification kinds that can be muted for push / email, with labels.
+/// Notification kinds that can be muted for push / email, with i18n label keys.
 const MUTABLE_KINDS: [(&str, &str); 7] = [
-    ("alert.speeding", "Speeding"),
-    ("alert.low_voltage", "Low battery voltage"),
-    ("alert.coolant", "Engine running hot"),
-    ("alert.low_fuel", "Low fuel"),
-    ("alert.device_offline", "Tracker offline / trip left open"),
-    ("alert.geofence", "Arrivals and departures"),
-    ("maintenance.due", "Maintenance due"),
+    ("alert.speeding", "alerts.speeding"),
+    ("alert.low_voltage", "alerts.low_voltage"),
+    ("alert.coolant", "alerts.coolant_high"),
+    ("alert.low_fuel", "alerts.low_fuel"),
+    ("alert.device_offline", "notif.kind_offline"),
+    ("alert.geofence", "notif.kind_geofence"),
+    ("maintenance.due", "notif.kind_maintenance"),
 ];
 
 /// Delivery preferences (push, email, muted kinds, digest), saved whole on change.
@@ -593,7 +593,7 @@ fn NotificationPrefsForm(
             match put_notification_prefs(&next).await {
                 Ok(saved) => {
                     let _ = prefs.try_set(Some(saved));
-                    let _ = msg.try_set(Some("Notification preferences saved.".into()));
+                    let _ = msg.try_set(Some(t("notif.prefs_saved").into()));
                 }
                 Err(e) => {
                     let _ = err.try_set(Some(e.to_string()));
@@ -612,7 +612,7 @@ fn NotificationPrefsForm(
                         let on = event_target_checked(&ev);
                         save(Box::new(move |p| p.push = on));
                     } />
-                <span>"Send push notifications to my subscribed browsers"</span>
+                <span>{tr!("notif.push_browsers")}</span>
             </label>
             <Show when=move || email_enabled.get()>
                 <label class="trip-select-toggle">
@@ -621,11 +621,11 @@ fn NotificationPrefsForm(
                             let on = event_target_checked(&ev);
                             save(Box::new(move |p| p.email = on));
                         } />
-                    <span>"Email me notifications"</span>
+                    <span>{tr!("notif.email_me")}</span>
                 </label>
             </Show>
             <fieldset class="notif-mute">
-                <legend>"Deliver these (they always reach the bell)"</legend>
+                <legend>{tr!("notif.deliver_these")}</legend>
                 {MUTABLE_KINDS
                     .into_iter()
                     .map(|(kind, label)| view! {
@@ -642,13 +642,13 @@ fn NotificationPrefsForm(
                                         }
                                     }));
                                 } />
-                            <span>{label}</span>
+                            <span>{move || t(label)}</span>
                         </label>
                     })
                     .collect_view()}
             </fieldset>
             <label class="field">
-                <span>"Driving digest"</span>
+                <span>{tr!("notif.digest")}</span>
                 <select
                     prop:value=move || prefs.with(|p| p.as_ref().and_then(|p| p.digest.clone()).unwrap_or_else(|| "off".into()))
                     prop:disabled=move || saving.get()
@@ -657,9 +657,9 @@ fn NotificationPrefsForm(
                         save(Box::new(move |p| p.digest = Some(v)));
                     }
                 >
-                    <option value="off">"Off"</option>
-                    <option value="weekly">"Weekly (Monday 08:00)"</option>
-                    <option value="monthly">"Monthly (the 1st, 08:00)"</option>
+                    <option value="off">{tr!("notif.off")}</option>
+                    <option value="weekly">{tr!("notif.digest_weekly")}</option>
+                    <option value="monthly">{tr!("notif.digest_monthly")}</option>
                 </select>
             </label>
         </div>

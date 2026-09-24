@@ -87,9 +87,9 @@ pub fn EChart(
     id: &'static str,
     #[prop(into)] option: Signal<Option<serde_json::Value>>,
     #[prop(optional, into)] class: Option<String>,
-    /// Text alternative for screen readers.
-    #[prop(optional, into)]
-    label: Option<String>,
+    /// i18n key of the text alternative for screen readers.
+    #[prop(optional)]
+    label: Option<&'static str>,
 ) -> impl IntoView {
     let theme = crate::components::use_theme();
     on_cleanup(move || disposePlainChart(id));
@@ -106,7 +106,7 @@ pub fn EChart(
         }
     });
     let class = format!("chart {}", class.unwrap_or_default());
-    view! { <div id=id class=class role="img" aria-label=label></div> }
+    view! { <div id=id class=class role="img" aria-label=move || label.map(crate::i18n::t)></div> }
 }
 
 /// Shared chrome for [`EChart`] options, in the app palette.

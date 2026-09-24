@@ -374,7 +374,7 @@ pub enum ApiError {
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unauthorized => write!(f, "unauthorized"),
+            Self::Unauthorized => write!(f, "{}", crate::i18n::t("api.unauthorized")),
             Self::Message(m) => write!(f, "{m}"),
         }
     }
@@ -435,21 +435,21 @@ fn unauthorized() -> ApiError {
 /// Transport failure (offline, DNS, connection reset) before any HTTP status.
 fn network_error(e: gloo_net::Error) -> ApiError {
     web_sys::console::warn_1(&format!("request failed: {e}").into());
-    ApiError::Message("Can't reach the server. Check your connection and try again.".into())
+    ApiError::Message(crate::i18n::t("api.network").into())
 }
 
 /// A body that did not parse as the expected JSON (usually a proxy error page).
 fn decode_error(e: gloo_net::Error) -> ApiError {
     web_sys::console::warn_1(&format!("unexpected response body: {e}").into());
-    ApiError::Message("The server sent an unexpected response. Try again in a moment.".into())
+    ApiError::Message(crate::i18n::t("api.bad_response").into())
 }
 
 /// User-facing text for a non-2xx response instead of the raw `"500: <body>"`.
 ///
 /// 4xx responses keep the server's own `{"error": "..."}` message when it sent one:
 /// those are written for people (validation, "already in progress", missing API
-/// key). 5xx bodies are internal detail, so they go to the console and the user
-/// gets a generic retry message.
+/// key) — in the server's language, which is English. 5xx bodies are internal
+/// detail, so they go to the console and the user gets a generic retry message.
 fn status_error(status: u16, body: &str) -> ApiError {
     let server_msg = serde_json::from_str::<serde_json::Value>(body)
         .ok()
@@ -467,19 +467,17 @@ fn status_error(status: u16, body: &str) -> ApiError {
         });
     if status >= 500 {
         web_sys::console::warn_1(&format!("server error {status}: {body}").into());
-        return ApiError::Message(
-            "Something went wrong on the server. Try again in a moment.".into(),
-        );
+        return ApiError::Message(crate::i18n::t("api.server_error").into());
     }
-    let fallback = match status {
-        403 => "You don't have access to that.",
-        404 => "Not found — it may have been deleted.",
-        408 => "The request timed out. Try again.",
-        409 => "That conflicts with a change made elsewhere. Reload and try again.",
-        413 => "That upload is too large.",
-        429 => "Too many requests — wait a moment and try again.",
-        _ => "The request could not be completed.",
-    };
+    let fallback = crate::i18n::t(match status {
+        403 => "api.forbidden",
+        404 => "api.not_found",
+        408 => "api.timeout",
+        409 => "api.conflict",
+        413 => "api.too_large",
+        429 => "api.rate_limited",
+        _ => "api.failed",
+    });
     ApiError::Message(match (status, server_msg) {
         // Rate limits read the same whatever the server wording.
         (429, _) => fallback.to_string(),
@@ -727,7 +725,9 @@ pub async fn get_trip(id: &str) -> Result<Trip, ApiError> {
 
 pub async fn finish_trip(id: &str) -> Result<Trip, ApiError> {
     if id.is_empty() {
-        return Err(ApiError::Message("missing trip id".into()));
+        return Err(ApiError::Message(
+            crate::i18n::t("api.missing_trip_id").into(),
+        ));
     }
     let body = serde_json::json!({});
     let req = with_creds(Request::post(&format!("/api/trips/{id}/finish")))
@@ -739,7 +739,9 @@ pub async fn finish_trip(id: &str) -> Result<Trip, ApiError> {
 
 pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
     if id.is_empty() {
-        return Err(ApiError::Message("missing trip id".into()));
+        return Err(ApiError::Message(
+            crate::i18n::t("api.missing_trip_id").into(),
+        ));
     }
     let url = format!("/api/trips/{id}");
     let resp = with_creds(Request::delete(&url))
@@ -750,10 +752,14 @@ pub async fn delete_trip(id: &str) -> Result<(), ApiError> {
         return Err(unauthorized());
     }
     if resp.status() == 404 {
-        return Err(ApiError::Message("Trip not found".into()));
+        return Err(ApiError::Message(
+            crate::i18n::t("api.trip_not_found").into(),
+        ));
     }
     if resp.status() == 403 {
-        return Err(ApiError::Message("Not allowed to delete this trip".into()));
+        return Err(ApiError::Message(
+            crate::i18n::t("api.trip_delete_forbidden").into(),
+        ));
     }
     if !resp.ok() {
         let text = resp.text().await.unwrap_or_default();
@@ -848,7 +854,7 @@ pub async fn provisioning(
 pub async fn revoke_device(car_id: &str, device_id: &str) -> Result<(), ApiError> {
     if car_id.is_empty() || device_id.is_empty() {
         return Err(ApiError::Message(
-            "Cannot revoke device: missing car or device id".into(),
+            crate::i18n::t("api.device_missing_ids").into(),
         ));
     }
     let url = format!("/api/cars/{car_id}/devices/{device_id}");
@@ -861,8 +867,9 @@ pub async fn revoke_device(car_id: &str, device_id: &str) -> Result<(), ApiError
     }
     if resp.status() == 404 {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Message(format!(
-            "Device not found or already removed ({text})"
+        return Err(ApiError::Message(crate::i18n::tf(
+            "api.device_not_found",
+            &[("detail", &text)],
         )));
     }
     if !resp.ok() {

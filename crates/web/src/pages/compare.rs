@@ -10,6 +10,7 @@ use crate::components::charts::chart_theme;
 use crate::components::echart::{EChart, chart_chrome};
 use crate::components::geo::{LinesData, LinesMap, MapLine};
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{num, t, tf};
 use crate::units::{
     UnitPrefs, UnitSystem, avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed,
     use_unit_prefs,
@@ -65,13 +66,7 @@ fn duration_label(s: Option<f64>) -> String {
 }
 
 fn started_label(s: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(s.trim())
-        .map(|d| {
-            d.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|_| s.to_string())
+    crate::i18n::local_datetime(s, None)
 }
 
 /// Signed difference B − A, formatted with `fmt`; "—" when either side is missing.
@@ -116,7 +111,7 @@ pub fn TripComparePage() -> impl IntoView {
         a.set(None);
         b.set(None);
         if ids.len() != 2 {
-            error.set(Some("Pick exactly two trips to compare.".into()));
+            error.set(Some(t("compare.pick_two").into()));
             loading.set(false);
             return;
         }
@@ -129,9 +124,7 @@ pub fn TripComparePage() -> impl IntoView {
                 match (trip, points) {
                     (Ok(t), Ok(p)) => {
                         if t.vault_sealed {
-                            let _ = error.try_set(Some(
-                                "Vault trips can't be compared yet — their samples are decrypted on the trip page only.".into(),
-                            ));
+                            let _ = error.try_set(Some(crate::i18n::t("compare.no_vault").into()));
                         }
                         let _ = slot.try_set(Some((t, p)));
                     }
@@ -211,9 +204,9 @@ pub fn TripComparePage() -> impl IntoView {
             },
             "dataZoom": [{ "type": "inside" }, { "type": "slider", "height": 16, "bottom": 4 }],
             "series": [
-                { "name": "Trip A", "type": "line", "data": sa, "showSymbol": false,
+                { "name": t("compare.trip_a"), "type": "line", "data": sa, "showSymbol": false,
                   "lineStyle": { "width": 1.6, "color": ca }, "itemStyle": { "color": ca } },
-                { "name": "Trip B", "type": "line", "data": sb, "showSymbol": false,
+                { "name": t("compare.trip_b"), "type": "line", "data": sb, "showSymbol": false,
                   "lineStyle": { "width": 1.6, "color": cb }, "itemStyle": { "color": cb } },
             ],
         }))
@@ -233,55 +226,55 @@ pub fn TripComparePage() -> impl IntoView {
         };
         vec![
             (
-                "Started",
+                "dash.started",
                 started_label(&ta.started_at),
                 started_label(&tb.started_at),
                 String::new(),
             ),
             (
-                "Duration",
+                "common.duration",
                 duration_label(ta.duration_s),
                 duration_label(tb.duration_s),
                 delta(ta.duration_s, tb.duration_s, |d| duration_label(Some(d))),
             ),
             (
-                "Distance",
+                "common.distance",
                 fmt_distance(ta.distance_m, &p),
                 fmt_distance(tb.distance_m, &p),
                 delta(dist_disp(ta.distance_m), dist_disp(tb.distance_m), |d| {
-                    format!("{d:.1} {}", p.labels.distance)
+                    format!("{} {}", num(d, 1), p.labels.distance)
                 }),
             ),
             (
-                "Avg speed",
+                "trip.avg_speed",
                 fmt_speed(ta.avg_speed_kph, &p),
                 fmt_speed(tb.avg_speed_kph, &p),
                 delta(ta.avg_speed_kph, tb.avg_speed_kph, |d| {
-                    format!("{d:.0} {}", p.labels.speed)
+                    format!("{} {}", num(d, 0), p.labels.speed)
                 }),
             ),
             (
-                "Max speed",
+                "trip.max_speed",
                 fmt_speed(ta.max_speed_kph, &p),
                 fmt_speed(tb.max_speed_kph, &p),
                 delta(ta.max_speed_kph, tb.max_speed_kph, |d| {
-                    format!("{d:.0} {}", p.labels.speed)
+                    format!("{} {}", num(d, 0), p.labels.speed)
                 }),
             ),
             (
-                "Fuel",
+                "common.fuel",
                 fmt_fuel(ta.fuel_used_l, &p),
                 fmt_fuel(tb.fuel_used_l, &p),
                 delta(ta.fuel_used_l, tb.fuel_used_l, |d| {
-                    format!("{d:.2} {}", p.labels.fuel_volume)
+                    format!("{} {}", num(d, 2), p.labels.fuel_volume)
                 }),
             ),
             (
-                "Economy",
+                "common.economy",
                 fmt_economy(econ(&ta), &p),
                 fmt_economy(econ(&tb), &p),
                 delta(econ(&ta), econ(&tb), |d| {
-                    format!("{d:.1} {}", p.labels.fuel_economy)
+                    format!("{} {}", num(d, 1), p.labels.fuel_economy)
                 }),
             ),
         ]
@@ -291,7 +284,7 @@ pub fn TripComparePage() -> impl IntoView {
         side.with(|s| {
             s.as_ref()
                 .map(|(t, _)| format!("{} · {}", t.car_name, started_label(&t.started_at)))
-                .unwrap_or_else(|| "Loading…".into())
+                .unwrap_or_else(|| t("common.loading").into())
         })
     };
     let href = move |side: RwSignal<Side>| {
@@ -307,15 +300,15 @@ pub fn TripComparePage() -> impl IntoView {
             <div>
                 <h1 class="section-title">
                     <Icon name="git-diff" color=IconColor::Accent />
-                    "Compare trips"
+                    {tr!("compare.title")}
                 </h1>
-                <p class="muted">"Both routes on one map, speed against distance driven, and the numbers side by side"</p>
+                <p class="muted">{tr!("compare.lead")}</p>
             </div>
             <A href="/app/trips">
                 <span class="btn">
                     <span class="icon-label">
                         <Icon name="arrow-left" size=IconSize::Sm />
-                        "All trips"
+                        {tr!("trip.all_trips")}
                     </span>
                 </span>
             </A>
@@ -339,7 +332,7 @@ pub fn TripComparePage() -> impl IntoView {
         <div class="card">
             <h2 class="section-title">
                 <Icon name="map-trifold" color=IconColor::Accent />
-                "Routes"
+                {tr!("nav.routes")}
             </h2>
             <LinesMap id="compare-map" data=map_data />
         </div>
@@ -347,28 +340,28 @@ pub fn TripComparePage() -> impl IntoView {
         <div class="card">
             <h2 class="section-title">
                 <Icon name="speedometer" color=IconColor::Accent />
-                "Speed along the way"
+                {tr!("compare.speed_title")}
             </h2>
-            <p class="muted">{move || format!("Speed ({}) against distance driven ({}) — overlays the two drives mile for mile.", prefs.get().labels.speed, prefs.get().labels.distance)}</p>
-            <EChart id="compare-speed" option=chart class="chart-tall" label="Speed against distance for both trips" />
+            <p class="muted">{move || tf("compare.speed_lead", &[("speed", &prefs.get().labels.speed), ("distance", &prefs.get().labels.distance)])}</p>
+            <EChart id="compare-speed" option=chart class="chart-tall" label="compare.chart_label" />
         </div>
 
         <div class="card">
             <h2 class="section-title">
                 <Icon name="table" color=IconColor::Accent />
-                "Side by side"
+                {tr!("compare.side_by_side")}
             </h2>
             <Show
                 when=move || !loading.get()
-                fallback=|| view! { <p class="muted">"Loading trips…"</p> }
+                fallback=|| view! { <p class="muted">{tr!("trips.loading")}</p> }
             >
                 <div class="table-scroll">
                     <table class="table compare-table">
                         <thead>
                             <tr>
                                 <th></th>
-                                <th>"Trip A"</th>
-                                <th>"Trip B"</th>
+                                <th>{tr!("compare.trip_a")}</th>
+                                <th>{tr!("compare.trip_b")}</th>
                                 <th>"B − A"</th>
                             </tr>
                         </thead>
@@ -377,9 +370,9 @@ pub fn TripComparePage() -> impl IntoView {
                                 .into_iter()
                                 .map(|(label, va, vb, d)| view! {
                                     <tr>
-                                        <th scope="row">{label}</th>
-                                        <td class="num" data-label="Trip A">{va}</td>
-                                        <td class="num" data-label="Trip B">{vb}</td>
+                                        <th scope="row">{t(label)}</th>
+                                        <td class="num" data-label=tr!("compare.trip_a")>{va}</td>
+                                        <td class="num" data-label=tr!("compare.trip_b")>{vb}</td>
                                         <td class="num" data-label="B − A">{d}</td>
                                     </tr>
                                 })

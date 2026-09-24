@@ -11,6 +11,7 @@ use crate::api::{TripGeometry, TripListOpts, list_trips, trip_geometries};
 use crate::components::charts::chart_theme;
 use crate::components::geo::{LinesData, LinesMap, MapLine, line_coordinates};
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{num, t, tf, tp};
 use crate::pages::trips::{local_midnight, to_rfc3339};
 use crate::units::{UnitSystem, use_unit_prefs};
 
@@ -128,28 +129,28 @@ pub fn TripsOverlayMap(
             <div class="telemetry-section-head">
                 <h2 class="section-title">
                     <Icon name="map-trifold" color=IconColor::Accent />
-                    "All routes"
+                    {tr!("views.all_routes")}
                 </h2>
                 <div class="row">
                     <span class="muted">
                         {move || {
                             if loading.get() {
-                                "Loading routes…".to_string()
+                                t("views.loading_routes").to_string()
                             } else {
                                 let n = visible.get().len();
-                                let capped = if geoms.get().len() as i64 >= OVERLAY_LIMIT { " (newest)" } else { "" };
-                                format!("{n} trip{}{capped}", if n == 1 { "" } else { "s" })
+                                let capped = if geoms.get().len() as i64 >= OVERLAY_LIMIT { t("views.newest_suffix") } else { "" };
+                                format!("{}{capped}", tp("common.trips_count", n as i64))
                             }
                         }}
                     </span>
-                    <div class="seg-control" role="group" aria-label="Map style">
+                    <div class="seg-control" role="group" aria-label=tr!("views.map_style")>
                         <button
                             type="button"
                             class=move || if heat.get() { "seg-btn" } else { "seg-btn is-active" }
                             aria-pressed=move || (!heat.get()).to_string()
                             on:click=move |_| heat.set(false)
                         >
-                            "Lines"
+                            {tr!("views.lines")}
                         </button>
                         <button
                             type="button"
@@ -157,7 +158,7 @@ pub fn TripsOverlayMap(
                             aria-pressed=move || heat.get().to_string()
                             on:click=move |_| heat.set(true)
                         >
-                            "Heatmap"
+                            {tr!("views.heatmap")}
                         </button>
                     </div>
                 </div>
@@ -168,9 +169,9 @@ pub fn TripsOverlayMap(
             <LinesMap id=OVERLAY_MAP_ID data=data />
             <p class="muted map-legend-note">
                 {move || if heat.get() {
-                    "Brighter = driven more often. Vault trips are not included."
+                    t("views.heat_note")
                 } else {
-                    "One color per car · click a route to open the trip. Vault trips are not included."
+                    t("views.lines_note")
                 }}
             </p>
         </section>
@@ -267,11 +268,11 @@ pub fn TripsCalendar(
     });
 
     let weeks: Vec<NaiveDate> = (0..53).map(|w| start + Duration::weeks(w)).collect();
-    let month_labels: Vec<(usize, String)> = weeks
+    let month_labels: Vec<(usize, u32)> = weeks
         .iter()
         .enumerate()
         .filter(|(i, w)| *i == 0 || w.month() != (**w - Duration::weeks(1)).month())
-        .map(|(i, w)| (i, w.format("%b").to_string()))
+        .map(|(i, w)| (i, w.month()))
         .collect();
 
     view! {
@@ -279,12 +280,12 @@ pub fn TripsCalendar(
             <div class="telemetry-section-head">
                 <h2 class="section-title">
                     <Icon name="calendar-dots" color=IconColor::Accent />
-                    "Driving calendar"
+                    {tr!("views.calendar")}
                 </h2>
                 <span class="muted">
                     {move || {
                         if loading.get() {
-                            return "Loading the last year…".to_string();
+                            return t("views.loading_year").to_string();
                         }
                         let (n, d) = days.with(|m| m.values().fold((0u32, 0.0), |a, v| (a.0 + v.0, a.1 + v.1)));
                         let p = prefs.get();
@@ -292,8 +293,16 @@ pub fn TripsCalendar(
                             UnitSystem::Metric => d / 1000.0,
                             UnitSystem::Us => d,
                         };
-                        let more = if truncated.get() { " (newest 2000)" } else { "" };
-                        format!("{n} trips · {dist:.0} {} in the last year{more}", p.labels.distance)
+                        let more = if truncated.get() { t("views.newest_2000") } else { "" };
+                        tf(
+                            "views.year_summary",
+                            &[
+                                ("trips", &tp("common.trips_count", n as i64)),
+                                ("dist", &num(dist, 0)),
+                                ("unit", &p.labels.distance),
+                                ("more", &more),
+                            ],
+                        )
                     }}
                 </span>
             </div>
@@ -301,17 +310,23 @@ pub fn TripsCalendar(
                 <div class="error">{move || error.get().unwrap_or_default()}</div>
             </Show>
             <div class="cal-scroll">
-                <div class="cal-grid" role="grid" aria-label="Trips per day over the last year">
+                <div class="cal-grid" role="grid" aria-label=tr!("views.grid_label")>
                     <div class="cal-months" aria-hidden="true">
                         {month_labels
                             .into_iter()
                             .map(|(i, m)| view! {
-                                <span class="cal-month" style=format!("grid-column: {}", i + 2)>{m}</span>
+                                <span class="cal-month" style=format!("grid-column: {}", i + 2)>{move || crate::i18n::month_short(m)}</span>
                             })
                             .collect_view()}
                     </div>
                     <div class="cal-weekdays" aria-hidden="true">
-                        <span></span><span>"Mon"</span><span></span><span>"Wed"</span><span></span><span>"Fri"</span><span></span>
+                        <span></span>
+                        <span>{move || crate::i18n::weekday_short(chrono::Weekday::Mon)}</span>
+                        <span></span>
+                        <span>{move || crate::i18n::weekday_short(chrono::Weekday::Wed)}</span>
+                        <span></span>
+                        <span>{move || crate::i18n::weekday_short(chrono::Weekday::Fri)}</span>
+                        <span></span>
                     </div>
                     <div class="cal-weeks">
                         {weeks
@@ -338,9 +353,10 @@ pub fn TripsCalendar(
                                                     UnitSystem::Us => dist,
                                                 };
                                                 format!(
-                                                    "{} · {n} trip{} · {dist:.0} {}",
-                                                    day.format("%a %d %b %Y"),
-                                                    if n == 1 { "" } else { "s" },
+                                                    "{} · {} · {} {}",
+                                                    crate::i18n::date(&day, "%a %d %b %Y"),
+                                                    tp("common.trips_count", n as i64),
+                                                    num(dist, 0),
                                                     p.labels.distance
                                                 )
                                             };
@@ -364,16 +380,16 @@ pub fn TripsCalendar(
                 </div>
             </div>
             <div class="cal-legend muted" aria-hidden="true">
-                "Less"
+                {tr!("views.less")}
                 <span class="cal-day cal-l0"></span>
                 <span class="cal-day cal-l1"></span>
                 <span class="cal-day cal-l2"></span>
                 <span class="cal-day cal-l3"></span>
                 <span class="cal-day cal-l4"></span>
-                "More"
+                {tr!("views.more")}
                 <span class="cal-legend-note">
                     <Icon name="cursor-click" size=IconSize::Sm />
-                    "Click a day to list its trips"
+                    {tr!("views.click_day")}
                 </span>
             </div>
         </section>

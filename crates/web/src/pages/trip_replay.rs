@@ -133,11 +133,11 @@ pub fn TripReplay(#[prop(into)] points: Signal<Vec<TripPoint>>) -> impl IntoView
 
     view! {
         <Show when=move || { tl.with(|t| t.len() >= 2) }>
-            <div class="replay-bar" role="group" aria-label="Trip replay">
+            <div class="replay-bar" role="group" aria-label=tr!("replay.group")>
                 <button
                     type="button"
                     class="btn secondary btn-sm replay-play"
-                    aria-label=move || if playing.get() { "Pause replay" } else { "Play replay" }
+                    aria-label=move || if playing.get() { crate::i18n::t("replay.pause_aria") } else { crate::i18n::t("replay.play_aria") }
                     on:click=move |_| {
                         if playing.get_untracked() {
                             playing.set(false);
@@ -151,14 +151,14 @@ pub fn TripReplay(#[prop(into)] points: Signal<Vec<TripPoint>>) -> impl IntoView
                     } else {
                         view! { <Icon name="play" size=IconSize::Sm /> }.into_any()
                     }}
-                    {move || if playing.get() { "Pause" } else { "Replay" }}
+                    {move || if playing.get() { crate::i18n::t("replay.pause") } else { crate::i18n::t("replay.replay") }}
                 </button>
                 <input
                     type="range"
                     class="replay-seek"
                     min="0"
                     step="1"
-                    aria-label="Replay position"
+                    aria-label=tr!("replay.position")
                     prop:max=move || total.get().ceil().to_string()
                     prop:value=move || pos.get().round().to_string()
                     on:input=move |ev| {
@@ -171,7 +171,7 @@ pub fn TripReplay(#[prop(into)] points: Signal<Vec<TripPoint>>) -> impl IntoView
                 <span class="replay-clock">
                     {move || format!("{} / {}", fmt_clock(pos.get()), fmt_clock(total.get()))}
                 </span>
-                <div class="seg-control" role="group" aria-label="Replay speed">
+                <div class="seg-control" role="group" aria-label=tr!("replay.speed")>
                     {SPEEDS
                         .into_iter()
                         .map(|s| view! {

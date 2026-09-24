@@ -17,13 +17,15 @@ use crate::api::{
 };
 use crate::components::markdown;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{t, tf};
 
-/// Openers for the empty state — each is answerable purely from tool data.
+/// Openers for the empty state — each is answerable purely from tool data. i18n
+/// keys: the question is sent in the language it is shown in.
 const SUGGESTIONS: [&str; 4] = [
-    "Which of my trips last month used the most fuel per 100 km?",
-    "How has my driving style changed over the last 30 days?",
-    "Are there any mechanical signals I should look into?",
-    "Which route do I drive most often, and is the usual way the fastest?",
+    "chat.suggest_fuel",
+    "chat.suggest_style",
+    "chat.suggest_mech",
+    "chat.suggest_route",
 ];
 
 /// One assistant turn as the page sees it, merging the stored row with live stream state.
@@ -124,7 +126,7 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                             .collect(),
                     );
                 }
-                Err(ApiError::Unauthorized) => error.set(Some("Please sign in again.".into())),
+                Err(ApiError::Unauthorized) => error.set(Some(t("chat.sign_in_again").into())),
                 Err(e) => error.set(Some(e.to_string())),
             }
             loading.set(false);
@@ -230,15 +232,15 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
             <div>
                 <h1 class="section-title">
                     <Icon name="chat-circle-dots" color=IconColor::Accent />
-                    "Ask your data"
+                    {tr!("nav.chat")}
                 </h1>
                 <p class="muted">
-                    "Questions about your own trips, answered from your recorded telemetry"
+                    {tr!("chat.lead")}
                 </p>
             </div>
             <a class="btn" href="/app/chat">
                 <Icon name="plus" size=IconSize::Sm />
-                "New chat"
+                {tr!("chat.new")}
             </a>
         </div>
 
@@ -250,21 +252,21 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
             <div class="card chat-setup-notice">
                 <Icon name="key" color=IconColor::Warn />
                 <div>
-                    <strong>"Chat needs an OpenRouter API key."</strong>
+                    <strong>{tr!("chat.needs_key")}</strong>
                     <p class="muted">
-                        "Add one in Settings — the same key trip analysis uses."
+                        {tr!("chat.add_key")}
                     </p>
                 </div>
-                <a class="btn" href="/app/settings">"Open Settings"</a>
+                <a class="btn" href="/app/settings">{tr!("chat.open_settings")}</a>
             </div>
         </Show>
 
         <div class="chat-layout">
-            <aside class="chat-rail" aria-label="Conversations">
-                <h2 class="chat-rail-title">"Recent"</h2>
+            <aside class="chat-rail" aria-label=tr!("chat.conversations")>
+                <h2 class="chat-rail-title">{tr!("chat.recent")}</h2>
                 <Show
                     when=move || !conversations.get().is_empty()
-                    fallback=|| view! { <p class="muted chat-rail-empty">"No chats yet"</p> }
+                    fallback=|| view! { <p class="muted chat-rail-empty">{tr!("chat.none")}</p> }
                 >
                     <ul class="chat-rail-list">
                         <For
@@ -285,8 +287,11 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                                         </a>
                                         <button
                                             class="icon-btn"
-                                            title="Delete chat"
-                                            aria-label=format!("Delete {}", conversation.title)
+                                            title=tr!("chat.delete_chat")
+                                            aria-label={
+                                                let title = conversation.title.clone();
+                                                move || tf("chat.delete_named", &[("title", &title)])
+                                            }
                                             on:click=move |_| delete_conversation(delete_id.clone())
                                         >
                                             <Icon name="trash" size=IconSize::Sm />
@@ -301,27 +306,27 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
 
             <section class="chat-main">
                 <Show when=move || loading.get()>
-                    <p class="muted">"Loading conversation…"</p>
+                    <p class="muted">{tr!("chat.loading")}</p>
                 </Show>
 
                 <Show when=move || !loading.get() && !has_thread()>
                     <div class="chat-empty">
                         <Icon name="chat-circle-dots" size=IconSize::Xl color=IconColor::Accent />
-                        <h2>"What would you like to know?"</h2>
+                        <h2>{tr!("chat.empty_title")}</h2>
                         <p class="muted">
-                            "Every answer is read from your own trips. Nothing is estimated."
+                            {tr!("chat.empty_lead")}
                         </p>
                         <div class="chat-suggestions">
                             {SUGGESTIONS
                                 .iter()
-                                .map(|s| {
-                                    let text = s.to_string();
+                                .map(|key| {
+                                    let key: &'static str = key;
                                     view! {
                                         <button
                                             class="chat-suggestion"
-                                            on:click=move |_| send(text.clone())
+                                            on:click=move |_| send(t(key).to_string())
                                         >
-                                            {*s}
+                                            {move || t(key)}
                                         </button>
                                     }
                                 })
@@ -352,12 +357,12 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                 >
                     <Show when=show_focus_picker>
                         <label class="chat-focus">
-                            "Focus"
+                            {tr!("chat.focus")}
                             <select on:change=move |ev| {
                                 let value = event_target_value(&ev);
                                 focus_car.set((!value.is_empty()).then_some(value));
                             }>
-                                <option value="">"All cars"</option>
+                                <option value="">{tr!("common.all_cars")}</option>
                                 <For each=move || cars.get() key=|c| c.id.clone() let:car>
                                     <option value=car.id.clone()>{car.name.clone()}</option>
                                 </For>
@@ -367,7 +372,7 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                     <textarea
                         class="chat-input"
                         rows="2"
-                        placeholder="Ask about your trips, fuel, driving style or routes…"
+                        placeholder=tr!("chat.placeholder")
                         prop:value=move || draft.get()
                         disabled=move || !can_chat.get()
                         on:input=move |ev| draft.set(event_target_value(&ev))
@@ -383,7 +388,7 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                         <button
                             class="btn secondary"
                             type="button"
-                            title="Stop generating this answer"
+                            title=tr!("chat.stop_title")
                             on:click=move |_| {
                                 let Some(id) = live.get_untracked().map(|t| t.message_id) else {
                                     return;
@@ -396,7 +401,7 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                             }
                         >
                             <Icon name="stop-circle" size=IconSize::Sm />
-                            "Stop"
+                            {tr!("chat.stop")}
                         </button>
                     </Show>
                     <button
@@ -410,7 +415,7 @@ fn ChatView(conversation_id: Option<String>) -> impl IntoView {
                         }
                     >
                         <Icon name="paper-plane-tilt" size=IconSize::Sm />
-                        "Send"
+                        {tr!("chat.send")}
                     </button>
                 </form>
             </section>
@@ -430,7 +435,7 @@ fn ChatBubble(message: ChatMessage) -> impl IntoView {
 
     view! {
         <li class="chat-msg" class:chat-msg-user=is_user>
-            <span class="chat-role">{if is_user { "You" } else { "Assistant" }}</span>
+            <span class="chat-role">{move || if is_user { t("chat.you") } else { t("chat.assistant") }}</span>
             {match body {
                 Some(html) => view! { <div class="chat-body" inner_html=html></div> }.into_any(),
                 None => view! { <div class="chat-body">{message.content.clone()}</div> }.into_any(),
@@ -447,7 +452,7 @@ fn ChatBubble(message: ChatMessage) -> impl IntoView {
             }>
                 <p class="chat-tools">
                     <Icon name="database" size=IconSize::Sm />
-                    {format!("Read {}", join_tools(&tools))}
+                    {tf("chat.read_tools", &[("tools", &join_tools(&tools))])}
                 </p>
             </Show>
         </li>
@@ -466,20 +471,20 @@ fn LiveBubble(turn: LiveTurn) -> impl IntoView {
 
     view! {
         <li class="chat-msg">
-            <span class="chat-role">"Assistant"</span>
+            <span class="chat-role">{tr!("chat.assistant")}</span>
             <Show when=move || has_text>
                 <div class="chat-body" inner_html=markdown::render(&content)></div>
             </Show>
             <Show when=move || running && has_tools>
                 <p class="chat-tools chat-tools-live">
                     <span class="chat-spinner" aria-hidden="true"></span>
-                    {format!("Reading {tools_line}")}
+                    {tf("chat.reading_tools", &[("tools", &tools_line)])}
                 </p>
             </Show>
             <Show when=move || running && !has_text && !has_tools>
                 <p class="chat-tools chat-tools-live">
                     <span class="chat-spinner" aria-hidden="true"></span>
-                    "Thinking…"
+                    {tr!("chat.thinking")}
                 </p>
             </Show>
             <Show when={
@@ -504,10 +509,10 @@ fn join_tools(tools: &[String]) -> String {
     match unique.len() {
         0 => String::new(),
         1 => unique[0].clone(),
-        2 => format!("{} and {}", unique[0], unique[1]),
+        2 => format!("{} {} {}", unique[0], t("chat.and"), unique[1]),
         _ => {
             let last = unique.pop().unwrap_or_default();
-            format!("{} and {last}", unique.join(", "))
+            format!("{} {} {last}", unique.join(", "), t("chat.and"))
         }
     }
 }
@@ -582,7 +587,7 @@ fn attach_stream(
         live.update(|turn| {
             if let Some(turn) = turn {
                 turn.running = false;
-                turn.error = Some("Could not open the answer stream.".into());
+                turn.error = Some(t("chat.stream_failed").into());
             }
         });
         return;
@@ -736,7 +741,7 @@ fn attach_stream(
                 .as_string()
                 .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
                 .and_then(|v| v["message"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "That answer could not be generated.".into());
+                .unwrap_or_else(|| t("chat.answer_failed").into());
             live.update(|turn| {
                 if let Some(turn) = turn {
                     turn.running = false;
@@ -755,7 +760,7 @@ fn attach_stream(
             live.update(|turn| {
                 if let Some(turn) = turn {
                     turn.running = false;
-                    turn.error = Some("Lost part of the answer. Reload to see it in full.".into());
+                    turn.error = Some(t("chat.lost_part").into());
                 }
             });
             finish();
@@ -782,8 +787,7 @@ fn attach_stream(
                         && turn.running
                     {
                         turn.running = false;
-                        turn.error =
-                            Some("The connection dropped. Reload to see the answer.".into());
+                        turn.error = Some(t("chat.connection_dropped").into());
                     }
                 });
                 release_stream(source);

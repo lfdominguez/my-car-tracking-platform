@@ -32,11 +32,12 @@ pub fn copy_to_clipboard(text: &str) -> bool {
 fn date_only(iso: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(iso.trim())
         .map(|d| {
-            d.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d")
-                .to_string()
+            crate::i18n::date(
+                &d.with_timezone(&chrono::Local).date_naive(),
+                crate::i18n::date_pattern(),
+            )
         })
-        .unwrap_or_else(|_| iso.split('T').next().unwrap_or(iso).to_string())
+        .unwrap_or_else(|_| crate::i18n::iso_date(iso.split('T').next().unwrap_or(iso)))
 }
 
 #[component]
@@ -99,14 +100,14 @@ pub fn McpTokensCard() -> impl IntoView {
     };
 
     let car_label = move |ids: &Option<Vec<String>>| match ids {
-        None => "All cars".to_string(),
+        None => crate::i18n::t("common.all_cars").to_string(),
         Some(ids) => cars.with(|c| {
             ids.iter()
                 .map(|id| {
                     c.iter()
                         .find(|c| &c.id == id)
                         .map(|c| c.name.clone())
-                        .unwrap_or_else(|| "a car".into())
+                        .unwrap_or_else(|| crate::i18n::t("mcp.a_car").into())
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -117,18 +118,16 @@ pub fn McpTokensCard() -> impl IntoView {
         <div class="card settings-card" id="mcp-tokens" style="margin-top:1rem">
             <h2 class="section-title">
                 <Icon name="key" color=IconColor::Accent />
-                "Agent tokens"
+                {tr!("mcp.title")}
             </h2>
-            <p class="muted">
-                "One token per agent or tool, so each can be limited to some cars, expire, and be revoked on its own."
-            </p>
+            <p class="muted">{tr!("mcp.lead")}</p>
 
             <Show when=move || issued.get().is_some()>
                 <div class="success mcp-issued" role="status">
                     <div class="stack" style="gap:0.4rem;min-width:0;flex:1">
-                        <strong>"Copy this token now — it is not shown again."</strong>
+                        <strong>{tr!("mcp.copy_now")}</strong>
                         <code class="mcp-token-text">{move || issued.get().map(|t| t.token).unwrap_or_default()}</code>
-                        <span class="muted">{move || issued.get().map(|t| format!("Endpoint: {}", t.mcp_url)).unwrap_or_default()}</span>
+                        <span class="muted">{move || issued.get().map(|t| crate::i18n::tf("mcp.endpoint", &[("url", &t.mcp_url)])).unwrap_or_default()}</span>
                     </div>
                     <div class="row">
                         <button type="button" class="btn secondary btn-sm"
@@ -138,31 +137,31 @@ pub fn McpTokensCard() -> impl IntoView {
                                 }
                             }>
                             <Icon name="copy" size=IconSize::Sm />
-                            {move || if copied.get() { "Copied" } else { "Copy" }}
+                            {move || if copied.get() { crate::i18n::t("common.copied") } else { crate::i18n::t("common.copy") }}
                         </button>
-                        <button type="button" class="btn ghost btn-sm" on:click=move |_| issued.set(None)>"Done"</button>
+                        <button type="button" class="btn ghost btn-sm" on:click=move |_| issued.set(None)>{tr!("mcp.done")}</button>
                     </div>
                 </div>
             </Show>
 
             <div class="garage-form-grid mcp-form">
                 <label class="garage-field">
-                    <span>"Name"</span>
+                    <span>{tr!("common.name")}</span>
                     <input type="text" maxlength="80" placeholder="Claude Desktop"
                         prop:value=move || name.get()
                         on:input=move |ev| name.set(event_target_value(&ev)) />
                 </label>
                 <label class="garage-field">
-                    <span>"Expires"</span>
+                    <span>{tr!("mcp.expires")}</span>
                     <select prop:value=move || expiry.get() on:change=move |ev| expiry.set(event_target_value(&ev))>
-                        <option value="">"Never"</option>
-                        <option value="30">"In 30 days"</option>
-                        <option value="90">"In 90 days"</option>
-                        <option value="365">"In a year"</option>
+                        <option value="">{tr!("mcp.never")}</option>
+                        <option value="30">{tr!("mcp.in_30")}</option>
+                        <option value="90">{tr!("mcp.in_90")}</option>
+                        <option value="365">{tr!("mcp.in_year")}</option>
                     </select>
                 </label>
                 <fieldset class="garage-field garage-field-wide mcp-scope">
-                    <legend>"Cars (none ticked = all cars you can read)"</legend>
+                    <legend>{tr!("mcp.cars_scope")}</legend>
                     <For
                         each=move || cars.get()
                         key=|c| c.id.clone()
@@ -192,7 +191,7 @@ pub fn McpTokensCard() -> impl IntoView {
             </div>
             <button type="button" class="btn primary" prop:disabled=move || busy.get() || name.get().trim().is_empty() on:click=create>
                 <Icon name="plus" />
-                "Create token"
+                {tr!("mcp.create")}
             </button>
             <Show when=move || error.get().is_some()>
                 <div class="error">{move || error.get().unwrap_or_default()}</div>
@@ -201,7 +200,7 @@ pub fn McpTokensCard() -> impl IntoView {
             <Show when=move || !tokens.get().is_empty()>
                 <div class="table-scroll">
                     <table class="table" style="margin-top:1rem">
-                        <thead><tr><th>"Name"</th><th>"Token"</th><th>"Cars"</th><th>"Last used"</th><th>"Expires"</th><th></th></tr></thead>
+                        <thead><tr><th>{tr!("common.name")}</th><th>{tr!("mcp.token")}</th><th>{tr!("nav.cars")}</th><th>{tr!("mcp.last_used")}</th><th>{tr!("mcp.expires")}</th><th></th></tr></thead>
                         <tbody>
                             <For
                                 each=move || tokens.get()
@@ -209,17 +208,19 @@ pub fn McpTokensCard() -> impl IntoView {
                                 children=move |t| {
                                     let id = t.id.clone();
                                     let revoked = t.revoked_at.is_some();
-                                    let scope_label = car_label(&t.car_ids);
+                                    let car_ids = t.car_ids.clone();
+                                    let scope_label = move || car_label(&car_ids);
+                                    let (last_used, expires) = (t.last_used_at.clone(), t.expires_at.clone());
                                     view! {
                                         <tr class:is-revoked=revoked>
-                                            <td data-label="Name">{t.name.clone()}</td>
-                                            <td data-label="Token"><code>{t.hint.clone()}</code></td>
-                                            <td data-label="Cars">{scope_label}</td>
-                                            <td class="num" data-label="Last used">{t.last_used_at.as_deref().map(date_only).unwrap_or_else(|| "never".into())}</td>
-                                            <td class="num" data-label="Expires">{t.expires_at.as_deref().map(date_only).unwrap_or_else(|| "—".into())}</td>
+                                            <td data-label=tr!("common.name")>{t.name.clone()}</td>
+                                            <td data-label=tr!("mcp.token")><code>{t.hint.clone()}</code></td>
+                                            <td data-label=tr!("nav.cars")>{scope_label}</td>
+                                            <td class="num" data-label=tr!("mcp.last_used")>{move || last_used.as_deref().map(date_only).unwrap_or_else(|| crate::i18n::t("mcp.never_used").into())}</td>
+                                            <td class="num" data-label=tr!("mcp.expires")>{move || expires.as_deref().map(date_only).unwrap_or_else(|| "—".into())}</td>
                                             <td data-label="">
                                                 {if revoked {
-                                                    view! { <span class="pill">"Revoked"</span> }.into_any()
+                                                    view! { <span class="pill">{tr!("mcp.revoked")}</span> }.into_any()
                                                 } else {
                                                     view! {
                                                         <button type="button" class="btn ghost btn-sm err"
@@ -232,7 +233,7 @@ pub fn McpTokensCard() -> impl IntoView {
                                                                     }
                                                                 });
                                                             }>
-                                                            "Revoke"
+                                                            {tr!("common.revoke")}
                                                         </button>
                                                     }
                                                     .into_any()

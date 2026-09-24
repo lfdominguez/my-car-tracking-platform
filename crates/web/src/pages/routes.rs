@@ -9,6 +9,7 @@ use crate::api::{
     route_opt_corridor_map, route_opt_recompute, route_opt_summary,
 };
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{t, tf, tp};
 use crate::units::{fmt_distance, use_unit_prefs};
 
 fn fmt_duration(secs: f64) -> String {
@@ -37,21 +38,21 @@ fn ors_swatch(i: usize) -> &'static str {
 
 /// Human label for insight `kind` codes from the server.
 fn insight_kind_label(kind: &str) -> &'static str {
-    match kind {
-        "prefer_variant" | "prefer_variant_soft" => "Faster path",
-        "avoid_variant_now" | "avoid_variant_now_soft" => "Right now",
-        "ors_reference" => "Router tip",
-        "ors_matches" => "Matches router",
-        "beats_router" => "Beats router",
-        "forming" => "Forming",
-        "typical_pace" => "Baseline",
-        "single_path" => "One path",
-        "time_window" => "This hour",
-        "peak_vs_offpeak" => "Peak hours",
-        "weekend_vs_weekday" => "Weekend",
-        "high_stops" => "Stops",
-        _ => "Insight",
-    }
+    t(match kind {
+        "prefer_variant" | "prefer_variant_soft" => "routes.faster_path",
+        "avoid_variant_now" | "avoid_variant_now_soft" => "routes.right_now",
+        "ors_reference" => "routes.router_tip",
+        "ors_matches" => "routes.matches_router",
+        "beats_router" => "routes.beats_router",
+        "forming" => "routes.forming",
+        "typical_pace" => "routes.baseline",
+        "single_path" => "routes.one_path",
+        "time_window" => "routes.this_hour",
+        "peak_vs_offpeak" => "routes.peak_hours",
+        "weekend_vs_weekday" => "routes.weekend",
+        "high_stops" => "routes.stops",
+        _ => "routes.insight",
+    })
 }
 
 fn insight_kind_class(kind: &str) -> &'static str {
@@ -132,7 +133,7 @@ pub fn RoutesPage() -> impl IntoView {
             let still_selected = || car_id.try_get_untracked().as_deref() == Some(id.as_str());
             match route_opt_recompute(&id).await {
                 Ok(r) if still_selected() => {
-                    message.set(Some(format!("Recomputed {} trips.", r.processed)));
+                    message.set(Some(tf("routes.recomputed", &[("n", &r.processed)])));
                     if let Ok(s) = route_opt_summary(&id).await
                         && still_selected()
                     {
@@ -152,10 +153,8 @@ pub fn RoutesPage() -> impl IntoView {
 
     view! {
         <div class="page-header">
-            <h1>"Routes"</h1>
-            <p class="muted">
-                "Compare similar origin→destination corridors, path variants, and OpenRouteService alternatives — no AI."
-            </p>
+            <h1>{tr!("nav.routes")}</h1>
+            <p class="muted">{tr!("routes.lead")}</p>
         </div>
 
         <Show when=move || message.get().is_some()>
@@ -167,7 +166,7 @@ pub fn RoutesPage() -> impl IntoView {
 
         <div class="card routes-toolbar">
             <div class="form-row" style="margin:0">
-                <label>"Car"</label>
+                <label>{tr!("common.car")}</label>
                 <select
                     prop:value=move || car_id.get()
                     on:change=move |ev| car_id.set(event_target_value(&ev))
@@ -183,21 +182,23 @@ pub fn RoutesPage() -> impl IntoView {
             </div>
             <button class="btn secondary" disabled=move || busy.get() || car_id.get().is_empty() on:click=recompute>
                 <Icon name="arrows-clockwise" size=IconSize::Sm />
-                {move || if busy.get() { "Recomputing…" } else { "Recompute" }}
+                {move || if busy.get() { t("routes.recomputing") } else { t("routes.recompute") }}
             </button>
         </div>
 
         {move || {
             let s = summary.get();
             let Some(s) = s else {
-                return view! { <p class="muted">"Select a car to load corridors."</p> }.into_any();
+                return view! { <p class="muted">{tr!("routes.select_car")}</p> }.into_any();
             };
             if !s.ors_configured {
                 view! {
                     <div class="banner warn">
-                        "OpenRouteService API key is not set for the car owner. "
-                        <A href="/app/settings">"Add it in Settings"</A>
-                        " to fetch alternate paths and elevation. Recorded path comparison still works."
+                        {tr!("routes.ors_missing")}
+                        " "
+                        <A href="/app/settings">{tr!("routes.add_in_settings")}</A>
+                        " "
+                        {tr!("routes.ors_missing_tail")}
                     </div>
                 }.into_any()
             } else {
@@ -207,14 +208,14 @@ pub fn RoutesPage() -> impl IntoView {
 
         <h2 class="section-title" style="margin-top:1.25rem">
             <Icon name="map-trifold" color=IconColor::Accent />
-            "Corridors"
+            {tr!("routes.corridors")}
         </h2>
         {move || {
             let s = summary.get();
             let corridors = s.map(|s| s.corridors).unwrap_or_default();
             if corridors.is_empty() {
                 return view! {
-                    <p class="muted">"No corridors yet. Drive repeating routes and stop tracking so trips can be clustered."</p>
+                    <p class="muted">{tr!("routes.no_corridors")}</p>
                 }.into_any();
             }
             view! {
@@ -235,17 +236,16 @@ pub fn RoutesPage() -> impl IntoView {
                                     .map(|d| fmt_distance(Some(d), &prefs.get()))
                                     .unwrap_or_else(|| "—".into())
                             };
-                            let od_label = if round_trip {
-                                if let (Some(vlat), Some(vlon)) = (c.via_lat, c.via_lon) {
-                                    format!(
-                                        "Round trip via {vlat:.4}, {vlon:.4} · base {:.4}, {:.4}",
-                                        c.start_lat, c.start_lon
-                                    )
-                                } else {
-                                    format!(
-                                        "Round trip · base {:.4}, {:.4}",
-                                        c.start_lat, c.start_lon
-                                    )
+                            // Coordinates stay in the machine `lat, lon` form in every
+                            // language: a decimal comma would collide with the separator.
+                            let (via, base) = (
+                                c.via_lat.zip(c.via_lon).map(|(a, b)| format!("{a:.4}, {b:.4}")),
+                                format!("{:.4}, {:.4}", c.start_lat, c.start_lon),
+                            );
+                            let od_label = move || if round_trip {
+                                match &via {
+                                    Some(via) => tf("routes.round_trip_via", &[("via", via), ("base", &base)]),
+                                    None => tf("routes.round_trip_base", &[("base", &base)]),
                                 }
                             } else {
                                 format!(
@@ -257,17 +257,17 @@ pub fn RoutesPage() -> impl IntoView {
                                 <A href=format!("/app/routes/{id}")>
                                     <div class="card routes-corridor-card">
                                         <div class="routes-corridor-top">
-                                            <strong>{format!("{} trips", c.trip_count)}</strong>
+                                            <strong>{move || tp("common.trips_count", c.trip_count as i64)}</strong>
                                             <div class="routes-pill-row">
                                                 {if round_trip {
-                                                    view! { <span class="pill">"Round trip"</span> }.into_any()
+                                                    view! { <span class="pill">{tr!("routes.round_trip")}</span> }.into_any()
                                                 } else {
                                                     view! { <span></span> }.into_any()
                                                 }}
                                                 {if forming {
-                                                    view! { <span class="pill warn">"Forming"</span> }.into_any()
+                                                    view! { <span class="pill warn">{tr!("routes.forming")}</span> }.into_any()
                                                 } else {
-                                                    view! { <span class="pill ok">"Ready"</span> }.into_any()
+                                                    view! { <span class="pill ok">{tr!("status.ready")}</span> }.into_any()
                                                 }}
                                             </div>
                                         </div>
@@ -275,9 +275,9 @@ pub fn RoutesPage() -> impl IntoView {
                                             {od_label}
                                         </div>
                                         <div class="routes-corridor-metrics">
-                                            <span>"Best: "{best}</span>
-                                            <span>"Median: "{dur}</span>
-                                            <span>"Dist: "{dist}</span>
+                                            <span>{tr!("routes.best")}" "{best}</span>
+                                            <span>{tr!("routes.median")}" "{dur}</span>
+                                            <span>{tr!("routes.dist")}" "{dist}</span>
                                         </div>
                                     </div>
                                 </A>
@@ -348,8 +348,8 @@ pub fn RouteCorridorPage() -> impl IntoView {
     view! {
         <div class="page-header">
             <div>
-                <A href="/app/routes"><span class="muted">"← Routes"</span></A>
-                <h1>"Corridor"</h1>
+                <A href="/app/routes"><span class="muted">{tr!("routes.back")}</span></A>
+                <h1>{tr!("routes.corridor")}</h1>
             </div>
         </div>
         <Show when=move || error.get().is_some()>
@@ -359,15 +359,15 @@ pub fn RouteCorridorPage() -> impl IntoView {
         {move || {
             let d = detail.get();
             let Some(d) = d else {
-                return view! { <p class="muted">"Loading…"</p> }.into_any();
+                return view! { <p class="muted">{tr!("common.loading")}</p> }.into_any();
             };
             let rec = d.recommendation_for_now.clone();
             let round_trip = d.is_round_trip;
             let via_note = if round_trip {
                 if let (Some(vlat), Some(vlon)) = (d.via_lat, d.via_lon) {
-                    format!("Round trip corridor via {vlat:.4}, {vlon:.4}")
+                    tf("routes.round_trip_corridor_via", &[("via", &format!("{vlat:.4}, {vlon:.4}"))])
                 } else {
-                    "Round trip corridor (start ≈ end)".into()
+                    t("routes.round_trip_corridor").into()
                 }
             } else {
                 format!(
@@ -380,21 +380,21 @@ pub fn RouteCorridorPage() -> impl IntoView {
                     <Icon name="compass" color=IconColor::Accent />
                     <div>
                         <strong>
-                            {rec.variant_label.clone().unwrap_or_else(|| "No recommendation yet".into())}
+                            {rec.variant_label.clone().unwrap_or_else(|| t("routes.no_recommendation").into())}
                         </strong>
                         <p class="muted" style="margin:0.25rem 0 0">{rec.reason.clone()}</p>
                         <p class="muted" style="margin:0.35rem 0 0;font-size:var(--text-sm)">{via_note}</p>
                     </div>
                     <div class="routes-pill-row">
                         {if round_trip {
-                            view! { <span class="pill">"Round trip"</span> }.into_any()
+                            view! { <span class="pill">{tr!("routes.round_trip")}</span> }.into_any()
                         } else {
                             view! { <span></span> }.into_any()
                         }}
                         {if d.forming {
-                            view! { <span class="pill warn">"Forming · need more trips"</span> }.into_any()
+                            view! { <span class="pill warn">{tr!("routes.forming_need_more")}</span> }.into_any()
                         } else {
-                            view! { <span class="pill ok">{format!("{} trips", d.trip_count)}</span> }.into_any()
+                            view! { <span class="pill ok">{tp("common.trips_count", d.trip_count as i64)}</span> }.into_any()
                         }}
                     </div>
                 </div>
@@ -405,8 +405,8 @@ pub fn RouteCorridorPage() -> impl IntoView {
                         <div class="routes-map-legend-group">
                             <div class="routes-map-legend-title">
                                 <span class="routes-line-sample is-variant"></span>
-                                "Your path variants"
-                                <span class="muted">" · solid"</span>
+                                {tr!("routes.your_variants")}
+                                <span class="muted">{tr!("routes.solid")}</span>
                             </div>
                             <div class="routes-map-legend-items">
                                 {d.variants.iter().enumerate().map(|(i, v)| {
@@ -424,13 +424,13 @@ pub fn RouteCorridorPage() -> impl IntoView {
                         <div class="routes-map-legend-group">
                             <div class="routes-map-legend-title">
                                 <span class="routes-line-sample is-ors"></span>
-                                "OpenRouteService alternatives"
-                                <span class="muted">" · dashed"</span>
+                                {tr!("routes.ors_alternatives")}
+                                <span class="muted">{tr!("routes.dashed")}</span>
                             </div>
                             <div class="routes-map-legend-items">
                                 {
                                     if d.ors_alternatives.is_empty() {
-                                        view! { <span class="muted">"None cached yet"</span> }.into_any()
+                                        view! { <span class="muted">{tr!("routes.none_cached")}</span> }.into_any()
                                     } else {
                                         d.ors_alternatives.iter().enumerate().map(|(i, a)| {
                                             let color = ors_swatch(i).to_string();
@@ -447,22 +447,22 @@ pub fn RouteCorridorPage() -> impl IntoView {
                             </div>
                         </div>
                         <p class="muted routes-map-legend-hint">
-                            "Hover a line for the name. Solid = paths you drove · dashed magenta = router estimates."
+                            {tr!("routes.legend_hint")}
                         </p>
                     </div>
                 </div>
 
-                <h2 class="section-title" style="margin-top:1.25rem">"Path variants"</h2>
+                <h2 class="section-title" style="margin-top:1.25rem">{tr!("routes.path_variants")}</h2>
                 <div class="table-wrap">
                     <table class="table">
                         <thead>
                             <tr>
-                                <th>"Variant"</th>
-                                <th>"Trips"</th>
-                                <th>"Median time"</th>
-                                <th>"Median distance"</th>
-                                <th>"Stops"</th>
-                                <th>"Elev gain"</th>
+                                <th>{tr!("routes.variant")}</th>
+                                <th>{tr!("nav.trips")}</th>
+                                <th>{tr!("routes.median_time")}</th>
+                                <th>{tr!("routes.median_distance")}</th>
+                                <th>{tr!("routes.stops")}</th>
+                                <th>{tr!("routes.elev_gain")}</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -480,7 +480,7 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                 }
                                 key=|(_, v)| v.id.clone()
                                 children=move |(i, v)| {
-                                    let elev = v.median_elev_gain_m.map(|e| format!("{e:.0} m")).unwrap_or_else(|| "—".into());
+                                    let elev = v.median_elev_gain_m.map(|e| format!("{} m", crate::i18n::num(e, 0))).unwrap_or_else(|| "—".into());
                                     let median_distance = v.median_distance;
                                     let dist_label = move || fmt_distance(Some(median_distance), &prefs.get());
                                     let color = variant_swatch(i).to_string();
@@ -507,16 +507,16 @@ pub fn RouteCorridorPage() -> impl IntoView {
                 </div>
 
                 <Show when=move || detail.get().map(|d| !d.ors_alternatives.is_empty()).unwrap_or(false)>
-                    <h2 class="section-title" style="margin-top:1.25rem">"OpenRouteService alternatives"</h2>
+                    <h2 class="section-title" style="margin-top:1.25rem">{tr!("routes.ors_alternatives")}</h2>
                     <div class="table-wrap">
                         <table class="table">
                             <thead>
                                 <tr>
-                                    <th>"Profile"</th>
-                                    <th>"Est. time"</th>
-                                    <th>"Distance"</th>
-                                    <th>"Ascent"</th>
-                                    <th>"Descent"</th>
+                                    <th>{tr!("routes.profile")}</th>
+                                    <th>{tr!("routes.est_time")}</th>
+                                    <th>{tr!("common.distance")}</th>
+                                    <th>{tr!("routes.ascent")}</th>
+                                    <th>{tr!("routes.descent")}</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -548,8 +548,8 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                                 </td>
                                                 <td>{fmt_duration(a.duration_secs)}</td>
                                                 <td>{dist_label}</td>
-                                                <td>{a.elev_gain_m.map(|e| format!("{e:.0} m")).unwrap_or_else(|| "—".into())}</td>
-                                                <td>{a.elev_loss_m.map(|e| format!("{e:.0} m")).unwrap_or_else(|| "—".into())}</td>
+                                                <td>{a.elev_gain_m.map(|e| format!("{} m", crate::i18n::num(e, 0))).unwrap_or_else(|| "—".into())}</td>
+                                                <td>{a.elev_loss_m.map(|e| format!("{} m", crate::i18n::num(e, 0))).unwrap_or_else(|| "—".into())}</td>
                                             </tr>
                                         }
                                     }
@@ -561,7 +561,7 @@ pub fn RouteCorridorPage() -> impl IntoView {
 
                 <h2 class="section-title" style="margin-top:1.25rem">
                     <Icon name="star" color=IconColor::Warn />
-                    "Insights"
+                    {tr!("routes.insights")}
                 </h2>
                 {move || {
                     let list = detail.get().map(|d| d.insights).unwrap_or_default();
@@ -569,7 +569,7 @@ pub fn RouteCorridorPage() -> impl IntoView {
                         return view! {
                             <div class="card routes-insight routes-insight-empty">
                                 <p class="muted" style="margin:0">
-                                    "No insights for this corridor yet. They appear automatically from finished trips on this OD — try another path or more drives at different hours for richer tips."
+                                    {tr!("routes.no_insights")}
                                 </p>
                             </div>
                         }.into_any();
