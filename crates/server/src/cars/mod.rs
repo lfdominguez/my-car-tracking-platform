@@ -133,6 +133,9 @@ pub struct CarRow {
     pub notes: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Days of raw telemetry kept; `None` keeps everything.
+    pub raw_retention_days: Option<i32>,
+    pub share_live_position: bool,
     pub role: String,
     /// Owner has active vault; sensitive fields may be placeholders.
     pub vault_sealed: bool,
@@ -230,7 +233,7 @@ async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<J
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
-               c.notes, c.created_at, c.updated_at,
+               c.notes, c.created_at, c.updated_at, c.raw_retention_days, c.share_live_position,
                'owner'::text AS role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
@@ -239,7 +242,7 @@ async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<J
         UNION ALL
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
-               c.notes, c.created_at, c.updated_at,
+               c.notes, c.created_at, c.updated_at, c.raw_retention_days, c.share_live_position,
                cs.role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
@@ -288,7 +291,8 @@ async fn create_car(
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role,
+                  notes, created_at, updated_at, raw_retention_days, share_live_position,
+                  'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,
     )
@@ -320,7 +324,8 @@ async fn create_car(
             WHERE id = $1
             RETURNING id, owner_user_id, name, make_model, photo_path,
                       fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
-                      notes, created_at, updated_at, 'owner'::text AS role,
+                      notes, created_at, updated_at, raw_retention_days, share_live_position,
+                  'owner'::text AS role,
                       TRUE AS vault_sealed
             "#,
         )
@@ -363,7 +368,7 @@ async fn get_car(
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
-               c.notes, c.created_at, c.updated_at, $2::text AS role,
+               c.notes, c.created_at, c.updated_at, c.raw_retention_days, c.share_live_position, $2::text AS role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
         JOIN users u ON u.id = c.owner_user_id
@@ -388,7 +393,7 @@ async fn update_car(
         r#"
         SELECT c.id, c.owner_user_id, c.name, c.make_model, c.photo_path,
                c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl, c.displacement_l, c.ve,
-               c.notes, c.created_at, c.updated_at, 'owner'::text AS role,
+               c.notes, c.created_at, c.updated_at, c.raw_retention_days, c.share_live_position, 'owner'::text AS role,
                (u.vault_status = 'active') AS vault_sealed
         FROM cars c
         JOIN users u ON u.id = c.owner_user_id
@@ -461,7 +466,8 @@ async fn update_car(
         WHERE id = $1
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role,
+                  notes, created_at, updated_at, raw_retention_days, share_live_position,
+                  'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,
     )
@@ -651,7 +657,8 @@ async fn upload_photo(
         WHERE id = $1
         RETURNING id, owner_user_id, name, make_model, photo_path,
                   fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
-                  notes, created_at, updated_at, 'owner'::text AS role,
+                  notes, created_at, updated_at, raw_retention_days, share_live_position,
+                  'owner'::text AS role,
                   FALSE AS vault_sealed
         "#,
     )
