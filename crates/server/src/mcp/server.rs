@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::state::AppState;
 
 use super::auth::{McpUser, mcp_bearer_middleware};
+use super::rate_limit::{McpRateLimiter, mcp_rate_limit_middleware};
 use super::tools::{self, ToolCtx};
 
 #[derive(Clone)]
@@ -33,7 +34,7 @@ impl CarTrackingMcp {
     fn new(state: AppState) -> Self {
         Self {
             state,
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::insight_router(),
         }
     }
 
@@ -92,6 +93,37 @@ struct ListCorridorsArgs {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CompareTripsArgs {
+    /// 2 to 10 trip ids (uuid) from list_trips.
+    trip_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct EconomyTrendArgs {
+    car_id: String,
+    from: Option<String>,
+    to: Option<String>,
+    /// "week" or "month" (default).
+    bucket: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PointWindowArgs {
+    trip_id: String,
+    /// RFC3339 start of the window (inclusive).
+    start: String,
+    /// RFC3339 end of the window (inclusive).
+    end: String,
+    /// Anchor points to return (default 5, max 8).
+    limit: Option<i64>,
+}
+
+fn parse_dt(s: &str, field: &str) -> Result<DateTime<Utc>, McpError> {
+    parse_opt_dt(&Some(s.to_string()), field)?
+        .ok_or_else(|| McpError::invalid_params(format!("{field} is required"), None))
+}
+
 fn parse_uuid(s: &str, field: &str) -> Result<Uuid, McpError> {
     Uuid::parse_str(s.trim())
         .map_err(|_| McpError::invalid_params(format!("invalid {field} uuid"), None))
@@ -117,20 +149,23 @@ fn parse_opt_dt(s: &Option<String>, field: &str) -> Result<Option<DateTime<Utc>>
 
 #[tool_router]
 impl CarTrackingMcp {
-    #[tool(description = "List accessible non-vault cars (id, name, make/model, fuel, role).")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "List accessible non-vault cars (id, name, make/model, fuel, role)."
+    )]
     async fn list_cars(
         &self,
         Extension(parts): Extension<Parts>,
         Parameters(_args): Parameters<EmptyArgs>,
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
-        let data = tools::list_cars(&self.ctx(&user))
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::list_cars(&self.ctx(&user)).await)
     }
 
-    #[tool(description = "Get one car profile and engine/fuel settings by car_id.")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Get one car profile and engine/fuel settings by car_id."
+    )]
     async fn get_car(
         &self,
         Extension(parts): Extension<Parts>,
@@ -138,13 +173,11 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.car_id, "car_id")?;
-        let data = tools::get_car(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_car(&self.ctx(&user), id).await)
     }
 
     #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
         description = "List trip summaries. Optional filters: car_id, from/to (RFC3339), limit (max 100)."
     )]
     async fn list_trips(
@@ -156,13 +189,11 @@ impl CarTrackingMcp {
         let car_id = parse_opt_uuid(&args.car_id, "car_id")?;
         let from = parse_opt_dt(&args.from, "from")?;
         let to = parse_opt_dt(&args.to, "to")?;
-        let data = tools::list_trips(&self.ctx(&user), car_id, from, to, args.limit)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::list_trips(&self.ctx(&user), car_id, from, to, args.limit).await)
     }
 
     #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
         description = "Get trip header KPIs by trip_id (distance, duration, speeds, fuel, flags)."
     )]
     async fn get_trip(
@@ -172,13 +203,13 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.trip_id, "trip_id")?;
-        let data = tools::get_trip(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_trip(&self.ctx(&user), id).await)
     }
 
-    #[tool(description = "Trip speed percentiles and hard accel/brake style stats.")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Trip speed percentiles and hard accel/brake style stats."
+    )]
     async fn get_trip_speed_stats(
         &self,
         Extension(parts): Extension<Parts>,
@@ -186,13 +217,13 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.trip_id, "trip_id")?;
-        let data = tools::get_trip_speed_stats(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_trip_speed_stats(&self.ctx(&user), id).await)
     }
 
-    #[tool(description = "Trip engine RPM/load/MAF aggregates when OBD data is present.")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Trip engine RPM/load/MAF aggregates when OBD data is present."
+    )]
     async fn get_trip_engine_stats(
         &self,
         Extension(parts): Extension<Parts>,
@@ -200,13 +231,13 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.trip_id, "trip_id")?;
-        let data = tools::get_trip_engine_stats(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_trip_engine_stats(&self.ctx(&user), id).await)
     }
 
-    #[tool(description = "Trip fuel rate/level/trims/lambda aggregates when present.")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Trip fuel rate/level/trims/lambda aggregates when present."
+    )]
     async fn get_trip_fuel_stats(
         &self,
         Extension(parts): Extension<Parts>,
@@ -214,13 +245,13 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.trip_id, "trip_id")?;
-        let data = tools::get_trip_fuel_stats(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_trip_fuel_stats(&self.ctx(&user), id).await)
     }
 
-    #[tool(description = "Trip idle/stop segments (speed ~0 for >= 60s).")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Trip idle/stop segments (speed ~0 for >= 60s)."
+    )]
     async fn get_trip_stops(
         &self,
         Extension(parts): Extension<Parts>,
@@ -228,13 +259,11 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.trip_id, "trip_id")?;
-        let data = tools::get_trip_stops(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_trip_stops(&self.ctx(&user), id).await)
     }
 
     #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
         description = "Stored traffic congestion summary for a trip if analyzed (does not run analysis)."
     )]
     async fn get_trip_traffic_summary(
@@ -244,13 +273,11 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.trip_id, "trip_id")?;
-        let data = tools::get_trip_traffic_summary(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_trip_traffic_summary(&self.ctx(&user), id).await)
     }
 
     #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
         description = "Stored AI route analysis report for a trip if present (does not trigger analysis)."
     )]
     async fn get_trip_ai_report(
@@ -260,13 +287,13 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.trip_id, "trip_id")?;
-        let data = tools::get_trip_ai_report(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_trip_ai_report(&self.ctx(&user), id).await)
     }
 
-    #[tool(description = "Fleet/car dashboard aggregates. Optional car_id and from/to (RFC3339).")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Fleet/car dashboard aggregates. Optional car_id and from/to (RFC3339)."
+    )]
     async fn get_dashboard_summary(
         &self,
         Extension(parts): Extension<Parts>,
@@ -276,13 +303,13 @@ impl CarTrackingMcp {
         let car_id = parse_opt_uuid(&args.car_id, "car_id")?;
         let from = parse_opt_dt(&args.from, "from")?;
         let to = parse_opt_dt(&args.to, "to")?;
-        let data = tools::get_dashboard_summary(&self.ctx(&user), car_id, from, to)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_dashboard_summary(&self.ctx(&user), car_id, from, to).await)
     }
 
-    #[tool(description = "List route-optimization corridors (optional car_id, limit).")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "List route-optimization corridors (optional car_id, limit)."
+    )]
     async fn list_route_corridors(
         &self,
         Extension(parts): Extension<Parts>,
@@ -290,13 +317,13 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let car_id = parse_opt_uuid(&args.car_id, "car_id")?;
-        let data = tools::list_route_corridors(&self.ctx(&user), car_id, args.limit)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::list_route_corridors(&self.ctx(&user), car_id, args.limit).await)
     }
 
-    #[tool(description = "Get one route corridor: OD, variants, insights (no heavy map geometry).")]
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Get one route corridor: OD, variants, insights (no heavy map geometry)."
+    )]
     async fn get_route_corridor(
         &self,
         Extension(parts): Extension<Parts>,
@@ -304,10 +331,81 @@ impl CarTrackingMcp {
     ) -> Result<CallToolResult, McpError> {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.corridor_id, "corridor_id")?;
-        let data = tools::get_route_corridor(&self.ctx(&user), id)
-            .await
-            .map_err(tools::map_app_err)?;
-        tools::json_ok(data)
+        tools::respond(tools::get_route_corridor(&self.ctx(&user), id).await)
+    }
+}
+
+#[tool_router(router = insight_router)]
+impl CarTrackingMcp {
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Compare 2-10 trips side by side: distance, duration, speeds, fuel or energy used, economy (L/100km or mpg; kWh per 100) and fuel_class."
+    )]
+    async fn compare_trips(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<CompareTripsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = Self::user_from_parts(&parts)?;
+        let ids = args
+            .trip_ids
+            .iter()
+            .map(|id| parse_uuid(id, "trip_ids"))
+            .collect::<Result<Vec<_>, _>>()?;
+        tools::respond(tools::compare_trips(&self.ctx(&user), &ids).await)
+    }
+
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Fuel economy (or kWh per 100 for electric) per week or month for one car_id. Optional from/to (RFC3339) and bucket (week|month)."
+    )]
+    async fn get_fuel_economy_trend(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<EconomyTrendArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = Self::user_from_parts(&parts)?;
+        let car_id = parse_uuid(&args.car_id, "car_id")?;
+        let from = parse_opt_dt(&args.from, "from")?;
+        let to = parse_opt_dt(&args.to, "to")?;
+        let bucket = match tools::TrendBucket::parse(args.bucket.as_deref()) {
+            Ok(b) => b,
+            Err(e) => return tools::respond::<()>(Err(e)),
+        };
+        tools::respond(
+            tools::get_fuel_economy_trend(&self.ctx(&user), car_id, from, to, bucket).await,
+        )
+    }
+
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Summarize one trip's telemetry between start and end (RFC3339): min/avg/max per signal plus a few anchor samples."
+    )]
+    async fn get_trip_point_window(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<PointWindowArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = Self::user_from_parts(&parts)?;
+        let id = parse_uuid(&args.trip_id, "trip_id")?;
+        let start = parse_dt(&args.start, "start")?;
+        let end = parse_dt(&args.end, "end")?;
+        let limit = args.limit.map(|l| l.clamp(1, 100) as usize);
+        tools::respond(tools::get_trip_point_window(&self.ctx(&user), id, start, end, limit).await)
+    }
+
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Battery energy for a HYBRID or FULL_ELECTRIC trip: SoC start/end/min/max, kWh used, kWh per 100, battery power, hybrid engine-on share."
+    )]
+    async fn get_energy_stats(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<TripIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = Self::user_from_parts(&parts)?;
+        let id = parse_uuid(&args.trip_id, "trip_id")?;
+        tools::respond(tools::get_energy_stats(&self.ctx(&user), id).await)
     }
 }
 
@@ -387,8 +485,14 @@ pub fn router(state: AppState) -> Router<AppState> {
             .with_allowed_hosts(allowed_hosts),
     );
 
+    // Layers run outermost-last: the bearer check resolves the token's user first,
+    // then that user's rate budget is charged.
     Router::new()
         .nest_service("/mcp", service)
+        .layer(axum_mw::from_fn_with_state(
+            Arc::new(McpRateLimiter::new()),
+            mcp_rate_limit_middleware,
+        ))
         .layer(axum_mw::from_fn_with_state(state, mcp_bearer_middleware))
 }
 

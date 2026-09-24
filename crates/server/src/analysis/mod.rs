@@ -1,6 +1,7 @@
 //! Trip AI analysis HTTP API + background worker.
 
 pub mod context;
+pub mod jobs;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -19,11 +20,24 @@ use crate::state::AppState;
 use crate::units::UnitSystem;
 
 use self::context::build_trip_analysis_context;
+use self::jobs::{ANALYSIS_JOB_TIMEOUT, JobRegistry, supervise};
+
+pub use self::jobs::spawn_ai_job_reaper;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/trips/{id}/analysis", get(get_analysis))
         .route("/api/trips/{id}/analyze", post(start_analysis))
+        .route("/api/trips/{id}/analysis/cancel", post(cancel_analysis))
+}
+
+/// Analyses running in this process, keyed by track id, so they can be cancelled.
+///
+/// Process-wide rather than on `AppState`: a job belongs to the process that runs
+/// it, and nothing outside this module needs to reach it.
+fn running_jobs() -> &'static JobRegistry {
+    static JOBS: std::sync::OnceLock<JobRegistry> = std::sync::OnceLock::new();
+    JOBS.get_or_init(JobRegistry::new)
 }
 
 /// Fail any in-flight jobs left from a previous process.
@@ -95,7 +109,9 @@ async fn get_analysis(
     let raw_err: Option<String> = row.try_get("analysis_error").ok().flatten();
     let analysis_error =
         if raw_err.as_ref().is_some_and(|e| !e.trim().is_empty()) || status == "failed" {
-            Some("System Error".into())
+            // Actionable provider failures (bad key, no credits, unknown model) get
+            // their own line; anything internal stays behind the generic one.
+            Some(public_analysis_error(raw_err.as_deref()).into())
         } else {
             None
         };
@@ -163,7 +179,7 @@ async fn start_analysis(
     let version: i32 = creds.try_get("openrouter_key_version").unwrap_or(1);
     let model: String = creds
         .try_get::<String, _>("openrouter_model")
-        .unwrap_or_else(|_| "anthropic/claude-3.7-sonnet".into());
+        .unwrap_or_else(|_| ai::DEFAULT_MODEL.into());
     let unit_raw: String = creds
         .try_get::<String, _>("unit_system")
         .unwrap_or_else(|_| "metric".into());
@@ -204,38 +220,22 @@ async fn start_analysis(
     }
 
     let pool = state.pool.clone();
-    let secrets_key = state.config.secrets_key.clone();
     let overpass_url = state.config.overpass_url.clone();
-    // Re-encrypt not needed; pass plaintext only into task (in-memory)
-    let model_owned = model.clone();
-    let key_owned = api_key;
+    // The key lives only in this task's memory; it is never re-persisted.
+    let cancel = running_jobs().register(id).await;
 
     tokio::spawn(async move {
-        if let Err(e) = run_analysis_job(
-            &pool,
-            id,
-            &key_owned,
-            &model_owned,
-            unit_system,
-            &secrets_key,
-            &overpass_url,
-        )
-        .await
-        {
+        let job = {
+            let pool = pool.clone();
+            async move {
+                run_analysis_job(&pool, id, &api_key, &model, unit_system, &overpass_url).await
+            }
+        };
+        let end = supervise(job, ANALYSIS_JOB_TIMEOUT, cancel).await;
+        running_jobs().unregister(id).await;
+        if let Some(e) = end.failure() {
             tracing::error!(track_id = %id, error = %e, "trip analysis job failed");
-            let msg: String = e.chars().take(500).collect();
-            let _ = sqlx::query(
-                r#"
-                UPDATE tracks
-                SET analysis_status = 'failed',
-                    analysis_error = $2
-                WHERE id = $1
-                "#,
-            )
-            .bind(id)
-            .bind(&msg)
-            .execute(&pool)
-            .await;
+            let _ = mark_failed(&pool, id, &e).await;
         }
     });
 
@@ -247,27 +247,85 @@ async fn start_analysis(
     ))
 }
 
+/// The caller-safe line for a failed analysis. Internal diagnostics stay in the
+/// database; only failures the owner can act on get their own wording.
+pub(crate) fn public_analysis_error(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some(jobs::CANCELLED_ERROR) => "Analysis was cancelled.",
+        Some("timed out") => "Analysis took too long and was stopped. Try again later.",
+        Some(e) => ai::user_facing_error(e).unwrap_or("System Error"),
+        None => "System Error",
+    }
+}
+
+/// Record a failure, but only over a row that is still in flight: a job that lost a
+/// race with cancellation must not overwrite a report that did get saved.
+async fn mark_failed(
+    pool: &sqlx::PgPool,
+    track_id: Uuid,
+    error: &str,
+) -> Result<bool, sqlx::Error> {
+    let msg: String = error.chars().take(500).collect();
+    let res = sqlx::query(
+        r#"
+        UPDATE tracks
+        SET analysis_status = 'failed',
+            analysis_error = $2
+        WHERE id = $1 AND analysis_status IN ('pending', 'running')
+        "#,
+    )
+    .bind(track_id)
+    .bind(&msg)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Stop an in-flight analysis. Owner only, like starting one.
+async fn cancel_analysis(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<StatusCode> {
+    let car_id = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    require_owner(&state.pool, user.id, car_id).await?;
+
+    if !running_jobs().cancel(id).await {
+        // No task here owns it (another instance, or a lost task): release the row
+        // directly so the owner can start over.
+        mark_failed(&state.pool, id, jobs::CANCELLED_ERROR).await?;
+    }
+    Ok(StatusCode::ACCEPTED)
+}
+
 async fn run_analysis_job(
     pool: &sqlx::PgPool,
     track_id: Uuid,
     api_key: &str,
     model: &str,
     unit_system: UnitSystem,
-    _secrets_key: &str,
     overpass_url: &str,
 ) -> Result<(), String> {
-    sqlx::query(
+    let claimed = sqlx::query(
         r#"
         UPDATE tracks
         SET analysis_status = 'running',
             analysis_started_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND analysis_status = 'pending'
         "#,
     )
     .bind(track_id)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+    if claimed.rows_affected() == 0 {
+        // Cancelled (or reclaimed) before the task got going.
+        return Err("analysis is no longer pending".into());
+    }
 
     let ctx = build_trip_analysis_context(pool, track_id, unit_system, overpass_url)
         .await
@@ -287,7 +345,7 @@ async fn run_analysis_job(
             analysis_model = $3,
             analyzed_at = NOW(),
             analysis_error = NULL
-        WHERE id = $1
+        WHERE id = $1 AND analysis_status IN ('pending', 'running')
         "#,
     )
     .bind(track_id)

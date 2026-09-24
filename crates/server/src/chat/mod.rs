@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::analysis::jobs::{CANCELLED_ERROR, CHAT_TURN_TIMEOUT, supervise};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::mcp::auth::McpUser;
@@ -56,6 +57,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/chat/conversations/{id}/messages", post(post_message))
         .route("/api/chat/messages/{id}/stream", get(stream_message))
+        .route("/api/chat/messages/{id}/cancel", post(cancel_message))
 }
 
 // --- DTOs ------------------------------------------------------------------
@@ -132,8 +134,31 @@ async fn delete_conversation(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<StatusCode> {
+    // Stop anything still generating first: otherwise it keeps spending the user's
+    // OpenRouter credits on an answer nobody can read any more.
+    store::owned_conversation(&state.pool, user.id, id).await?;
+    for message_id in store::active_message_ids(&state.pool, id).await? {
+        state.chat_hub.cancel(message_id).await;
+    }
     store::delete_conversation(&state.pool, user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stop a generating answer. The partial text already streamed is kept.
+async fn cancel_message(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<StatusCode> {
+    let message = store::owned_message(&state.pool, user.id, id).await?;
+    if !matches!(message.status.as_str(), "pending" | "running") {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if !state.chat_hub.cancel(id).await {
+        // No task here owns it: release the row so the conversation is usable again.
+        store::fail_message(&state.pool, id, CANCELLED_ERROR).await?;
+    }
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn post_message(
@@ -153,45 +178,17 @@ async fn post_message(
     }
 
     let conversation = store::owned_conversation(&state.pool, user.id, id).await?;
-
-    // One generation per conversation: a second would interleave two answers into
-    // the same transcript and race on `seq`.
-    if store::has_active_message(&state.pool, id).await? {
-        return Err(AppError::Conflict(
-            "This conversation is still answering. Wait for it to finish.".into(),
-        ));
-    }
-
     let creds = openrouter_credentials(&state, user.id).await?;
 
-    let (user_message_id, _) = store::append_message(
-        &state.pool,
-        id,
-        "user",
-        &content,
-        "complete",
-        None,
-        None,
-        None,
-    )
-    .await?;
-    let (assistant_message_id, _) = store::append_message(
-        &state.pool,
-        id,
-        "assistant",
-        "",
-        "pending",
-        None,
-        None,
-        None,
-    )
-    .await?;
-
-    store::title_from_first_message(&state.pool, id, &content).await?;
-    store::touch_conversation(&state.pool, id).await?;
+    // One generation per conversation: a second would interleave two answers into
+    // the same transcript. The check and both inserts share one locked transaction.
+    let store::StartedTurn {
+        user_message_id,
+        assistant_message_id,
+    } = store::start_turn(&state.pool, user.id, id, &content).await?;
 
     // Register before spawning so a fast client cannot subscribe to a missing channel.
-    let tx = state.chat_hub.register(assistant_message_id).await;
+    let (tx, cancel) = state.chat_hub.register(assistant_message_id).await;
 
     let job = GenerationJob {
         state: state.clone(),
@@ -206,9 +203,17 @@ async fn post_message(
     tokio::spawn(async move {
         let state = job.state.clone();
         let message_id = job.assistant_message_id;
-        if let Err(e) = job.run(tx).await {
+        let events = tx.clone();
+        let end = supervise(job.run(tx), CHAT_TURN_TIMEOUT, cancel).await;
+        if let Some(e) = end.failure() {
             tracing::error!(%message_id, error = %e, "chat generation failed");
-            let _ = store::fail_message(&state.pool, message_id, &e).await;
+            // Persist first: a client reacting to the event re-reads the row. A row
+            // that already completed (a cancel that lost the race) is left alone.
+            if let Ok(true) = store::fail_message(&state.pool, message_id, &e).await {
+                let _ = events.send(ai::ChatEvent::Failed {
+                    message: store::public_error("failed", Some(&e)).unwrap_or_default(),
+                });
+            }
         }
         state.chat_hub.unregister(message_id).await;
     });
@@ -313,6 +318,15 @@ fn event_name(event: &ai::ChatEvent) -> &'static str {
 
 // --- generation ------------------------------------------------------------
 
+/// Aborts the wrapped task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Decrypted OpenRouter credentials for one user.
 struct Credentials {
     api_key: String,
@@ -333,15 +347,23 @@ impl GenerationJob {
     async fn run(self, tx: tokio::sync::broadcast::Sender<ai::ChatEvent>) -> Result<(), String> {
         let pool = self.state.pool.clone();
 
-        let history = store::load_transcript(&pool, self.conversation_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let history = store::trim_history(history, store::HISTORY_CHAR_BUDGET);
-
         let system = self
             .system_prompt()
             .await
             .map_err(|e: AppError| e.to_string())?;
+
+        // The history budget is what is left once the system prompt and the tool
+        // schemas — sent with every request — are paid for.
+        let fixed = system.len()
+            + toolbox::definitions()
+                .iter()
+                .map(|t| t.to_string().len())
+                .sum::<usize>();
+        let history = store::load_transcript(&pool, self.conversation_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let history =
+            store::trim_history(history, store::HISTORY_CHAR_BUDGET.saturating_sub(fixed));
 
         let tool_user = McpUser {
             id: self.user_id,
@@ -353,7 +375,9 @@ impl GenerationJob {
         let partial = sink.content_handle();
 
         // Flush partial text on a timer so a reconnect resumes near the live edge.
-        let flusher = tokio::spawn({
+        // Held in an abort-on-drop guard: if this future is itself aborted (timeout,
+        // cancel) the flusher must not outlive it.
+        let _flusher = AbortOnDrop(tokio::spawn({
             let pool = pool.clone();
             let message_id = self.assistant_message_id;
             let partial = std::sync::Arc::clone(&partial);
@@ -373,7 +397,7 @@ impl GenerationJob {
                     }
                 }
             }
-        });
+        }));
 
         let result = ai::run_chat(
             &self.creds.api_key,
@@ -386,99 +410,110 @@ impl GenerationJob {
         )
         .await;
 
-        flusher.abort();
+        drop(_flusher);
 
         let outcome = match result {
             Ok(outcome) => outcome,
-            Err(e) => {
-                let message = e.to_string();
-                // The sink's Failed event is what an attached client renders; the DB
-                // row is what a reconnecting one reads.
-                let _ = tx.send(ai::ChatEvent::Failed {
-                    message: "That answer could not be generated. Try again in a moment."
-                        .to_string(),
-                });
-                return Err(message);
-            }
+            Err(e) => return Err(e.to_string()),
         };
 
         let trace = serde_json::to_value(&outcome.tool_trace).unwrap_or(Value::Null);
-        store::complete_message(
-            &pool,
-            self.assistant_message_id,
-            &outcome.content,
-            &trace,
-            outcome.model.as_deref().or(Some(self.creds.model.as_str())),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-        store::append_turn_messages(
+        let saved = store::finish_turn(
             &pool,
             self.conversation_id,
             self.assistant_message_id,
-            &outcome.new_messages,
+            store::FinishedTurn {
+                content: &outcome.content,
+                tool_trace: &trace,
+                model: outcome.model.as_deref().or(Some(self.creds.model.as_str())),
+                new_messages: &outcome.new_messages,
+            },
         )
         .await
         .map_err(|e| e.to_string())?;
 
-        store::touch_conversation(&pool, self.conversation_id)
-            .await
-            .map_err(|e| e.to_string())?;
-
+        // Only now is the answer durable, so only now may a client that re-reads the
+        // conversation on `done` be told it is finished.
+        if saved {
+            let _ = tx.send(ai::ChatEvent::Done {
+                content: outcome.content,
+            });
+        }
         Ok(())
     }
 
-    /// Build the system prompt from facts the model would otherwise have to spend a
-    /// round trip discovering.
     async fn system_prompt(&self) -> AppResult<String> {
-        let tool_user = McpUser {
-            id: self.user_id,
-            unit_system: self.unit_system,
-        };
-        let ctx = crate::mcp::tools::ToolCtx {
-            state: &self.state,
-            user: &tool_user,
-        };
-        let cars = crate::mcp::tools::list_cars(&ctx).await?;
-        let value = serde_json::to_value(&cars).unwrap_or(Value::Null);
-
-        let briefs: Vec<ai::ChatCarBrief> = value
-            .as_array()
-            .map(|rows| {
-                rows.iter()
-                    .filter(|c| {
-                        // A pinned car narrows the thread; other cars stay callable
-                        // by id but are not advertised as the default subject.
-                        self.car_focus.0.is_none_or(|focus| {
-                            c["id"].as_str() == Some(focus.to_string().as_str())
-                        })
-                    })
-                    .map(|c| ai::ChatCarBrief {
-                        id: string_field(c, "id"),
-                        name: string_field(c, "name"),
-                        make_model: string_field(c, "make_model"),
-                        fuel_class: string_field(c, "fuel_class"),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let today = chrono::Utc::now().format("%Y-%m-%d (%A)").to_string();
-        Ok(ai::chat_system_prompt(
-            self.unit_system.as_str(),
-            &today,
-            &briefs,
-        ))
+        system_prompt_for(
+            &self.state,
+            self.user_id,
+            self.unit_system,
+            self.car_focus.0,
+        )
+        .await
     }
 }
 
-fn string_field(value: &Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string()
+/// Build the chat system prompt from facts the model would otherwise have to spend a
+/// round trip discovering: units, today's date and the cars (with their fuel class).
+///
+/// Public so integration tests can assert what the model is actually told.
+pub async fn system_prompt_for(
+    state: &AppState,
+    user_id: Uuid,
+    unit_system: UnitSystem,
+    car_focus: Option<Uuid>,
+) -> AppResult<String> {
+    let tool_user = McpUser {
+        id: user_id,
+        unit_system,
+    };
+    let ctx = crate::mcp::tools::ToolCtx {
+        state,
+        user: &tool_user,
+    };
+    let cars = crate::mcp::tools::list_cars(&ctx).await?;
+
+    let briefs: Vec<ai::ChatCarBrief> = cars
+        .into_iter()
+        // A pinned car narrows the thread; other cars stay callable by id but are
+        // not advertised as the default subject.
+        .filter(|c| car_focus.is_none_or(|focus| c.id == focus))
+        .map(|c| ai::ChatCarBrief {
+            id: c.id.to_string(),
+            name: c.name,
+            make_model: c.make_model,
+            fuel_class: c.fuel_class,
+        })
+        .collect();
+
+    let today = chrono::Utc::now().format("%Y-%m-%d (%A)").to_string();
+    Ok(ai::chat_system_prompt(
+        unit_system.as_str(),
+        &today,
+        &briefs,
+    ))
+}
+
+/// Run one chat tool exactly as a generation would, for `user_id`.
+///
+/// The toolbox is otherwise only reachable through a model; this lets integration
+/// tests hold the chat path to the same authorization cases as MCP.
+pub async fn call_tool(
+    state: &AppState,
+    user_id: Uuid,
+    unit_system: UnitSystem,
+    car_focus: Option<Uuid>,
+    name: &str,
+    arguments: &str,
+) -> Result<String, String> {
+    use ai::ChatToolbox as _;
+    let user = McpUser {
+        id: user_id,
+        unit_system,
+    };
+    CarDataToolbox::new(state.clone(), user, CarFocus(car_focus))
+        .dispatch(name, arguments)
+        .await
 }
 
 /// Decrypt the user's OpenRouter key, mirroring `analysis::start_analysis`.
@@ -499,7 +534,7 @@ async fn openrouter_credentials(state: &AppState, user_id: Uuid) -> AppResult<Cr
     let version: i32 = row.try_get("openrouter_key_version").unwrap_or(1);
     let model: String = row
         .try_get::<String, _>("openrouter_model")
-        .unwrap_or_else(|_| "anthropic/claude-3.7-sonnet".into());
+        .unwrap_or_else(|_| ai::DEFAULT_MODEL.into());
 
     let missing = || {
         AppError::BadRequest("Configure your OpenRouter API key in Settings before chatting".into())
@@ -569,14 +604,6 @@ mod tests {
         assert_eq!(value["kind"], "delta");
         assert_eq!(value["offset"], 7);
         assert_eq!(value["text"], "hi");
-    }
-
-    #[test]
-    fn string_field_falls_back_rather_than_panicking() {
-        let value = json!({ "name": "Golf", "fuel_class": null });
-        assert_eq!(string_field(&value, "name"), "Golf");
-        assert_eq!(string_field(&value, "fuel_class"), "unknown");
-        assert_eq!(string_field(&value, "absent"), "unknown");
     }
 
     #[test]

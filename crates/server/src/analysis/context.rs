@@ -9,6 +9,7 @@ use ai::{
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use shared::FuelClass;
 use shared::speed_events::{self, MotionSample, SpeedSample};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -18,9 +19,12 @@ use crate::http_client;
 use crate::traffic::{
     fetch_ways_around_points, match_way, position_type_from_highway, upsert_ways,
 };
+use crate::trips::stats;
 use crate::units::UnitSystem;
 
 const ROUTE_POSITION_STEP_PCT: u8 = 5;
+/// Cap for user-entered car labels handed to the model.
+const USER_LABEL_MAX_CHARS: usize = 80;
 const ROUTE_POSITION_MATCH_RADIUS_M: f64 = 40.0;
 /// Overpass `around` radius for route-position OSM refresh (larger than match radius).
 const ROUTE_POSITION_AROUND_M: f64 = 100.0;
@@ -81,6 +85,20 @@ impl PointRow {
     fn rpm(&self) -> Option<f64> {
         self.vehicle_engine_rpm.or(self.engine_rpm)
     }
+    /// Liquid fuel rate under the car's powertrain rules, `None` when it does not
+    /// apply: never for FULL_ELECTRIC, and for HYBRID only while the engine turns
+    /// (RPM 0 is the car running on the battery, not a 0 L/h engine). Negative and
+    /// non-finite readings are adapter noise.
+    fn liquid_rate_lph(&self, class: FuelClass) -> Option<f64> {
+        if !class.uses_liquid_fuel() {
+            return None;
+        }
+        if class.liquid_fuel_requires_rpm() && self.rpm().is_none_or(|r| r <= 0.0) {
+            return None;
+        }
+        self.fuel_consumption_rate
+            .filter(|r| r.is_finite() && *r >= 0.0)
+    }
     /// Motion aggregates for this sample's second, when the client sent them.
     fn motion(&self) -> Option<MotionSample> {
         Some(MotionSample {
@@ -128,11 +146,47 @@ fn sanitize_analysis_points(points: &mut [PointRow]) -> Vec<SpeedSample> {
     raw
 }
 
+/// Whether to build the route position profile, which may call Overpass.
+#[derive(Debug, Clone, Copy)]
+enum RoutePositions<'a> {
+    /// Refresh OSM ways near the anchors via this Overpass URL, then match them.
+    WithOsm(&'a str),
+    /// Leave the profile empty. For callers that never read it.
+    Skip,
+}
+
+/// Everything the trip analysis agent reads, including the OSM route profile.
 pub async fn build_trip_analysis_context(
     pool: &PgPool,
     track_id: Uuid,
     unit_system: UnitSystem,
     overpass_url: &str,
+) -> AppResult<TripAnalysisContext> {
+    build_context(
+        pool,
+        track_id,
+        unit_system,
+        RoutePositions::WithOsm(overpass_url),
+    )
+    .await
+}
+
+/// The same context without the route position profile, so it never waits on
+/// Overpass: for the per-trip stats tools, which answer from telemetry alone and
+/// may be called many times in one conversation.
+pub async fn build_trip_stats_context(
+    pool: &PgPool,
+    track_id: Uuid,
+    unit_system: UnitSystem,
+) -> AppResult<TripAnalysisContext> {
+    build_context(pool, track_id, unit_system, RoutePositions::Skip).await
+}
+
+async fn build_context(
+    pool: &PgPool,
+    track_id: Uuid,
+    unit_system: UnitSystem,
+    route: RoutePositions<'_>,
 ) -> AppResult<TripAnalysisContext> {
     let track = sqlx::query_as::<_, TrackCarRow>(
         r#"
@@ -201,134 +255,52 @@ pub async fn build_trip_analysis_context(
     .await?;
     let raw_speed = sanitize_analysis_points(&mut points);
 
-    // Distance / duration / fuel similar to trips module
-    let stats = sqlx::query_as::<_, StatsRow>(
+    // Distance, fuel and point count come from the one definition in trips::stats
+    // (stored row when usable, the same aggregate computed live otherwise), so the
+    // analysis quotes exactly the figures the trip list and dashboard show. This
+    // used to be a private copy of that SQL, and copies drift: it lacked the
+    // two-coordinate distance guard and read RPM in the opposite column order.
+    let stats_sql = format!(
         r#"
         SELECT
-            (
-                SELECT ST_Length(ST_MakeLine(gps::geometry ORDER BY recorded_at)::geography)::float8
-                FROM track_points WHERE track_id = $1 AND gps IS NOT NULL
-            ) AS distance_m,
+            COALESCE(s.distance_m, live.distance_m) AS distance_m,
             EXTRACT(EPOCH FROM (
-                COALESCE(t.finished_at, (
-                    SELECT MAX(recorded_at) FROM track_points WHERE track_id = t.id
-                )) - t.started_at
+                COALESCE(t.finished_at, s.last_point_at, live.last_at) - t.started_at
             ))::float8 AS duration_secs,
-            (
-                SELECT AVG(COALESCE(vehicle_speed_kph, engine_vel))::float8
-                FROM track_points WHERE track_id = $1
-            ) AS avg_speed_kph,
-            (
-                SELECT MAX(COALESCE(vehicle_speed_kph, engine_vel))::float8
-                FROM track_points WHERE track_id = $1
-            ) AS max_speed_kph,
-            (
-                SELECT SUM(
-                    rate * EXTRACT(EPOCH FROM (lead_t - t)) / 3600.0
-                )::float8
-                FROM (
-                    SELECT
-                      CASE
-                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
-                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
-                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
-                         AND COALESCE(tr.displacement_l_snapshot, c.displacement_l, 0) > 0
-                         AND COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
-                         AND COALESCE(tr.density_gl_snapshot, c.density_gl, 740) > 0
-                         AND tp2.fuel_consumption_rate >= 0.7 * (
-                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            )
-                        THEN (
-                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            ) * COALESCE(tr.ve_snapshot, c.ve, 0.85) * 0.14
-                        ELSE tp2.fuel_consumption_rate
-                      END AS rate,
-                      tp2.recorded_at AS t,
-                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
-                    FROM track_points tp2
-                    JOIN tracks tr ON tr.id = tp2.track_id
-                    JOIN cars c ON c.id = tr.car_id
-                    WHERE tp2.track_id = $1
-                ) s
-                WHERE rate IS NOT NULL
-                  AND lead_t IS NOT NULL
-                  AND lead_t > t
-                  AND lead_t <= t + interval '5 minutes'
-            ) AS fuel_used_l,
-            (
-                SELECT SUM(
-                    rate * EXTRACT(EPOCH FROM (lead_t - t)) / 3600.0
-                )::float8
-                FROM (
-                    SELECT
-                      CASE
-                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'FULL_ELECTRIC' THEN NULL
-                        WHEN COALESCE(tr.fuel_class_snapshot, c.fuel_class, 'GASOLINE') = 'HYBRID'
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm, 0) <= 0 THEN 0
-                        WHEN COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0) < 1
-                         AND COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm) BETWEEN 400 AND 1500
-                         AND COALESCE(tr.displacement_l_snapshot, c.displacement_l, 0) > 0
-                         AND COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08) > 0
-                         AND COALESCE(tr.density_gl_snapshot, c.density_gl, 740) > 0
-                         AND tp2.fuel_consumption_rate >= 0.7 * (
-                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            )
-                        THEN (
-                              COALESCE(tr.displacement_l_snapshot, c.displacement_l)
-                              * COALESCE(tp2.engine_rpm, tp2.vehicle_engine_rpm)
-                              * 1.184 / 120.0
-                              / COALESCE(tr.stoich_afr_snapshot, c.stoich_afr, 14.08)
-                              / COALESCE(tr.density_gl_snapshot, c.density_gl, 740)
-                              * 3600.0
-                            ) * COALESCE(tr.ve_snapshot, c.ve, 0.85) * 0.14
-                        ELSE tp2.fuel_consumption_rate
-                      END AS rate,
-                      COALESCE(tp2.vehicle_speed_kph, tp2.engine_vel, 0)::float8 AS spd,
-                      tp2.recorded_at AS t,
-                      LEAD(tp2.recorded_at) OVER (ORDER BY tp2.recorded_at) AS lead_t
-                    FROM track_points tp2
-                    JOIN tracks tr ON tr.id = tp2.track_id
-                    JOIN cars c ON c.id = tr.car_id
-                    WHERE tp2.track_id = $1
-                ) s
-                WHERE rate IS NOT NULL
-                  AND spd >= 1
-                  AND lead_t IS NOT NULL
-                  AND lead_t > t
-                  AND lead_t <= t + interval '5 minutes'
-            ) AS fuel_used_moving_l,
-            (SELECT COUNT(*) FROM track_points WHERE track_id = $1)::bigint AS point_count
+            COALESCE(s.fuel_used_l, live.fuel_used_l) AS fuel_used_l,
+            COALESCE(s.fuel_used_moving_l, live.fuel_used_moving_l) AS fuel_used_moving_l,
+            COALESCE(s.point_count, live.point_count, 0)::bigint AS point_count,
+            COALESCE(s.odo_start_km, live.odo_start_km) AS odo_start_km,
+            COALESCE(s.odo_end_km, live.odo_end_km) AS odo_end_km
         FROM tracks t
+        JOIN cars c ON c.id = t.car_id
+        {stats_join}
+        {lateral}
         WHERE t.id = $1
         "#,
-    )
-    .bind(track_id)
-    .fetch_one(pool)
-    .await?;
+        stats_join = stats::stats_join("s"),
+        lateral = stats::lateral("live", "AND s.track_id IS NULL"),
+    );
+    let stats = sqlx::query_as::<_, StatsRow>(sqlx::AssertSqlSafe(stats_sql.as_str()))
+        .bind(track_id)
+        .fetch_one(pool)
+        .await?;
+
+    let class = FuelClass::parse(&track.fuel_class);
+    // From the sanitized series, like the graphs: a raw AVG/MAX lets one isolated
+    // OBD spike (a 255 km/h glitch) become the trip's reported top speed.
+    let (avg_speed_kph, max_speed_kph) = speed_avg_max(&points);
 
     let overview = TripOverview {
         trip_id: track.track_id.to_string(),
-        car_name: track.car_name,
-        make_model: track.make_model,
+        // User-entered labels: flattened so they read as data, not as prompt text.
+        car_name: ai::sanitize_user_text(&track.car_name, USER_LABEL_MAX_CHARS),
+        make_model: track
+            .make_model
+            .as_deref()
+            .map(|m| ai::sanitize_user_text(m, USER_LABEL_MAX_CHARS)),
         fuel_type: track.fuel_type,
-        fuel_class: track.fuel_class,
+        fuel_class: class.as_str().to_string(),
         battery_capacity_kwh: track.battery_capacity_kwh,
         energy_used_kwh: crate::trips::energy_from_soc_kwh(
             points.iter().find_map(|p| p.battery_soc_pct),
@@ -340,11 +312,16 @@ pub async fn build_trip_analysis_context(
         started_at: Some(track.started_at),
         finished_at: track.finished_at,
         finished: track.finished,
-        point_count: stats.point_count.unwrap_or(0),
+        point_count: stats.point_count,
         distance_m: stats.distance_m,
+        economy_distance_m: economy_distance_m(
+            stats.distance_m,
+            stats.odo_start_km,
+            stats.odo_end_km,
+        ),
         duration_secs: stats.duration_secs,
-        avg_speed_kph: stats.avg_speed_kph,
-        max_speed_kph: stats.max_speed_kph,
+        avg_speed_kph,
+        max_speed_kph,
         fuel_used_l: stats.fuel_used_l,
         fuel_used_moving_l: stats.fuel_used_moving_l,
         displacement_l: track.displacement_l,
@@ -354,12 +331,20 @@ pub async fn build_trip_analysis_context(
     };
 
     let speed = compute_speed_profile(&points, &raw_speed, stats.distance_m);
-    let engine = compute_engine_stats(&points);
-    let fuel = compute_fuel_stats(&points);
+    let engine = compute_engine_stats(&points, class);
+    let fuel = compute_fuel_stats(&points, class);
     let thermal = compute_thermal_stats(&points);
     let stops = compute_stops(&points);
-    let samples = downsample_samples(&points, 400);
-    let route_positions = build_route_position_profile(pool, &points, overpass_url).await;
+    let samples = downsample_samples(&points, 400, class);
+    let route_positions = match route {
+        RoutePositions::WithOsm(overpass_url) => {
+            build_route_position_profile(pool, &points, overpass_url).await
+        }
+        RoutePositions::Skip => RoutePositionProfile {
+            note: Some("route positions were not computed for this request".into()),
+            ..RoutePositionProfile::default()
+        },
+    };
 
     let traffic_row = sqlx::query_as::<
         _,
@@ -421,11 +406,44 @@ pub async fn build_trip_analysis_context(
 struct StatsRow {
     distance_m: Option<f64>,
     duration_secs: Option<f64>,
-    avg_speed_kph: Option<f64>,
-    max_speed_kph: Option<f64>,
     fuel_used_l: Option<f64>,
     fuel_used_moving_l: Option<f64>,
-    point_count: Option<i64>,
+    point_count: i64,
+    odo_start_km: Option<f64>,
+    odo_end_km: Option<f64>,
+}
+
+/// Distance to divide fuel by for economy: the odometer delta when it is sane,
+/// else the GPS length.
+///
+/// Mirrors `trips::fuel_stats::economy_distance_m` (private to that module) so the
+/// analysis quotes the same L/100 km the trip page does. Whole-km odometers
+/// under-report short trips, so a delta far below GPS is rejected as well as one far
+/// above it.
+pub(crate) fn economy_distance_m(
+    gps_m: Option<f64>,
+    odo_start_km: Option<f64>,
+    odo_end_km: Option<f64>,
+) -> Option<f64> {
+    const ODO_MIN_KM: f64 = 0.2;
+    let gps = gps_m.filter(|d| d.is_finite() && *d > 0.0);
+    let (Some(start), Some(end)) = (odo_start_km, odo_end_km) else {
+        return gps;
+    };
+    let d_km = end - start;
+    if !d_km.is_finite() || d_km < ODO_MIN_KM {
+        return gps;
+    }
+    let gps_km = gps.map(|g| g / 1000.0);
+    if gps_km.is_some_and(|g| d_km > g * 1.5 + 2.0) {
+        return gps;
+    }
+    if let Some(g) = gps_km
+        && d_km + 1e-9 < (g - 1.5).max(g * 0.5)
+    {
+        return gps;
+    }
+    Some(d_km * 1000.0)
 }
 
 fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
@@ -479,6 +497,16 @@ fn compute_speed_profile(
     }
 }
 
+fn speed_avg_max(points: &[PointRow]) -> (Option<f64>, Option<f64>) {
+    let speeds: Vec<f64> = points
+        .iter()
+        .filter_map(|p| p.speed())
+        .filter(|v| v.is_finite())
+        .collect();
+    let (_, max, avg) = min_max_avg(&speeds);
+    (avg, max)
+}
+
 fn min_max_avg(vals: &[f64]) -> (Option<f64>, Option<f64>, Option<f64>) {
     if vals.is_empty() {
         return (None, None, None);
@@ -489,8 +517,15 @@ fn min_max_avg(vals: &[f64]) -> (Option<f64>, Option<f64>, Option<f64>) {
     (Some(min), Some(max), Some(avg))
 }
 
-fn compute_engine_stats(points: &[PointRow]) -> EngineStats {
-    let rpms: Vec<f64> = points.iter().filter_map(|p| p.rpm()).collect();
+fn compute_engine_stats(points: &[PointRow], class: FuelClass) -> EngineStats {
+    // Hybrid/EV: RPM 0 is the car driving on the battery, so it would drag the
+    // minimum and average down to "engine at 0 rpm". Only engine-running samples
+    // describe the engine.
+    let rpms: Vec<f64> = points
+        .iter()
+        .filter_map(|p| p.rpm())
+        .filter(|r| !class.rpm_may_be_zero_while_on() || *r > 0.0)
+        .collect();
     let loads: Vec<f64> = points.iter().filter_map(|p| p.engine_load_pct).collect();
     let abs_loads: Vec<f64> = points
         .iter()
@@ -525,10 +560,10 @@ fn compute_engine_stats(points: &[PointRow]) -> EngineStats {
     }
 }
 
-fn compute_fuel_stats(points: &[PointRow]) -> FuelMixtureStats {
+fn compute_fuel_stats(points: &[PointRow], class: FuelClass) -> FuelMixtureStats {
     let rates: Vec<f64> = points
         .iter()
-        .filter_map(|p| p.fuel_consumption_rate)
+        .filter_map(|p| p.liquid_rate_lph(class))
         .collect();
     let levels: Vec<(DateTime<Utc>, f64)> = points
         .iter()
@@ -597,24 +632,43 @@ fn compute_thermal_stats(points: &[PointRow]) -> ThermalElectricalStats {
     }
 }
 
-/// Stops: contiguous samples with speed <= 2 kph spanning >= 60s.
+/// Longest run of samples with no speed reading that a stop may bridge. A dropped
+/// OBD read or two inside a real stop should not split it; minutes of silence say
+/// nothing about whether the car moved.
+const STOP_MAX_UNKNOWN_GAP_SECS: i64 = 5;
+
+/// Stops: contiguous samples with a **known** speed <= 2 kph spanning >= 60s.
+///
+/// A sample without a speed reading is unknown, not stopped: counting it as 0 kph
+/// turned every trip without OBD speed into one long "stop". Unknown samples never
+/// start or end a stop and only bridge short gaps inside one.
 fn compute_stops(points: &[PointRow]) -> StopSummary {
+    let stopped = |p: &PointRow| p.speed().is_some_and(|s| s <= 2.0);
     let mut stops = Vec::new();
     let mut i = 0;
     while i < points.len() {
-        let speed = points[i].speed().unwrap_or(0.0);
-        if speed > 2.0 {
+        if !stopped(&points[i]) {
             i += 1;
             continue;
         }
         let start_i = i;
         let mut end_i = i;
-        while end_i + 1 < points.len() {
-            let s = points[end_i + 1].speed().unwrap_or(0.0);
-            if s > 2.0 {
-                break;
+        let mut j = i + 1;
+        while j < points.len() {
+            match points[j].speed() {
+                Some(s) if s <= 2.0 => {
+                    end_i = j;
+                    j += 1;
+                }
+                Some(_) => break,
+                None => {
+                    let gap = (points[j].recorded_at - points[end_i].recorded_at).num_seconds();
+                    if gap > STOP_MAX_UNKNOWN_GAP_SECS {
+                        break;
+                    }
+                    j += 1;
+                }
             }
-            end_i += 1;
         }
         let start = points[start_i].recorded_at;
         let end = points[end_i].recorded_at;
@@ -648,7 +702,7 @@ fn compute_stops(points: &[PointRow]) -> StopSummary {
     }
 }
 
-fn downsample_samples(points: &[PointRow], max: usize) -> Vec<SamplePoint> {
+fn downsample_samples(points: &[PointRow], max: usize, class: FuelClass) -> Vec<SamplePoint> {
     if points.is_empty() {
         return vec![];
     }
@@ -667,7 +721,7 @@ fn downsample_samples(points: &[PointRow], max: usize) -> Vec<SamplePoint> {
             speed_kph: p.speed(),
             rpm: p.rpm(),
             engine_load_pct: p.engine_load_pct,
-            fuel_rate_lph: p.fuel_consumption_rate,
+            fuel_rate_lph: p.liquid_rate_lph(class),
             coolant_c: p.engine_coolant_temp_c,
             voltage: p.control_module_voltage,
             stft_pct: p.short_term_fuel_trim_pct,
@@ -917,6 +971,121 @@ mod tests {
         let profile = compute_speed_profile(&pts, &raw, Some(10_000.0));
         assert_eq!(profile.hard_brake_events, None);
         assert_eq!(profile.hard_accel_events, None);
+    }
+
+    #[test]
+    fn economy_distance_prefers_a_sane_odometer() {
+        // GPS 10 km, odometer 10.5 km: trust the odometer.
+        assert_eq!(
+            economy_distance_m(Some(10_000.0), Some(100.0), Some(110.5)),
+            Some(10_500.0)
+        );
+        // Whole-km odometer says 1 km for an 8.6 km drive: fall back to GPS.
+        assert_eq!(
+            economy_distance_m(Some(8_600.0), Some(100.0), Some(101.0)),
+            Some(8_600.0)
+        );
+        // Wildly above GPS (odometer rollover or glitch): GPS.
+        assert_eq!(
+            economy_distance_m(Some(5_000.0), Some(100.0), Some(200.0)),
+            Some(5_000.0)
+        );
+        // No GPS fix at all: a plausible odometer delta still counts.
+        assert_eq!(
+            economy_distance_m(None, Some(100.0), Some(103.0)),
+            Some(3_000.0)
+        );
+        assert_eq!(economy_distance_m(None, None, Some(3.0)), None);
+    }
+
+    #[test]
+    fn missing_speed_is_unknown_not_a_stop() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let pts: Vec<PointRow> = (0..300)
+            .map(|i| {
+                let mut p = pt(t0 + chrono::Duration::seconds(i), 0.0);
+                p.vehicle_speed_kph = None;
+                p
+            })
+            .collect();
+        assert_eq!(compute_stops(&pts).stop_count, 0);
+    }
+
+    #[test]
+    fn a_dropped_read_inside_a_stop_does_not_split_it() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let mut pts: Vec<PointRow> = (0..90)
+            .map(|i| pt(t0 + chrono::Duration::seconds(i), 0.0))
+            .collect();
+        pts[40].vehicle_speed_kph = None;
+        pts[41].vehicle_speed_kph = None;
+        let stops = compute_stops(&pts);
+        assert_eq!(stops.stop_count, 1);
+        assert!(stops.longest_stop_secs >= 89.0);
+    }
+
+    #[test]
+    fn overview_speed_ignores_an_isolated_obd_spike() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let mut pts: Vec<PointRow> = [50.0, 51.0, 50.0, 245.0, 50.0, 51.0, 50.0]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| pt(t0 + chrono::Duration::seconds(i as i64), *v))
+            .collect();
+        sanitize_analysis_points(&mut pts);
+        let (avg, max) = speed_avg_max(&pts);
+        assert!(max.unwrap() < 60.0, "max {max:?}");
+        assert!(avg.unwrap() < 60.0, "avg {avg:?}");
+    }
+
+    fn with_rpm_and_rate(t: DateTime<Utc>, rpm: f64, rate: f64) -> PointRow {
+        let mut p = pt(t, 40.0);
+        p.engine_rpm = Some(rpm);
+        p.fuel_consumption_rate = Some(rate);
+        p
+    }
+
+    #[test]
+    fn electric_trips_report_no_liquid_fuel() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let pts = vec![with_rpm_and_rate(t0, 0.0, 2.0)];
+        let fuel = compute_fuel_stats(&pts, FuelClass::FullElectric);
+        assert_eq!(fuel.fuel_rate_lph_avg, None);
+        assert_eq!(fuel.fuel_rate_lph_max, None);
+        let samples = downsample_samples(&pts, 10, FuelClass::FullElectric);
+        assert_eq!(samples[0].fuel_rate_lph, None);
+    }
+
+    #[test]
+    fn hybrid_engine_and_fuel_stats_only_cover_engine_running_samples() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let s = |i| t0 + chrono::Duration::seconds(i);
+        let pts = vec![
+            with_rpm_and_rate(s(0), 0.0, 0.0),
+            with_rpm_and_rate(s(1), 0.0, 0.0),
+            with_rpm_and_rate(s(2), 2000.0, 4.0),
+            with_rpm_and_rate(s(3), 1000.0, 2.0),
+        ];
+        let engine = compute_engine_stats(&pts, FuelClass::Hybrid);
+        assert_eq!(engine.rpm_min, Some(1000.0));
+        assert_eq!(engine.rpm_avg, Some(1500.0));
+        let fuel = compute_fuel_stats(&pts, FuelClass::Hybrid);
+        assert_eq!(fuel.fuel_rate_lph_avg, Some(3.0));
+
+        // The same series on a gasoline car keeps every sample.
+        let engine = compute_engine_stats(&pts, FuelClass::Gasoline);
+        assert_eq!(engine.rpm_min, Some(0.0));
+    }
+
+    #[test]
+    fn negative_fuel_rates_are_dropped() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
+        let pts = vec![
+            with_rpm_and_rate(t0, 1500.0, -3.0),
+            with_rpm_and_rate(t0 + chrono::Duration::seconds(1), 1500.0, 3.0),
+        ];
+        let fuel = compute_fuel_stats(&pts, FuelClass::Diesel);
+        assert_eq!(fuel.fuel_rate_lph_avg, Some(3.0));
     }
 
     #[test]
