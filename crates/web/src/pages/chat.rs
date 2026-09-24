@@ -785,7 +785,7 @@ fn attach_stream(
 pub struct SendWrapper<T>(std::rc::Rc<T>);
 
 impl<T> SendWrapper<T> {
-    fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self {
         Self(std::rc::Rc::new(value))
     }
 }

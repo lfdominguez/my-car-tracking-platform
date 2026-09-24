@@ -4221,3 +4221,91 @@ button.tag-chip:hover { color: var(--accent); border-color: var(--color-border-a
   .garage-due-detail { grid-column: 1 / -1; grid-row: 2; }
   .garage-inline-form input { width: 100%; }
 }
+
+/* ---- Live positions (#108) ------------------------------------------------ */
+.live-card { margin-top: 1.25rem; }
+.live-card .map { margin-top: 0.75rem; }
+.live-map { height: 320px; }
+.live-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  cursor: default;
+}
+.live-marker-dot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--color-bg-surface);
+  border: 2px solid var(--accent);
+  box-shadow: var(--shadow-2);
+}
+.live-marker-arrow {
+  display: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 11px solid var(--accent);
+  transform-origin: 50% 60%;
+}
+.live-marker.has-heading .live-marker-arrow { display: block; }
+.live-marker:not(.has-heading) .live-marker-dot::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.live-marker.is-driving .live-marker-dot {
+  border-color: var(--color-info);
+  animation: live-ring var(--motion-duration-ambient-pulse) var(--motion-ease-ambient) infinite;
+}
+@keyframes live-ring {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-info) 55%, transparent), var(--shadow-2); }
+  50% { box-shadow: 0 0 0 8px transparent, var(--shadow-2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-marker.is-driving .live-marker-dot { animation: none; }
+}
+.live-marker-label {
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-chip);
+  background: var(--color-bg-surface);
+  color: var(--text);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-body-bold);
+  white-space: nowrap;
+  box-shadow: var(--shadow-1);
+}
+.live-list { list-style: none; margin: 0.75rem 0 0; padding: 0; display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); }
+.live-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.live-item-main { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.live-item-name { color: var(--text); font-weight: var(--font-weight-body-bold); }
+.live-item-meta { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; font-size: var(--text-sm); }
+.live-sharing-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin: 0.5rem 0 1rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--inset);
+}
+.live-sharing-title { display: flex; align-items: center; gap: 0.4rem; color: var(--text); font-weight: var(--font-weight-body-bold); }
+.live-sharing-row .field-hint { margin-top: 0.2rem; }

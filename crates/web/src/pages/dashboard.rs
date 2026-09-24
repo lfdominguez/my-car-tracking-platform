@@ -6,6 +6,7 @@ use crate::api::{
     maintenance_due,
 };
 use crate::components::{Icon, IconColor, IconSize};
+use crate::pages::live::LiveCard;
 use crate::units::{
     UnitPrefsSignal, avg_economy, fmt_distance, fmt_distance_value, fmt_economy, fmt_fuel,
     fmt_odometer_delta, use_unit_prefs,
@@ -113,6 +114,14 @@ pub fn DashboardPage() -> impl IntoView {
                 </Show>
             </Show>
         </section>
+
+        <LiveCard cars=Signal::derive(move || {
+            summary.with(|s| {
+                s.as_ref()
+                    .map(|s| s.cars.iter().map(|c| (c.car_id.clone(), c.name.clone())).collect())
+                    .unwrap_or_default()
+            })
+        }) />
 
         <Show
             when=move || summary.get().is_some() || error.get().is_some()

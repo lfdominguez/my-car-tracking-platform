@@ -81,6 +81,10 @@ pub struct Car {
     pub role: String,
     #[serde(default)]
     pub vault_sealed: bool,
+    /// Whether people this car is shared with may see its live position. Absent
+    /// when the server does not report it.
+    #[serde(default)]
+    pub share_live_position: Option<bool>,
 }
 
 /// Authenticated photo URL (same-origin cookie). `cache_bust` optional query.
@@ -1500,4 +1504,43 @@ pub async fn fuel_summary(car_id: &str) -> Result<FuelSummary, ApiError> {
         "/api/cars/{car_id}/fuel-log/summary"
     )))
     .await
+}
+
+// --- live positions (#108) --------------------------------------------------
+
+/// Newest fix of a car's newest trip. SI units.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LivePosition {
+    pub car_id: String,
+    pub track_id: String,
+    /// The trip is still open: the car is being driven.
+    pub trip_open: bool,
+    pub recorded_at: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub speed_kph: Option<f64>,
+    /// Degrees clockwise from north; `None` when parked.
+    pub heading_deg: Option<f64>,
+    pub fuel_level_pct: Option<f64>,
+    pub battery_soc_pct: Option<f64>,
+}
+
+pub async fn list_live_positions() -> Result<Vec<LivePosition>, ApiError> {
+    send_json(Request::get("/api/cars/live")).await
+}
+
+/// SSE feed of positions (`position` events) and `stale` hints to refetch.
+pub const LIVE_STREAM_URL: &str = "/api/cars/live/stream";
+
+/// Owner only: let people the car is shared with see its live position.
+pub async fn set_live_sharing(car_id: &str, enabled: bool) -> Result<bool, ApiError> {
+    let body = serde_json::json!({ "enabled": enabled });
+    let v: serde_json::Value = send_json_body(
+        Request::put(&format!("/api/cars/{car_id}/live-sharing")),
+        &body,
+    )
+    .await?;
+    Ok(v.get("share_live_position")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(enabled))
 }

@@ -1,4 +1,5 @@
 pub mod charts;
+pub mod geo;
 pub mod icon;
 pub mod layout;
 pub mod map;

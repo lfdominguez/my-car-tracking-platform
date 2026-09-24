@@ -3,6 +3,7 @@ pub mod chat;
 pub mod dashboard;
 pub mod garage;
 pub mod landing;
+pub mod live;
 pub mod login;
 pub mod not_found;
 pub mod routes;

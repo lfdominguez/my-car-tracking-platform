@@ -5,7 +5,7 @@ use leptos_router::hooks::use_params_map;
 use crate::api::{
     Car, CreateDeviceResponse, Device, Share, create_car, create_device, create_share, get_car,
     list_cars, list_devices, list_shares, provisioning, provisioning_payload_json, revoke_device,
-    update_car, upload_car_photo,
+    set_live_sharing, update_car, upload_car_photo,
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
@@ -281,6 +281,7 @@ pub fn CarDetailPage() -> impl IntoView {
     // Cache-buster so the browser reloads the image after upload.
     let photo_rev = RwSignal::new(0u32);
     let is_default = RwSignal::new(false);
+    let live_busy = RwSignal::new(false);
 
     let vault = use_vault_session();
 
@@ -742,6 +743,65 @@ pub fn CarDetailPage() -> impl IntoView {
                 <Icon name="share-network" color=IconColor::Accent />
                 "Sharing"
             </h2>
+            <Show when=move || car.with(|c| c.as_ref().is_some_and(|c| c.role == "owner" && !c.vault_sealed))>
+                <div class="live-sharing-row">
+                    <div>
+                        <div class="live-sharing-title">
+                            <Icon name="broadcast" size=IconSize::Sm color=IconColor::Accent />
+                            "Live position"
+                        </div>
+                        <div class="muted field-hint">
+                            {move || match car.with(|c| c.as_ref().and_then(|c| c.share_live_position)) {
+                                Some(true) => "People this car is shared with can see where it is now.",
+                                Some(false) => "Only you see where this car is now.",
+                                None => "Choose whether people this car is shared with can see where it is now.",
+                            }}
+                        </div>
+                    </div>
+                    <div class="seg-control" role="group" aria-label="Share live position">
+                        {[(true, "Shared"), (false, "Private")]
+                            .into_iter()
+                            .map(|(value, label)| view! {
+                                <button
+                                    type="button"
+                                    class=move || {
+                                        if car.with(|c| c.as_ref().and_then(|c| c.share_live_position)) == Some(value) {
+                                            "seg-btn is-active"
+                                        } else {
+                                            "seg-btn"
+                                        }
+                                    }
+                                    aria-pressed=move || {
+                                        (car.with(|c| c.as_ref().and_then(|c| c.share_live_position)) == Some(value)).to_string()
+                                    }
+                                    prop:disabled=move || live_busy.get()
+                                    on:click=move |_| {
+                                        let id = params.with_untracked(|p| p.get("id").unwrap_or_default());
+                                        live_busy.set(true);
+                                        leptos::task::spawn_local(async move {
+                                            match set_live_sharing(&id, value).await {
+                                                Ok(on) => {
+                                                    let _ = car.try_update(|c| {
+                                                        if let Some(c) = c.as_mut() {
+                                                            c.share_live_position = Some(on);
+                                                        }
+                                                    });
+                                                }
+                                                Err(e) => {
+                                                    let _ = error.try_set(Some(e.to_string()));
+                                                }
+                                            }
+                                            let _ = live_busy.try_set(false);
+                                        });
+                                    }
+                                >
+                                    {label}
+                                </button>
+                            })
+                            .collect_view()}
+                    </div>
+                </div>
+            </Show>
             <div class="row">
                 <input style="max-width:260px" placeholder="user@email.com"
                     prop:value=move || share_email.get()
