@@ -62,8 +62,8 @@ mod tests {
             AiError::RateLimited("429".into()),
             AiError::Timeout("idle".into()),
         ];
-        for e in cases {
-            assert!(user_facing_error(&e.to_string()).is_some(), "{e}");
+        for (i, e) in cases.iter().enumerate() {
+            assert!(user_facing_error(&e.to_string()).is_some(), "case {i}");
         }
         assert!(
             user_facing_error(&AiError::Agent("api key is empty".into()).to_string()).is_some()

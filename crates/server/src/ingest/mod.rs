@@ -300,7 +300,9 @@ async fn track_samples(
     let mut tracks: HashMap<String, Option<TrackRef>> = HashMap::new();
 
     // Pass 1: resolve and validate every sample; nothing is written yet.
-    let mut outcomes: Vec<Option<Result<(), SampleError>>> = Vec::with_capacity(body.samples.len());
+    // Capped by the batch-size check above; the `min` keeps the bound visible here.
+    let mut outcomes: Vec<Option<Result<(), SampleError>>> =
+        Vec::with_capacity(body.samples.len().min(MAX_BATCH_SAMPLES));
     // Valid samples, with their index into `body.samples`.
     let mut indices: Vec<usize> = Vec::new();
     let mut points: Vec<PreparedPoint<'_>> = Vec::new();

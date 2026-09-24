@@ -151,6 +151,9 @@ pub async fn update_trip(
     get_trip(State(state), user, Path(id)).await
 }
 
+/// Most trips one merge may join.
+const MAX_MERGE: usize = 20;
+
 #[derive(Debug, Deserialize)]
 pub struct MergeRequest {
     trip_ids: Vec<Uuid>,
@@ -163,13 +166,16 @@ pub async fn merge_trips(
     user: AuthUser,
     Json(b): Json<MergeRequest>,
 ) -> AppResult<Json<TripDetailResponse>> {
+    if b.trip_ids.len() > MAX_MERGE {
+        return Err(AppError::BadRequest("merge 2 to 20 trips".into()));
+    }
     let mut ids = b.trip_ids.clone();
     ids.sort();
     ids.dedup();
-    if ids.len() < 2 || ids.len() > 20 {
+    if ids.len() < 2 {
         return Err(AppError::BadRequest("merge 2 to 20 trips".into()));
     }
-    let mut metas = Vec::with_capacity(ids.len());
+    let mut metas = Vec::with_capacity(ids.len().min(MAX_MERGE));
     for id in &ids {
         metas.push((*id, editable(&state, &user, *id).await?));
     }
