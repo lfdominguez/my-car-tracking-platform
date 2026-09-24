@@ -36,6 +36,71 @@ fn ors_swatch(i: usize) -> &'static str {
     ORS_SWATCHES[i % ORS_SWATCHES.len()]
 }
 
+/// Stamp each map line with the color of its list row, matched by identity
+/// (`variant_id`, ORS `preference`) rather than by the order the map endpoint
+/// happened to return, so a swatch in the list always names its line. Lines
+/// with no row keep the map's own index-based color.
+fn stamp_corridor_colors(
+    geo: &mut serde_json::Value,
+    variant_ids: &[String],
+    ors_prefs: &[String],
+) {
+    let Some(features) = geo
+        .get_mut("features")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for f in features {
+        let Some(props) = f
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        let (key, rows, swatch): (_, _, fn(usize) -> &'static str) =
+            match props.get("kind").and_then(|k| k.as_str()) {
+                Some("variant") => ("variant_id", variant_ids, variant_swatch),
+                Some("ors") => ("preference", ors_prefs, ors_swatch),
+                _ => continue,
+            };
+        let Some(idx) = props
+            .get(key)
+            .and_then(|v| v.as_str())
+            .and_then(|id| rows.iter().position(|r| r == id))
+        else {
+            continue;
+        };
+        props.insert("color_index".into(), idx.into());
+        props.insert("route_color".into(), swatch(idx).into());
+    }
+}
+
+/// `[min_lon, min_lat, max_lon, max_lat]` of the variant line `variant_id`, for
+/// zooming the map onto it. `None` when it has no drawable coordinates.
+fn variant_bounds(geo: &serde_json::Value, variant_id: &str) -> Option<[f64; 4]> {
+    let feature = geo.get("features")?.as_array()?.iter().find(|f| {
+        let props = &f["properties"];
+        props["kind"] == "variant" && props["variant_id"].as_str() == Some(variant_id)
+    })?;
+    feature["geometry"]["coordinates"]
+        .as_array()?
+        .iter()
+        .filter_map(|c| Some((c.get(0)?.as_f64()?, c.get(1)?.as_f64()?)))
+        .filter(|(lon, lat)| lon.is_finite() && lat.is_finite())
+        .fold(None, |acc: Option<[f64; 4]>, (lon, lat)| {
+            Some(match acc {
+                None => [lon, lat, lon, lat],
+                Some([x0, y0, x1, y1]) => [x0.min(lon), y0.min(lat), x1.max(lon), y1.max(lat)],
+            })
+        })
+}
+
+/// Clicking the selected variant again clears the selection.
+fn toggle_selection(current: Option<&str>, clicked: &str) -> Option<String> {
+    (current != Some(clicked)).then(|| clicked.to_owned())
+}
+
 /// Human label for insight `kind` codes from the server.
 fn insight_kind_label(kind: &str) -> &'static str {
     t(match kind {
@@ -298,6 +363,10 @@ pub fn RouteCorridorPage() -> impl IntoView {
     let error = RwSignal::new(Option::<String>::None);
     let prefs = use_unit_prefs();
     let map_host = NodeRef::<leptos::html::Div>::new();
+    // Variant picked in the list or on the map (sticky), and the one previewed
+    // while a row is hovered or focused.
+    let selected = RwSignal::new(Option::<String>::None);
+    let hovered = RwSignal::new(Option::<String>::None);
 
     // The page is reused when only `:id` changes: reset what belongs to the old
     // corridor and drop responses that arrive after the next navigation.
@@ -312,6 +381,8 @@ pub fn RouteCorridorPage() -> impl IntoView {
         detail.set(None);
         map_geo.set(None);
         error.set(None);
+        selected.set(None);
+        hovered.set(None);
         let current = move || fetch_gen.try_get_untracked() == Some(req);
         leptos::task::spawn_local(async move {
             let corridor = route_opt_corridor(&id).await;
@@ -338,12 +409,78 @@ pub fn RouteCorridorPage() -> impl IntoView {
             return;
         };
         let Some(el) = map_host.get() else { return };
+        let (variant_ids, ors_prefs) = detail.with(|d| {
+            d.as_ref()
+                .map(|d| {
+                    (
+                        d.variants.iter().map(|v| v.id.clone()).collect::<Vec<_>>(),
+                        d.ors_alternatives
+                            .iter()
+                            .map(|a| a.preference.clone())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .unwrap_or_default()
+        });
+        let mut geo = geo;
+        stamp_corridor_colors(&mut geo, &variant_ids, &ors_prefs);
         crate::components::map::mount_route_opt_map(&el, &geo);
+        // A fresh map starts unhighlighted; re-apply whatever is picked.
+        crate::components::map::set_route_opt_selection(
+            selected.get_untracked().as_deref(),
+            hovered.get_untracked().as_deref(),
+            None,
+        );
+    });
+
+    Effect::new(move |_| {
+        let sel = selected.get();
+        let hov = hovered.get();
+        let bounds = sel.as_deref().and_then(|id| {
+            map_geo.with_untracked(|g| g.as_ref().and_then(|g| variant_bounds(g, id)))
+        });
+        crate::components::map::set_route_opt_selection(sel.as_deref(), hov.as_deref(), bounds);
+    });
+
+    // Clicks on a variant line in the map (see `ROUTE_OPT_VARIANT_SELECT_EVENT`).
+    Effect::new(move |_| {
+        let handle = window_event_listener_untyped(
+            crate::components::map::ROUTE_OPT_VARIANT_SELECT_EVENT,
+            move |ev| {
+                let id = js_sys::Reflect::get(&ev, &"detail".into())
+                    .and_then(|d| js_sys::Reflect::get(&d, &"id".into()))
+                    .ok()
+                    .and_then(|v| v.as_string());
+                if let Some(id) = id {
+                    let _ = selected.try_update(|s| *s = toggle_selection(s.as_deref(), &id));
+                }
+            },
+        );
+        on_cleanup(move || handle.remove());
     });
 
     on_cleanup(move || {
         crate::components::map::dispose_route_opt_map();
     });
+
+    let toggle_variant = move |id: &str| {
+        selected.update(|s| *s = toggle_selection(s.as_deref(), id));
+    };
+    let is_selected = move |id: &str| selected.with(|s| s.as_deref() == Some(id));
+    let show_all = move || {
+        view! {
+            <Show when=move || selected.with(Option::is_some)>
+                <button
+                    type="button"
+                    class="btn ghost btn-sm routes-show-all"
+                    on:click=move |_| selected.set(None)
+                >
+                    <Icon name="arrows-out" size=IconSize::Sm />
+                    {tr!("routes.show_all")}
+                </button>
+            </Show>
+        }
+    };
 
     view! {
         <div class="page-header">
@@ -407,16 +544,32 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                 <span class="routes-line-sample is-variant"></span>
                                 {tr!("routes.your_variants")}
                                 <span class="muted">{tr!("routes.solid")}</span>
+                                {show_all()}
                             </div>
                             <div class="routes-map-legend-items">
                                 {d.variants.iter().enumerate().map(|(i, v)| {
                                     let color = variant_swatch(i).to_string();
                                     let label = v.label.clone();
+                                    let id = v.id.clone();
+                                    let (id_sel, id_pressed, id_click, id_in, id_out) =
+                                        (id.clone(), id.clone(), id.clone(), id.clone(), id);
+                                    let hint_label = label.clone();
                                     view! {
-                                        <span class="routes-map-swatch-item">
+                                        <button
+                                            type="button"
+                                            class="routes-map-swatch-item routes-variant-chip"
+                                            class:is-selected=move || is_selected(&id_sel)
+                                            aria-pressed=move || is_selected(&id_pressed).to_string()
+                                            title=move || tf("routes.highlight_variant", &[("label", &hint_label)])
+                                            on:click=move |_| toggle_variant(&id_click)
+                                            on:mouseenter=move |_| hovered.set(Some(id_in.clone()))
+                                            on:mouseleave=move |_| {
+                                                hovered.update(|h| if h.as_deref() == Some(id_out.as_str()) { *h = None });
+                                            }
+                                        >
                                             <span class="routes-map-swatch is-variant" style=format!("background:{color}")></span>
                                             {label}
-                                        </span>
+                                        </button>
                                     }
                                 }).collect_view()}
                             </div>
@@ -452,9 +605,16 @@ pub fn RouteCorridorPage() -> impl IntoView {
                     </div>
                 </div>
 
-                <h2 class="section-title" style="margin-top:1.25rem">{tr!("routes.path_variants")}</h2>
+                <div class="routes-section-head">
+                    <h2 class="section-title" style="margin-top:1.25rem">{tr!("routes.path_variants")}</h2>
+                    {show_all()}
+                </div>
                 <div class="table-wrap">
-                    <table class="table">
+                    <table
+                        class="table routes-variant-table"
+                        class:has-selection=move || selected.with(Option::is_some)
+                    >
+                        <caption class="sr-only">{tr!("routes.variants_caption")}</caption>
                         <thead>
                             <tr>
                                 <th>{tr!("routes.variant")}</th>
@@ -485,13 +645,38 @@ pub fn RouteCorridorPage() -> impl IntoView {
                                     let dist_label = move || fmt_distance(Some(median_distance), &prefs.get());
                                     let color = variant_swatch(i).to_string();
                                     let label = v.label.clone();
+                                    let id = v.id.clone();
+                                    let (id_sel, id_pressed, id_click) = (id.clone(), id.clone(), id.clone());
+                                    let (id_in, id_out, id_focus, id_blur) =
+                                        (id.clone(), id.clone(), id.clone(), id);
+                                    let hint_label = label.clone();
+                                    let preview = move |id: &str| hovered.set(Some(id.to_owned()));
+                                    let unpreview = move |id: &str| {
+                                        hovered.update(|h| if h.as_deref() == Some(id) { *h = None });
+                                    };
+                                    // The whole row is the click target; the name cell's
+                                    // button gives keyboard users Enter / Space and the
+                                    // pressed state (its click bubbles up to the row).
                                     view! {
-                                        <tr>
+                                        <tr
+                                            class="routes-variant-row"
+                                            class:is-selected=move || is_selected(&id_sel)
+                                            on:click=move |_| toggle_variant(&id_click)
+                                            on:mouseenter=move |_| preview(&id_in)
+                                            on:mouseleave=move |_| unpreview(&id_out)
+                                        >
                                             <td>
-                                                <span class="routes-name-with-swatch">
+                                                <button
+                                                    type="button"
+                                                    class="routes-name-with-swatch routes-variant-toggle"
+                                                    aria-pressed=move || is_selected(&id_pressed).to_string()
+                                                    title=move || tf("routes.highlight_variant", &[("label", &hint_label)])
+                                                    on:focus=move |_| preview(&id_focus)
+                                                    on:blur=move |_| unpreview(&id_blur)
+                                                >
                                                     <span class="routes-map-swatch is-variant" style=format!("background:{color}")></span>
                                                     {label}
-                                                </span>
+                                                </button>
                                             </td>
                                             <td>{v.trip_count}</td>
                                             <td>{fmt_duration(v.median_duration_secs)}</td>
@@ -600,5 +785,86 @@ pub fn RouteCorridorPage() -> impl IntoView {
                 }}
             }.into_any()
         }}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn corridor_geo() -> serde_json::Value {
+        json!({
+            "type": "FeatureCollection",
+            "features": [
+                // Map order differs from the list order on purpose.
+                {"properties": {"kind": "variant", "variant_id": "b", "color_index": 0},
+                 "geometry": {"type": "LineString", "coordinates": [[2.0, 41.0], [2.5, 41.4], [2.2, 40.9]]}},
+                {"properties": {"kind": "variant", "variant_id": "a", "color_index": 1},
+                 "geometry": {"type": "LineString", "coordinates": [[-3.7, 40.4]]}},
+                {"properties": {"kind": "variant", "variant_id": "orphan", "color_index": 2},
+                 "geometry": {"type": "LineString", "coordinates": []}},
+                {"properties": {"kind": "ors", "preference": "shortest", "color_index": 0},
+                 "geometry": {"type": "LineString", "coordinates": [[0.0, 0.0], [1.0, 1.0]]}},
+            ]
+        })
+    }
+
+    #[test]
+    fn colors_follow_list_rows_not_map_order() {
+        let mut geo = corridor_geo();
+        let ids = ["a".to_string(), "b".to_string()];
+        let prefs = ["fastest".to_string(), "shortest".to_string()];
+        stamp_corridor_colors(&mut geo, &ids, &prefs);
+        let p = |i: usize| geo["features"][i]["properties"].clone();
+        assert_eq!(p(0)["color_index"], 1);
+        assert_eq!(p(0)["route_color"], variant_swatch(1));
+        assert_eq!(p(1)["color_index"], 0);
+        assert_eq!(p(1)["route_color"], variant_swatch(0));
+        // No list row: the map's own color stays.
+        assert_eq!(p(2)["color_index"], 2);
+        assert!(p(2).get("route_color").is_none());
+        assert_eq!(p(3)["color_index"], 1);
+        assert_eq!(p(3)["route_color"], ors_swatch(1));
+    }
+
+    #[test]
+    fn stamping_tolerates_odd_payloads() {
+        for mut geo in [
+            json!(null),
+            json!({}),
+            json!({"features": [1, {"properties": null}]}),
+        ] {
+            let before = geo.clone();
+            stamp_corridor_colors(&mut geo, &["a".into()], &[]);
+            assert_eq!(geo, before);
+        }
+    }
+
+    #[test]
+    fn palettes_cycle_and_stay_distinct() {
+        assert_eq!(variant_swatch(VARIANT_SWATCHES.len()), variant_swatch(0));
+        let unique: std::collections::HashSet<_> = VARIANT_SWATCHES.iter().collect();
+        assert_eq!(unique.len(), VARIANT_SWATCHES.len());
+        assert!(VARIANT_SWATCHES.iter().all(|c| !ORS_SWATCHES.contains(c)));
+    }
+
+    #[test]
+    fn bounds_cover_the_selected_line_only() {
+        let geo = corridor_geo();
+        assert_eq!(variant_bounds(&geo, "b"), Some([2.0, 40.9, 2.5, 41.4]));
+        // A single point is a degenerate but valid box.
+        assert_eq!(variant_bounds(&geo, "a"), Some([-3.7, 40.4, -3.7, 40.4]));
+        assert_eq!(variant_bounds(&geo, "orphan"), None);
+        assert_eq!(variant_bounds(&geo, "missing"), None);
+        // ORS lines are never "variants", whatever their properties say.
+        assert_eq!(variant_bounds(&geo, "shortest"), None);
+    }
+
+    #[test]
+    fn clicking_toggles_selection() {
+        assert_eq!(toggle_selection(None, "a"), Some("a".into()));
+        assert_eq!(toggle_selection(Some("a"), "a"), None);
+        assert_eq!(toggle_selection(Some("a"), "b"), Some("b".into()));
     }
 }

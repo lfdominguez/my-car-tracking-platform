@@ -2741,6 +2741,59 @@ a:hover .routes-corridor-card {
   align-items: center;
   gap: 0.4rem;
 }
+
+/* Variant selection: a row / legend chip picks the line highlighted on the map.
+   Unselected rows dim like their lines do, so list and map read the same way. */
+.routes-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+/* Negative block margins: appearing must not push the legend down. */
+.routes-map-legend-title .routes-show-all { margin: -0.5rem 0 -0.5rem auto; }
+.routes-variant-toggle,
+.routes-variant-chip {
+  appearance: none;
+  background: none;
+  border: 0;
+  margin: 0;
+  font-family: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.routes-variant-toggle {
+  padding: 0.15rem 0.25rem;
+  margin: -0.15rem -0.25rem;
+  font-size: inherit;
+  color: inherit;
+}
+.routes-variant-chip {
+  padding: 0.2rem 0.45rem;
+  margin: -0.2rem -0.45rem;
+  border-radius: var(--radius-chip);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.routes-variant-chip:hover { color: var(--text); background: var(--color-accent-softer); }
+/* No weight change on select: bolder text would reflow the chips / columns. */
+.routes-variant-chip.is-selected {
+  color: var(--text);
+  background: var(--color-accent-soft);
+}
+.routes-variant-row { cursor: pointer; }
+.routes-variant-row td { transition: opacity var(--t-fast); }
+.routes-variant-table.has-selection .routes-variant-row:not(.is-selected):not(:hover) td { opacity: 0.55; }
+.table tbody tr.routes-variant-row.is-selected { background: var(--color-accent-soft); }
+.table tbody tr.routes-variant-row.is-selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.routes-variant-toggle[aria-pressed="true"] { color: var(--text); }
+/* Selected swatch gets a ring, echoing the white casing on its map line. */
+.routes-variant-toggle[aria-pressed="true"] .routes-map-swatch,
+.routes-variant-chip.is-selected .routes-map-swatch {
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--text);
+}
 .route-opt-popup-inner {
   display: flex;
   flex-direction: column;
