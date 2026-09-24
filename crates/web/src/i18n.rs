@@ -663,6 +663,54 @@ mod tests {
         );
     }
 
+    /// The reverse check: every key is referenced somewhere as a string literal
+    /// (keys also travel through const tables and props, e.g. `label="stats.…"`),
+    /// so dead entries do not pile up. `js.traffic.*` is looked up by prefix.
+    #[test]
+    fn every_key_is_referenced() {
+        fn collect(dir: &std::path::Path, out: &mut String) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    if !path.ends_with("i18n") {
+                        collect(&path, out);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    // This module's own helpers count; its tests do not.
+                    let code = if path.ends_with("i18n.rs") {
+                        text.split("#[cfg(test)]\nmod tests")
+                            .next()
+                            .unwrap_or_default()
+                    } else {
+                        &text
+                    };
+                    out.push_str(code);
+                }
+            }
+        }
+        let mut src = String::new();
+        collect(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut src,
+        );
+        let unused: Vec<_> = keys(en::TABLE)
+            .into_iter()
+            .filter(|key| {
+                let base = key
+                    .strip_suffix(".one")
+                    .or_else(|| key.strip_suffix(".other"))
+                    .unwrap_or(key);
+                let prefix = &key[..=key.rfind('.').unwrap_or(0)];
+                !src.contains(&format!("\"{key}\""))
+                    && !src.contains(&format!("\"{base}\""))
+                    && !src.contains(&format!("'{base}'"))
+                    && !src.contains(&format!("'{prefix}'"))
+            })
+            .collect();
+        assert!(unused.is_empty(), "unused keys: {unused:?}");
+    }
+
     #[test]
     fn lookup_follows_the_locale() {
         assert_eq!(with_locale(Locale::En, || t("nav.trips")), "Trips");

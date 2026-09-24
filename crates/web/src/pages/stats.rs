@@ -478,7 +478,7 @@ pub fn StatsPage() -> impl IntoView {
                                 <th>{tr!("stats.period")}</th>
                                 <th>{tr!("nav.trips")}</th>
                                 <th>{move || tf("dash.distance_unit", &[("unit", &prefs.get().labels.distance)])}</th>
-                                <th>{tr!("common.time")}</th>
+                                <th>{tr!("stats.time")}</th>
                                 <th>{move || tf("dash.fuel_unit", &[("unit", &prefs.get().labels.fuel_volume)])}</th>
                                 <th>"CO₂ (kg)"</th>
                                 <th>{tr!("stats.est_cost")}</th>
@@ -497,7 +497,7 @@ pub fn StatsPage() -> impl IntoView {
                                             <td data-label=tr!("stats.period")>{b.period_label(&r.period_start)}</td>
                                             <td class="num" data-label=tr!("nav.trips")>{crate::i18n::int(r.trips)}</td>
                                             <td class="num" data-label=tr!("common.distance")>{num(distance_value(r.distance, &p), 1)}</td>
-                                            <td class="num" data-label=tr!("common.time")>{fmt_hours(r.duration_s)}</td>
+                                            <td class="num" data-label=tr!("stats.time")>{fmt_hours(r.duration_s)}</td>
                                             <td class="num" data-label=tr!("common.fuel")>{num(r.fuel_used, 2)}</td>
                                             <td class="num" data-label="CO₂">{num(r.co2_kg, 1)}</td>
                                             <td class="num" data-label=tr!("stats.est_cost")>
