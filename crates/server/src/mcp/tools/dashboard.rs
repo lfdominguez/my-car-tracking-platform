@@ -275,8 +275,8 @@ pub async fn get_dashboard_summary(
         .filter(|c| !c.vault_sealed)
         .map(|c| CarDashDto {
             car_id: c.car_id,
-            name: c.name,
-            make_model: c.make_model,
+            name: ai::sanitize_user_text(&c.name, 80),
+            make_model: ai::sanitize_user_text(&c.make_model, 80),
             fuel_class: shared::FuelClass::parse(&c.fuel_class).as_str().to_string(),
             battery_capacity_kwh: c.battery_capacity_kwh,
             odometer: c.odometer.map(|v| convert_odometer_km(v, system)),

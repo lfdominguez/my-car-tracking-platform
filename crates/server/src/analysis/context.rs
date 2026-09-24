@@ -22,6 +22,8 @@ use crate::traffic::{
 use crate::units::UnitSystem;
 
 const ROUTE_POSITION_STEP_PCT: u8 = 5;
+/// Cap for user-entered car labels handed to the model.
+const USER_LABEL_MAX_CHARS: usize = 80;
 const ROUTE_POSITION_MATCH_RADIUS_M: f64 = 40.0;
 /// Overpass `around` radius for route-position OSM refresh (larger than match radius).
 const ROUTE_POSITION_AROUND_M: f64 = 100.0;
@@ -337,8 +339,12 @@ pub async fn build_trip_analysis_context(
 
     let overview = TripOverview {
         trip_id: track.track_id.to_string(),
-        car_name: track.car_name,
-        make_model: track.make_model,
+        // User-entered labels: flattened so they read as data, not as prompt text.
+        car_name: ai::sanitize_user_text(&track.car_name, USER_LABEL_MAX_CHARS),
+        make_model: track
+            .make_model
+            .as_deref()
+            .map(|m| ai::sanitize_user_text(m, USER_LABEL_MAX_CHARS)),
         fuel_type: track.fuel_type,
         fuel_class: class.as_str().to_string(),
         battery_capacity_kwh: track.battery_capacity_kwh,

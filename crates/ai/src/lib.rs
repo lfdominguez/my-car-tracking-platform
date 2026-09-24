@@ -21,5 +21,5 @@ pub use chat::{
 };
 pub use context::*;
 pub use error::AiError;
-pub use prompt::{ChatCarBrief, chat_system_prompt};
+pub use prompt::{ChatCarBrief, chat_system_prompt, quoted_user_text, sanitize_user_text};
 pub use report::*;

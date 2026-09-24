@@ -89,7 +89,7 @@ fn to_dto(mut r: TripRow, system: crate::units::UnitSystem) -> TripDto {
     TripDto {
         id: r.id,
         car_id: r.car_id,
-        car_name: r.car_name,
+        car_name: ai::sanitize_user_text(&r.car_name, 80),
         started_at: r.started_at,
         finished_at: r.finished_at,
         finished: r.finished,
