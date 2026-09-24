@@ -4,28 +4,140 @@
 //! `units` object naming the unit of each kind of figure, exactly like the trip and
 //! dashboard tools. The analysis context underneath is SI; handing that through
 //! unconverted next to converted trip headers made a model mix km/h with mph.
+//!
+//! The context is built without the OSM route profile (no Overpass round trip) and
+//! reused for a few minutes per trip and stats version, because a model typically
+//! asks for speed, engine, fuel and stops of the same trip back to back.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::analysis::context::build_trip_analysis_context;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+
+use tokio::sync::Mutex;
+
+use crate::analysis::context::build_trip_stats_context;
 use crate::error::{AppError, AppResult};
+use crate::trips::stats;
 use crate::units::{UnitSystem, convert_fuel_rate_lph, convert_speed_kph};
 
 use super::ToolCtx;
 use super::trips::require_readable_trip;
 
-async fn load_analysis(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<ai::TripAnalysisContext> {
+/// Build (or reuse) the telemetry context behind the stats tools.
+///
+/// Authorization runs first, on every call: the cache is only ever consulted for a
+/// trip this caller may read.
+async fn load_analysis(
+    ctx: &ToolCtx<'_>,
+    trip_id: Uuid,
+) -> AppResult<Arc<ai::TripAnalysisContext>> {
     require_readable_trip(ctx, trip_id).await?;
-    build_trip_analysis_context(
-        &ctx.state.pool,
-        trip_id,
-        ctx.user.unit_system,
-        &ctx.state.config.overpass_url,
+    let system = ctx.user.unit_system;
+    let version = stats_version(&ctx.state.pool, trip_id).await?;
+
+    if let Some(version) = version
+        && let Some(hit) = cache().get(trip_id, system, version).await
+    {
+        return Ok(hit);
+    }
+
+    let built = Arc::new(build_trip_stats_context(&ctx.state.pool, trip_id, system).await?);
+    if let Some(version) = version {
+        cache()
+            .put(trip_id, system, version, Arc::clone(&built))
+            .await;
+    }
+    Ok(built)
+}
+
+/// When the trip's usable `track_stats` row was computed, or `None` when there is
+/// none (trip still recording, late samples pending, schema moved on).
+///
+/// The stored row is recomputed whenever its inputs change — late samples, a car's
+/// fuel parameters — so its `computed_at` is a free, exact version for everything
+/// derived from the same points. No usable row means the data may still be moving,
+/// and such trips are simply not cached.
+async fn stats_version(pool: &sqlx::PgPool, trip_id: Uuid) -> AppResult<Option<DateTime<Utc>>> {
+    let sql = format!(
+        "SELECT s.computed_at FROM tracks t {} WHERE t.id = $1",
+        stats::stats_join_required("s")
+    );
+    Ok(
+        sqlx::query_scalar::<_, DateTime<Utc>>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(trip_id)
+            .fetch_optional(pool)
+            .await?,
     )
-    .await
+}
+
+/// How long a built context is reused. Long enough to cover one conversation's
+/// burst of speed/engine/fuel/stops calls on the same trip, short enough that
+/// memory does not hold telemetry for trips nobody is asking about.
+const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+/// Contexts carry a few hundred downsampled points each; this bounds the total.
+const CACHE_CAPACITY: usize = 64;
+
+struct CacheEntry {
+    version: DateTime<Utc>,
+    stored_at: Instant,
+    ctx: Arc<ai::TripAnalysisContext>,
+}
+
+#[derive(Default)]
+struct StatsCache {
+    // Keyed by unit system name: `UnitSystem` is not `Hash`.
+    entries: Mutex<HashMap<(Uuid, &'static str), CacheEntry>>,
+}
+
+impl StatsCache {
+    async fn get(
+        &self,
+        trip_id: Uuid,
+        system: UnitSystem,
+        version: DateTime<Utc>,
+    ) -> Option<Arc<ai::TripAnalysisContext>> {
+        let entries = self.entries.lock().await;
+        let entry = entries.get(&(trip_id, system.as_str()))?;
+        (entry.version == version && entry.stored_at.elapsed() < CACHE_TTL)
+            .then(|| Arc::clone(&entry.ctx))
+    }
+
+    async fn put(
+        &self,
+        trip_id: Uuid,
+        system: UnitSystem,
+        version: DateTime<Utc>,
+        ctx: Arc<ai::TripAnalysisContext>,
+    ) {
+        let mut entries = self.entries.lock().await;
+        entries.retain(|_, e| e.stored_at.elapsed() < CACHE_TTL);
+        if entries.len() >= CACHE_CAPACITY
+            && let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, e)| e.stored_at)
+                .map(|(k, _)| *k)
+        {
+            entries.remove(&oldest);
+        }
+        entries.insert(
+            (trip_id, system.as_str()),
+            CacheEntry {
+                version,
+                stored_at: Instant::now(),
+                ctx,
+            },
+        );
+    }
+}
+
+fn cache() -> &'static StatsCache {
+    static CACHE: OnceLock<StatsCache> = OnceLock::new();
+    CACHE.get_or_init(StatsCache::default)
 }
 
 /// Unit names for the figures in a stats result.
@@ -170,8 +282,8 @@ pub struct EngineStatsOut {
 pub async fn get_trip_engine_stats(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<EngineStatsOut> {
     let analysis = load_analysis(ctx, trip_id).await?;
     Ok(EngineStatsOut {
-        fuel_class: analysis.overview.fuel_class,
-        stats: analysis.engine,
+        fuel_class: analysis.overview.fuel_class.clone(),
+        stats: analysis.engine.clone(),
         units: StatsUnits::for_system(ctx.user.unit_system),
     })
 }
@@ -235,7 +347,7 @@ pub struct StopsOut {
 pub async fn get_trip_stops(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<StopsOut> {
     let analysis = load_analysis(ctx, trip_id).await?;
     Ok(StopsOut {
-        stops: analysis.stops,
+        stops: analysis.stops.clone(),
         units: StatsUnits::for_system(ctx.user.unit_system),
     })
 }
@@ -355,6 +467,58 @@ pub async fn get_trip_ai_report(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_context() -> Arc<ai::TripAnalysisContext> {
+        let json = serde_json::json!({
+            "overview": {
+                "trip_id": "t", "car_name": "c", "make_model": null, "fuel_type": "E10",
+                "fuel_class": "GASOLINE", "started_at": null, "finished_at": null,
+                "finished": true, "point_count": 0, "distance_m": null,
+                "duration_secs": null, "avg_speed_kph": null, "max_speed_kph": null,
+                "fuel_used_l": null, "displacement_l": null, "stoich_afr": null,
+                "density_gl": null, "ve": null
+            },
+            "units": {"distance": "km", "speed": "km/h", "fuel_volume": "L", "economy": "L/100km", "odometer": "km"},
+            "speed": {"sample_count": 0}, "engine": {}, "fuel": {}, "thermal": {},
+            "stops": {"stop_count": 0, "total_stop_secs": 0.0, "longest_stop_secs": 0.0, "stops": []},
+            "samples": [], "prior_markdown": null
+        });
+        Arc::new(serde_json::from_value(json).expect("context"))
+    }
+
+    #[tokio::test]
+    async fn cache_hits_only_for_the_same_version_and_units() {
+        let cache = StatsCache::default();
+        let trip = Uuid::new_v4();
+        let v1 = Utc::now();
+        let v2 = v1 + chrono::Duration::seconds(1);
+        cache
+            .put(trip, UnitSystem::Metric, v1, empty_context())
+            .await;
+
+        assert!(cache.get(trip, UnitSystem::Metric, v1).await.is_some());
+        // Recomputed stats (late samples, new fuel parameters) invalidate it.
+        assert!(cache.get(trip, UnitSystem::Metric, v2).await.is_none());
+        assert!(cache.get(trip, UnitSystem::Us, v1).await.is_none());
+        assert!(
+            cache
+                .get(Uuid::new_v4(), UnitSystem::Metric, v1)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_stays_within_capacity() {
+        let cache = StatsCache::default();
+        let v = Utc::now();
+        for _ in 0..CACHE_CAPACITY + 10 {
+            cache
+                .put(Uuid::new_v4(), UnitSystem::Metric, v, empty_context())
+                .await;
+        }
+        assert_eq!(cache.entries.lock().await.len(), CACHE_CAPACITY);
+    }
 
     #[test]
     fn us_speed_stats_are_converted_and_labelled() {

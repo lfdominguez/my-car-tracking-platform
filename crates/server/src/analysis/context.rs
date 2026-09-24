@@ -146,11 +146,47 @@ fn sanitize_analysis_points(points: &mut [PointRow]) -> Vec<SpeedSample> {
     raw
 }
 
+/// Whether to build the route position profile, which may call Overpass.
+#[derive(Debug, Clone, Copy)]
+enum RoutePositions<'a> {
+    /// Refresh OSM ways near the anchors via this Overpass URL, then match them.
+    WithOsm(&'a str),
+    /// Leave the profile empty. For callers that never read it.
+    Skip,
+}
+
+/// Everything the trip analysis agent reads, including the OSM route profile.
 pub async fn build_trip_analysis_context(
     pool: &PgPool,
     track_id: Uuid,
     unit_system: UnitSystem,
     overpass_url: &str,
+) -> AppResult<TripAnalysisContext> {
+    build_context(
+        pool,
+        track_id,
+        unit_system,
+        RoutePositions::WithOsm(overpass_url),
+    )
+    .await
+}
+
+/// The same context without the route position profile, so it never waits on
+/// Overpass: for the per-trip stats tools, which answer from telemetry alone and
+/// may be called many times in one conversation.
+pub async fn build_trip_stats_context(
+    pool: &PgPool,
+    track_id: Uuid,
+    unit_system: UnitSystem,
+) -> AppResult<TripAnalysisContext> {
+    build_context(pool, track_id, unit_system, RoutePositions::Skip).await
+}
+
+async fn build_context(
+    pool: &PgPool,
+    track_id: Uuid,
+    unit_system: UnitSystem,
+    route: RoutePositions<'_>,
 ) -> AppResult<TripAnalysisContext> {
     let track = sqlx::query_as::<_, TrackCarRow>(
         r#"
@@ -300,7 +336,15 @@ pub async fn build_trip_analysis_context(
     let thermal = compute_thermal_stats(&points);
     let stops = compute_stops(&points);
     let samples = downsample_samples(&points, 400, class);
-    let route_positions = build_route_position_profile(pool, &points, overpass_url).await;
+    let route_positions = match route {
+        RoutePositions::WithOsm(overpass_url) => {
+            build_route_position_profile(pool, &points, overpass_url).await
+        }
+        RoutePositions::Skip => RoutePositionProfile {
+            note: Some("route positions were not computed for this request".into()),
+            ..RoutePositionProfile::default()
+        },
+    };
 
     let traffic_row = sqlx::query_as::<
         _,

@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::state::AppState;
 
 use super::auth::{McpUser, mcp_bearer_middleware};
+use super::rate_limit::{McpRateLimiter, mcp_rate_limit_middleware};
 use super::tools::{self, ToolCtx};
 
 #[derive(Clone)]
@@ -379,8 +380,14 @@ pub fn router(state: AppState) -> Router<AppState> {
             .with_allowed_hosts(allowed_hosts),
     );
 
+    // Layers run outermost-last: the bearer check resolves the token's user first,
+    // then that user's rate budget is charged.
     Router::new()
         .nest_service("/mcp", service)
+        .layer(axum_mw::from_fn_with_state(
+            Arc::new(McpRateLimiter::new()),
+            mcp_rate_limit_middleware,
+        ))
         .layer(axum_mw::from_fn_with_state(state, mcp_bearer_middleware))
 }
 
