@@ -178,6 +178,21 @@ pub struct Trip {
     pub notes: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Names of the user's places the trip started / ended in (#111).
+    #[serde(default)]
+    pub start_place: Option<String>,
+    #[serde(default)]
+    pub end_place: Option<String>,
+}
+
+impl Trip {
+    /// "Home → Office", "Home → …", or `None` when neither end is a place.
+    pub fn places_label(&self) -> Option<String> {
+        match (self.start_place.as_deref(), self.end_place.as_deref()) {
+            (None, None) => None,
+            (a, b) => Some(format!("{} → {}", a.unwrap_or("…"), b.unwrap_or("…"))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1825,4 +1840,52 @@ pub async fn delete_alert_rule(car_id: &str, rule_id: &str) -> Result<(), ApiErr
         "/api/cars/{car_id}/alert-rules/{rule_id}"
     )))
     .await
+}
+
+// --- places / geofences (#111) ---------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Geofence {
+    pub id: String,
+    pub car_id: Option<String>,
+    pub name: String,
+    pub center_lat: Option<f64>,
+    pub center_lon: Option<f64>,
+    pub radius_m: Option<f64>,
+    /// `[[lon, lat], ...]`, first vertex not repeated.
+    pub polygon: Option<Vec<[f64; 2]>>,
+    pub notify: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GeofenceEvent {
+    pub id: String,
+    pub car_id: String,
+    pub track_id: Option<String>,
+    /// `enter` or `exit`.
+    pub kind: String,
+    pub at: String,
+}
+
+pub async fn list_geofences() -> Result<Vec<Geofence>, ApiError> {
+    send_json(Request::get("/api/geofences")).await
+}
+
+/// `body`: `{name, car_id?, notify, center_lat, center_lon, radius_m}` or
+/// `{name, car_id?, notify, polygon}`.
+pub async fn create_geofence(body: &serde_json::Value) -> Result<Geofence, ApiError> {
+    send_json_body(Request::post("/api/geofences"), body).await
+}
+
+pub async fn update_geofence(id: &str, body: &serde_json::Value) -> Result<Geofence, ApiError> {
+    send_json_body(Request::patch(&format!("/api/geofences/{id}")), body).await
+}
+
+pub async fn delete_geofence(id: &str) -> Result<(), ApiError> {
+    send_no_content(Request::delete(&format!("/api/geofences/{id}"))).await
+}
+
+pub async fn geofence_events(id: &str) -> Result<Vec<GeofenceEvent>, ApiError> {
+    send_json(Request::get(&format!("/api/geofences/{id}/events"))).await
 }

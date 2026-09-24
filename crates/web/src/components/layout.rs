@@ -147,6 +147,10 @@ pub fn AppLayout() -> impl IntoView {
                         <Icon name="map-trifold" color=IconColor::Accent />
                         "Trips"
                     </A>
+                    <A href="/app/places" on:click=move |_| nav_open.set(false)>
+                        <Icon name="map-pin-area" color=IconColor::Accent />
+                        "Places"
+                    </A>
                     <A href="/app/routes" on:click=move |_| nav_open.set(false)>
                         <Icon name="path" color=IconColor::Accent />
                         "Routes"

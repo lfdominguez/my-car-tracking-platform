@@ -4643,3 +4643,52 @@ button.cal-day:hover { box-shadow: inset 0 0 0 1px var(--text); }
   .alert-rule { grid-template-columns: 1fr auto; }
   .alert-rule-threshold { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; }
 }
+
+/* ---- Places (#111) ----------------------------------------------------------- */
+.places-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+.places-layout > .card { margin-top: 0; }
+@media (max-width: 1000px) { .places-layout { grid-template-columns: minmax(0, 1fr); } }
+.places-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; margin-bottom: 0.75rem; }
+.places-radius { display: flex; align-items: center; gap: 0.6rem; margin: 0; flex: 1 1 16rem; }
+.places-radius input[type="range"] { flex: 1; min-height: 0; padding: 0; border: 0; background: transparent; box-shadow: none; accent-color: var(--accent); }
+.places-radius-value { font-family: var(--font-family-mono); font-size: var(--text-sm); color: var(--text); min-width: 4.5rem; }
+.areas-map { height: 440px; }
+.places-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 0.6rem 0.75rem;
+  align-items: end;
+  margin-top: 0.85rem;
+}
+.places-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+.place-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.place-main { display: flex; flex-direction: column; min-width: 0; }
+.place-name { color: var(--text); font-weight: var(--font-weight-body-bold); }
+.place-meta { font-size: var(--text-xs); }
+.place-actions { display: flex; align-items: center; gap: 0.3rem; }
+.place-events { list-style: none; margin: 0.3rem 0 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 0.3rem; font-size: var(--text-sm); }
+.place-events li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.trip-card-places {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+  color: var(--body);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-body-medium);
+}

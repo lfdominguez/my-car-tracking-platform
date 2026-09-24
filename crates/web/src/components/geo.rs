@@ -277,6 +277,73 @@ export function geoSetCursor(elId, lon, lat) {
   }
 }
 
+/**
+ * Areas (places): `json` = { areas: [{ id, ring: [[lon, lat], ...], draft, label }],
+ * vertices: [[lon, lat], ...], fitKey }. Map clicks dispatch `geo-map-click` with
+ * `{ el, lon, lat }`.
+ */
+export function geoRenderAreas(elId, json) {
+  let data;
+  try { data = JSON.parse(json) || {}; } catch (_) { return; }
+  withGeoMap(elId, (entry) => {
+    const map = entry.map;
+    const accent = cssVar('--color-accent', '#5a9aff');
+    const warn = cssVar('--color-warning', '#ffb545');
+    const areaFc = {
+      type: 'FeatureCollection',
+      features: (data.areas || []).filter((a) => (a.ring || []).length >= 3).map((a) => ({
+        type: 'Feature',
+        properties: { id: a.id, draft: !!a.draft, label: a.label || '' },
+        geometry: { type: 'Polygon', coordinates: [[...a.ring, a.ring[0]]] },
+      })),
+    };
+    const vertexFc = {
+      type: 'FeatureCollection',
+      features: (data.vertices || []).map((c) => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: c } })),
+    };
+    if (!map.getSource('geo-areas')) {
+      map.addSource('geo-areas', { type: 'geojson', data: areaFc });
+      map.addSource('geo-vertices', { type: 'geojson', data: vertexFc });
+      map.addLayer({
+        id: 'geo-areas-fill', type: 'fill', source: 'geo-areas',
+        paint: { 'fill-color': ['case', ['get', 'draft'], warn, accent], 'fill-opacity': 0.18 },
+      });
+      map.addLayer({
+        id: 'geo-areas-line', type: 'line', source: 'geo-areas',
+        paint: {
+          'line-color': ['case', ['get', 'draft'], warn, accent],
+          'line-width': ['case', ['get', 'draft'], 3, 2],
+        },
+      });
+      map.addLayer({
+        id: 'geo-areas-label', type: 'symbol', source: 'geo-areas',
+        layout: { 'text-field': ['get', 'label'], 'text-size': 12, 'text-allow-overlap': false },
+        paint: { 'text-color': '#1b2330', 'text-halo-color': 'rgba(255,255,255,0.95)', 'text-halo-width': 1.6 },
+      });
+      map.addLayer({
+        id: 'geo-vertices', type: 'circle', source: 'geo-vertices',
+        paint: { 'circle-radius': 5, 'circle-color': warn, 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 },
+      });
+      map.getCanvas().style.cursor = 'crosshair';
+      map.on('click', (e) => {
+        window.dispatchEvent(new CustomEvent('geo-map-click', {
+          detail: { el: elId, lon: e.lngLat.lng, lat: e.lngLat.lat },
+        }));
+      });
+    } else {
+      map.getSource('geo-areas').setData(areaFc);
+      map.getSource('geo-vertices').setData(vertexFc);
+    }
+    const key = String(data.fitKey || '');
+    if (key && key !== entry.fitKey) {
+      entry.fitKey = key;
+      const pts = [];
+      for (const f of areaFc.features) for (const c of f.geometry.coordinates[0]) pts.push(c);
+      fitTo(map, pts, 15);
+    }
+  });
+}
+
 export function disposeGeoMap(elId) {
   __geoPending.delete(elId);
   const entry = __geoMaps.get(elId);
@@ -290,6 +357,7 @@ export function disposeGeoMap(elId) {
 extern "C" {
     fn geoRenderLive(el_id: &str, json: &str);
     fn geoRenderLines(el_id: &str, json: &str);
+    fn geoRenderAreas(el_id: &str, json: &str);
     fn geoSetCursor(el_id: &str, lon: f64, lat: f64);
     fn disposeGeoMap(el_id: &str);
 }
@@ -374,6 +442,56 @@ pub fn LinesMap(
         });
     }
     view! { <div id=id class="map lines-map"></div> }
+}
+
+/// One area on an [`AreasMap`].
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MapArea {
+    pub id: String,
+    /// Closed ring without the repeated first vertex, `[lon, lat]`.
+    pub ring: Vec<[f64; 2]>,
+    /// The shape being drawn (highlighted).
+    pub draft: bool,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct AreasData {
+    pub areas: Vec<MapArea>,
+    /// Polygon vertices placed so far.
+    pub vertices: Vec<[f64; 2]>,
+    #[serde(rename = "fitKey")]
+    pub fit_key: String,
+}
+
+/// Places / geofences (#111). Clicks arrive as `geo-map-click` window events.
+#[component]
+pub fn AreasMap(#[prop(into)] data: Signal<AreasData>, id: &'static str) -> impl IntoView {
+    on_cleanup(move || disposeGeoMap(id));
+    Effect::new(move |_| {
+        let Some(d) = data.try_get() else {
+            return;
+        };
+        if let Ok(json) = serde_json::to_string(&d) {
+            geoRenderAreas(id, &json);
+        }
+    });
+    view! { <div id=id class="map areas-map"></div> }
+}
+
+/// A circle as a 64-vertex ring (`[lon, lat]`), good enough to draw.
+pub fn circle_ring(lat: f64, lon: f64, radius_m: f64) -> Vec<[f64; 2]> {
+    const R: f64 = 6_371_000.0;
+    let d = radius_m / R;
+    let (la, lo) = (lat.to_radians(), lon.to_radians());
+    (0..64)
+        .map(|i| {
+            let b = (i as f64) * std::f64::consts::TAU / 64.0;
+            let la2 = (la.sin() * d.cos() + la.cos() * d.sin() * b.cos()).asin();
+            let lo2 = lo + (b.sin() * d.sin() * la.cos()).atan2(d.cos() - la.sin() * la2.sin());
+            [lo2.to_degrees(), la2.to_degrees()]
+        })
+        .collect()
 }
 
 /// `[lon, lat]` pairs from a GeoJSON LineString value.

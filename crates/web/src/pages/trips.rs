@@ -878,6 +878,7 @@ pub fn TripsPage() -> impl IntoView {
                     let status_stale = !finished && status_label.starts_with("No GPS");
                     let car = t.car_name.clone();
                     let started = pretty_started(&t.started_at);
+                    let places = t.places_label();
                     let purpose = t.purpose.as_deref().and_then(purpose_label);
                     let purpose_class = format!(
                         "pill pill-purpose is-{}",
@@ -935,6 +936,12 @@ pub fn TripsPage() -> impl IntoView {
                                     <div>
                                         <div class="trip-card-title">{car}</div>
                                         <div class="trip-card-sub muted">{format!("{started} · {id_short}")}</div>
+                                        {places.map(|p| view! {
+                                            <div class="trip-card-places">
+                                                <Icon name="map-pin" size=IconSize::Sm />
+                                                {p}
+                                            </div>
+                                        })}
                                     </div>
                                     <div class="trip-card-badges">
                                         {purpose.map(|label| view! { <span class=purpose_class.clone()>{label}</span> })}
@@ -1466,8 +1473,12 @@ pub fn TripDetailPage() -> impl IntoView {
                                             &t.started_at,
                                         )
                                     };
+                                    let places = t
+                                        .places_label()
+                                        .map(|p| format!("{p} · "))
+                                        .unwrap_or_default();
                                     format!(
-                                        "{status} · fuel {} · {} samples",
+                                        "{places}{status} · fuel {} · {} samples",
                                         t.fuel_type_snapshot, t.point_count,
                                     )
                                 })
