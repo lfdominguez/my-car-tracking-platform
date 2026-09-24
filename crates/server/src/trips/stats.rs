@@ -187,7 +187,8 @@ pub fn stats_join(alias: &str) -> String {
         "LEFT JOIN track_stats {alias}
                 ON {alias}.track_id = t.id
                AND NOT {alias}.stale
-               AND {alias}.schema_version = {SCHEMA_VERSION}"
+               -- A pruned trip's row is all there is: keep using it after a schema bump.
+               AND ({alias}.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)"
     )
 }
 
@@ -198,7 +199,7 @@ pub fn stats_join_required(alias: &str) -> String {
         "JOIN track_stats {alias}
                 ON {alias}.track_id = t.id
                AND NOT {alias}.stale
-               AND {alias}.schema_version = {SCHEMA_VERSION}"
+               AND ({alias}.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)"
     )
 }
 
@@ -210,7 +211,7 @@ pub fn no_usable_stats() -> String {
                       SELECT 1 FROM track_stats s2
                       WHERE s2.track_id = t.id
                         AND NOT s2.stale
-                        AND s2.schema_version = {SCHEMA_VERSION}
+                        AND (s2.schema_version = {SCHEMA_VERSION} OR t.points_pruned_at IS NOT NULL)
                   )"
     )
 }
@@ -246,6 +247,8 @@ pub async fn recompute(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
         {lateral}
         WHERE t.id = $1
           AND ou.vault_status <> 'active'
+          -- Pruned trips keep the row computed before their points were deleted.
+          AND t.points_pruned_at IS NULL
         ON CONFLICT (track_id) DO UPDATE SET
             point_count = EXCLUDED.point_count,
             first_point_at = EXCLUDED.first_point_at,

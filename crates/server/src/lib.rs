@@ -78,6 +78,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(notifications::router())
         .merge(cars::router())
         .merge(garage::router())
+        .merge(maintenance::router())
         .merge(alerts::router())
         .merge(geofences::router())
         .merge(driving::router())
