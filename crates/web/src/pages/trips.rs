@@ -819,6 +819,15 @@ pub fn TripDetailPage() -> impl IntoView {
                                     t.fuel_used_moving_l = meta.fuel_used_moving_l;
                                     t.fuel_from_level_l = meta.fuel_from_level_l;
                                 }
+                                // The charts gate liquid-fuel panels on the fuel class;
+                                // a sealed trip may only have it in the car profile.
+                                if let Some(t) = si_trip.as_mut()
+                                    && t.fuel_class_snapshot.is_empty()
+                                    && let Ok(Some(profile)) =
+                                        decrypt_car_profile(&sess, &car_id).await
+                                {
+                                    t.fuel_class_snapshot = profile.fuel_class;
+                                }
                                 // The effect above converts both into display units.
                                 if alive_fetch.load(Ordering::SeqCst)
                                     && let Some(t) = si_trip
@@ -1311,6 +1320,11 @@ pub fn TripDetailPage() -> impl IntoView {
                 </div>
                 <TripTelemetryDashboard
                     points=clean_points.into()
+                    fuel_class=Signal::derive(move || {
+                        trip.with(|t| {
+                            t.as_ref().map(|t| t.fuel_class_snapshot.clone()).unwrap_or_default()
+                        })
+                    })
                     trip_economy=Signal::derive(move || {
                         let t = trip.get()?;
                         let p = prefs.get();

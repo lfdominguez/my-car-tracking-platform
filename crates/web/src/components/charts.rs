@@ -621,6 +621,43 @@ fn sample_time(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .map(|n| n.and_utc())
 }
 
+/// Liquid-fuel signals as the fuel class allows them, mirroring the server's trip
+/// fuel integral:
+/// - `FULL_ELECTRIC` burns no liquid fuel, so fuel rate, tank level and the
+///   mixture/trim signals are dropped (their panels, chips and the Fuel tab go
+///   with them);
+/// - `HYBRID` reports liquid L/h only while the engine turns: with RPM at 0 (or
+///   missing) the rate is 0, whatever the adapter says — RPM 0 is a valid state
+///   for a hybrid that is on, not a gap.
+fn apply_fuel_class(points: &[TripPoint], fuel_class: &str) -> Vec<TripPoint> {
+    let class = fuel_class.trim().to_ascii_uppercase();
+    match class.as_str() {
+        "FULL_ELECTRIC" => points
+            .iter()
+            .cloned()
+            .map(|mut p| {
+                p.fuel_consumption_rate = None;
+                p.fuel_level_pct = None;
+                p.short_term_fuel_trim_pct = None;
+                p.long_term_fuel_trim_pct = None;
+                p.lambda_cmd = None;
+                p
+            })
+            .collect(),
+        "HYBRID" => points
+            .iter()
+            .cloned()
+            .map(|mut p| {
+                if p.fuel_consumption_rate.is_some() && coalesce_rpm(&p).unwrap_or(0.0) <= 0.0 {
+                    p.fuel_consumption_rate = Some(0.0);
+                }
+                p
+            })
+            .collect(),
+        _ => points.to_vec(),
+    }
+}
+
 /// Speed/RPM with isolated OBD spikes removed, for the map and the charts.
 ///
 /// Runs the same `shared::telemetry_sanitize::sanitize_speed_rpm` pass the server
@@ -1509,10 +1546,17 @@ fn build_signal_chips(
 pub fn TripTelemetryDashboard(
     points: Signal<Vec<TripPoint>>,
     #[prop(optional)] trip_economy: Option<Signal<Option<f64>>>,
+    /// Trip fuel class (`fuel_class_snapshot`); empty behaves like GASOLINE.
+    #[prop(optional)]
+    fuel_class: Option<Signal<String>>,
 ) -> impl IntoView {
     let prefs = use_unit_prefs();
     let smooth = RwSignal::new(true);
     let category = RwSignal::new(load_category_filter());
+    let points = Memo::new(move |_| {
+        let class = fuel_class.map(|c| c.get()).unwrap_or_default();
+        points.with(|pts| apply_fuel_class(pts, &class))
+    });
 
     let chips = Memo::new(move |_| {
         let unit_prefs = prefs.get();
@@ -2133,6 +2177,28 @@ mod tests {
             "intake_air_temperature": null, "mass_air_flow": null
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn fuel_class_gates_liquid_fuel() {
+        let mut p = point(0, Some(30.0));
+        p.fuel_consumption_rate = Some(1.5);
+        p.short_term_fuel_trim_pct = Some(2.0);
+        p.vehicle_engine_rpm = Some(0.0);
+        let hybrid = apply_fuel_class(std::slice::from_ref(&p), "HYBRID");
+        assert_eq!(
+            hybrid[0].fuel_consumption_rate,
+            Some(0.0),
+            "engine off → no L/h"
+        );
+        p.vehicle_engine_rpm = Some(1800.0);
+        let hybrid = apply_fuel_class(std::slice::from_ref(&p), "hybrid");
+        assert_eq!(hybrid[0].fuel_consumption_rate, Some(1.5));
+        let ev = apply_fuel_class(std::slice::from_ref(&p), "FULL_ELECTRIC");
+        assert_eq!(ev[0].fuel_consumption_rate, None);
+        assert_eq!(ev[0].short_term_fuel_trim_pct, None);
+        let gas = apply_fuel_class(std::slice::from_ref(&p), "");
+        assert_eq!(gas[0], p);
     }
 
     #[test]

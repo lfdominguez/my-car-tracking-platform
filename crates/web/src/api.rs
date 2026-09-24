@@ -127,6 +127,9 @@ pub struct Trip {
     pub finished_at: Option<String>,
     pub finished: bool,
     pub fuel_type_snapshot: String,
+    /// GASOLINE / DIESEL / HYBRID / FULL_ELECTRIC at the time of the trip.
+    #[serde(default)]
+    pub fuel_class_snapshot: String,
     pub point_count: i64,
     pub distance_m: Option<f64>,
     #[serde(default)]
