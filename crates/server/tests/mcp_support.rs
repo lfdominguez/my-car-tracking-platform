@@ -247,6 +247,193 @@ pub fn cruise(n: usize) -> Vec<Sample> {
         .collect()
 }
 
+/// Sign in through the dev-login route; returns a cookie-carrying client and the
+/// new user's id.
+pub async fn login(base: &str) -> (reqwest::Client, Uuid) {
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let email = format!("t-{}@example.com", Uuid::new_v4());
+    let r = client
+        .post(format!("{base}/auth/dev-login"))
+        .json(&serde_json::json!({ "email": email, "name": "Tester" }))
+        .send()
+        .await
+        .expect("dev-login");
+    assert!(
+        r.status().is_success() || r.status().is_redirection(),
+        "dev-login {}",
+        r.status()
+    );
+    let me: serde_json::Value = client
+        .get(format!("{base}/api/me"))
+        .send()
+        .await
+        .expect("me")
+        .json()
+        .await
+        .expect("me json");
+    let id = Uuid::parse_str(me["id"].as_str().expect("id")).unwrap();
+    (client, id)
+}
+
+/// Store an (encrypted) OpenRouter key and model for `user_id`, as Settings would.
+pub async fn set_openrouter(state: &AppState, user_id: Uuid, model: &str) {
+    let (nonce, ct, version) =
+        server::crypto::encrypt_secret_versioned(b"sk-or-test", &state.keyring).unwrap();
+    sqlx::query(
+        "UPDATE users SET openrouter_api_key_enc = $2, openrouter_api_key_nonce = $3,
+                          openrouter_key_version = $4, openrouter_model = $5
+         WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(&ct)
+    .bind(&nonce)
+    .bind(version)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("set openrouter key");
+}
+
+/// Stand-in for OpenRouter, steered by the request's `model`:
+///
+/// * `mock/ok` — answers (streamed for chat, a submitted report for analysis);
+/// * `mock/tool` — chat only: first calls `list_cars`, then answers;
+/// * `mock/slow` — waits 30 s first, long enough to be cancelled;
+/// * `mock/credits` — HTTP 402, out of credits.
+///
+/// Every request body is recorded for assertions.
+pub struct MockOpenRouter {
+    pub base: String,
+    pub requests: std::sync::Arc<tokio::sync::Mutex<Vec<serde_json::Value>>>,
+}
+
+pub async fn mock_openrouter() -> MockOpenRouter {
+    use axum::Json;
+    use axum::extract::State;
+    use axum::http::{StatusCode, header};
+    use axum::response::{IntoResponse, Response};
+    use serde_json::{Value, json};
+
+    type Log = std::sync::Arc<tokio::sync::Mutex<Vec<Value>>>;
+
+    fn sse(frames: &[Value]) -> Response {
+        let mut body = String::new();
+        for f in frames {
+            body.push_str(&format!("data: {f}\n\n"));
+        }
+        body.push_str("data: [DONE]\n\n");
+        ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+    }
+
+    fn text_stream(text: &str) -> Response {
+        sse(&[json!({
+            "model": "mock",
+            "choices": [{ "delta": { "content": text }, "finish_reason": "stop" }]
+        })])
+    }
+
+    async fn completions(State(log): State<Log>, Json(body): Json<Value>) -> Response {
+        log.lock().await.push(body.clone());
+        let model = body["model"].as_str().unwrap_or_default().to_string();
+        let streaming = body["stream"].as_bool().unwrap_or(false);
+        let messages = body["messages"].as_array().cloned().unwrap_or_default();
+        let answered_tool = messages
+            .iter()
+            .rev()
+            .take_while(|m| m["role"] != "user")
+            .any(|m| m["role"] == "tool");
+
+        if model == "mock/slow" {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+        if model == "mock/credits" {
+            return (
+                StatusCode::PAYMENT_REQUIRED,
+                Json(json!({ "error": { "message": "Insufficient credits", "code": 402 } })),
+            )
+                .into_response();
+        }
+
+        if !streaming {
+            // Trip analysis: submit a report straight away.
+            let report = json!({
+                "summary": "Residential streets, calm drive (0 hard brakes).",
+                "mechanical_findings": [],
+                "driving_style": { "assessment": "calm", "positives": [], "improvements": [] },
+                "financial": { "fuel_used_note": "", "efficiency_notes": "", "potential_savings": "" },
+                "confidence": "medium",
+                "markdown": "## Route\nResidential streets."
+            });
+            return Json(json!({
+                "model": "mock",
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_submit",
+                            "type": "function",
+                            "function": {
+                                "name": "submit_analysis_report",
+                                "arguments": report.to_string()
+                            }
+                        }]
+                    }
+                }]
+            }))
+            .into_response();
+        }
+
+        if model == "mock/tool" && !answered_tool {
+            return sse(&[json!({
+                "model": "mock",
+                "choices": [{
+                    "delta": { "tool_calls": [{
+                        "index": 0, "id": "call_cars", "type": "function",
+                        "function": { "name": "list_cars", "arguments": "{}" }
+                    }]},
+                    "finish_reason": "tool_calls"
+                }]
+            })]);
+        }
+        if answered_tool {
+            return text_stream("Here is what I found.");
+        }
+        text_stream("Hello there.")
+    }
+
+    let requests: Log = Default::default();
+    let app = axum::Router::new()
+        .route("/chat/completions", axum::routing::post(completions))
+        .with_state(std::sync::Arc::clone(&requests));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    MockOpenRouter {
+        base: format!("http://{addr}"),
+        requests,
+    }
+}
+
+/// Point the `ai` client at `base` for the rest of this process.
+///
+/// Each test binary using this runs a single current-thread `#[tokio::test]` and
+/// calls it right after starting the mock (a task on that same thread) and before
+/// touching the database or serving the app.
+pub fn use_openrouter_base(base: &str) {
+    // SAFETY: no other thread of this process is running code at this point: the
+    // harness thread is parked waiting for the only test, and the mock server is a
+    // task on the current thread. Nothing can read the environment concurrently.
+    unsafe { std::env::set_var("OPENROUTER_BASE_URL", base) };
+}
+
 pub async fn insert_corridor(pool: &PgPool, car_id: Uuid) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
