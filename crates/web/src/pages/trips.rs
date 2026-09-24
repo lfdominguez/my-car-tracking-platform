@@ -26,6 +26,43 @@ use crate::vault::{
 /// its samples.
 type VaultTripSi = (Trip, Vec<TripPoint>);
 
+/// Drive three futures concurrently and return all outputs (a dependency-free
+/// `futures::join!` for the one place that needs it).
+async fn join3<A, B, C>(a: A, b: B, c: C) -> (A::Output, B::Output, C::Output)
+where
+    A: std::future::Future,
+    B: std::future::Future,
+    C: std::future::Future,
+{
+    use std::task::Poll;
+    let (mut a, mut b, mut c) = (std::pin::pin!(a), std::pin::pin!(b), std::pin::pin!(c));
+    let (mut ra, mut rb, mut rc) = (None, None, None);
+    std::future::poll_fn(|cx| {
+        if ra.is_none()
+            && let Poll::Ready(v) = a.as_mut().poll(cx)
+        {
+            ra = Some(v);
+        }
+        if rb.is_none()
+            && let Poll::Ready(v) = b.as_mut().poll(cx)
+        {
+            rb = Some(v);
+        }
+        if rc.is_none()
+            && let Poll::Ready(v) = c.as_mut().poll(cx)
+        {
+            rc = Some(v);
+        }
+        if ra.is_some() && rb.is_some() && rc.is_some() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    (ra.unwrap(), rb.unwrap(), rc.unwrap())
+}
+
 fn fmt_duration(s: Option<f64>) -> String {
     let secs = s.unwrap_or(0.0).max(0.0);
     let mins = (secs / 60.0).floor() as i64;
@@ -875,43 +912,27 @@ pub fn TripDetailPage() -> impl IntoView {
                     err = Some("Unlock the vault to decrypt this trip.".into());
                 }
             } else {
-                match trip_points(&id_fetch).await {
-                    Ok(p) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            points.set(p);
-                        }
-                    }
+                // Fetched together and applied in one synchronous block, so the map
+                // (which depends on all three) builds once instead of once per
+                // response, and the three round trips overlap.
+                let (p, g, f) = join3(
+                    trip_points(&id_fetch),
+                    trip_map(&id_fetch),
+                    trip_traffic_frames(&id_fetch),
+                )
+                .await;
+                if !alive_fetch.load(Ordering::SeqCst) {
+                    return;
+                }
+                match p {
+                    Ok(p) => points.set(p),
                     Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
                 }
-                if !alive_fetch.load(Ordering::SeqCst) {
-                    return;
-                }
-                match trip_map(&id_fetch).await {
-                    Ok(g) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            geojson.set(Some(g));
-                        }
-                    }
+                match g {
+                    Ok(g) => geojson.set(Some(g)),
                     Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
                 }
-                if !alive_fetch.load(Ordering::SeqCst) {
-                    return;
-                }
-                match trip_traffic_frames(&id_fetch).await {
-                    Ok(f) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            traffic_frames.set(f);
-                        }
-                    }
-                    Err(_) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            traffic_frames.set(Vec::new());
-                        }
-                    }
-                }
-                if !alive_fetch.load(Ordering::SeqCst) {
-                    return;
-                }
+                traffic_frames.set(f.unwrap_or_default());
                 match fetch_trip_analysis(&id_fetch).await {
                     Ok(a) => {
                         if alive_fetch.load(Ordering::SeqCst) {

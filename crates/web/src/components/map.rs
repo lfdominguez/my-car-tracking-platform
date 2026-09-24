@@ -294,11 +294,61 @@ function bindArrowZoomRefresh(entry) {
   });
 }
 
+/** Colour steps along the speed ramp; consecutive segments in one step share a line. */
+const SPEED_BINS = 24;
+
+/** Furthest a sample may sit from a traffic frame and still take its colour. */
+const TRAFFIC_MATCH_MAX_GAP_MS = 30000;
+
+/** Frames with parsed bounds, sorted by start, for binary search. */
+function prepareTrafficFrames(frames) {
+  return (frames || [])
+    .map((f) => ({ a: Date.parse(f.t_start), b: Date.parse(f.t_end), level: f.level || null }))
+    .filter((f) => Number.isFinite(f.a) && Number.isFinite(f.b) && f.level)
+    .sort((x, y) => x.a - y.a);
+}
+
 /**
- * Route as short segments colored by speed (trip-local min/max → speed_t 0..1).
- * Each segment carries hover/click telemetry (speed, rpm, time, point index).
+ * Congestion level at `tMs`: the frame containing it, else the frame starting
+ * nearest to it within TRAFFIC_MATCH_MAX_GAP_MS. O(log frames) per lookup — the
+ * old linear scan per segment made traffic colouring features × frames.
  */
-function buildSpeedLineFeatures(points, fallbackCoordinates) {
+function levelForTime(sorted, tMs) {
+  if (!sorted.length || tMs == null) return null;
+  // Last frame starting at or before tMs.
+  let lo = 0;
+  let hi = sorted.length - 1;
+  let idx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid].a <= tMs) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  // Frames can overlap slightly; the latest-starting one that still covers tMs wins.
+  for (let i = idx; i >= 0 && i >= idx - 2; i--) {
+    if (tMs <= sorted[i].b) return sorted[i].level;
+  }
+  // Nearest frame by start time, but only close by: without a cap a sample from
+  // minutes (or another trip) away inherited whatever congestion was nearest.
+  let best = null;
+  let bestD = TRAFFIC_MATCH_MAX_GAP_MS;
+  for (const i of [idx, idx + 1]) {
+    if (i < 0 || i >= sorted.length) continue;
+    const d = Math.abs(sorted[i].a - tMs);
+    if (d <= bestD) { bestD = d; best = sorted[i].level; }
+  }
+  return best;
+}
+
+/**
+ * Route as speed- (or congestion-) coloured lines.
+ *
+ * Adjacent segments that land in the same colour step are merged into one
+ * LineString, so a long trip is a few hundred features instead of one per sample
+ * pair. Each feature keeps the sample index range it covers (`i0`..`i1`); hover and
+ * click resolve the sample under the cursor from that range (see
+ * `sampleNearLngLat`) rather than carrying telemetry on every segment.
+ */
+function buildSpeedLineFeatures(points, fallbackCoordinates, trafficFrames) {
   const coords = [];
   (points || []).forEach((p, idx) => {
     if (p && Number.isFinite(p.lon) && Number.isFinite(p.lat)) {
@@ -306,8 +356,7 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
         lon: p.lon,
         lat: p.lat,
         speed: pointSpeed(p),
-        rpm: pointRpm(p),
-        recorded_at: p.recorded_at || null,
+        t: parseTimeMs(p.recorded_at),
         point_index: idx
       });
     }
@@ -316,20 +365,18 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
   if (coords.length < 2) {
     const fc = fallbackCoordinates || [];
     if (fc.length < 2) {
-      return { features: [], minSpeed: null, maxSpeed: null, hasSpeed: false };
+      return { features: [], minSpeed: null, maxSpeed: null, hasSpeed: false, usedTraffic: false };
     }
     return {
       features: [{
         type: 'Feature',
-        properties: {
-          speed_t: 0.45,
-          point_index: 0
-        },
+        properties: { speed_t: 0.45, i0: 0, i1: 0 },
         geometry: { type: 'LineString', coordinates: fc }
       }],
       minSpeed: null,
       maxSpeed: null,
-      hasSpeed: false
+      hasSpeed: false,
+      usedTraffic: false
     };
   }
 
@@ -352,52 +399,87 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
   // on long trips.)
   const finite = speeds.filter((s) => s != null && Number.isFinite(s)).sort((a, b) => a - b);
   const pct = (p) => finite[Math.min(finite.length - 1, Math.max(0, Math.round((finite.length - 1) * p)))];
-  let minSpeed = finite.length ? pct(0.02) : null;
-  let maxSpeed = finite.length ? pct(0.98) : null;
+  const minSpeed = finite.length ? pct(0.02) : null;
+  const maxSpeed = finite.length ? pct(0.98) : null;
   const span = (minSpeed != null && maxSpeed != null) ? (maxSpeed - minSpeed) : 0;
   const hasSpeed = finite.length > 0;
 
+  const frames = prepareTrafficFrames(trafficFrames);
+  let usedTraffic = false;
+
   const features = [];
+  let run = null; // { key, props, coordinates }
   for (let i = 0; i < coords.length - 1; i++) {
     const a = coords[i];
     const b = coords[i + 1];
     const sa = speeds[i];
     const sb = speeds[i + 1];
-    let speed = null;
-    if (sa != null && sb != null) speed = (sa + sb) / 2;
-    else speed = sa ?? sb;
+    const speed = (sa != null && sb != null) ? (sa + sb) / 2 : (sa ?? sb);
 
-    let speed_t = 0.45;
-    if (hasSpeed && speed != null) {
-      speed_t = span > 1e-6 ? (speed - minSpeed) / span : 0.5;
-      speed_t = Math.max(0, Math.min(1, speed_t));
-    }
+    const level = frames.length ? levelForTime(frames, a.t) : null;
+    const congestion = level && TRAFFIC_LEVEL_COLORS[level] ? level : null;
+    if (congestion) usedTraffic = true;
 
-    // Prefer start sample for click sync; average RPM when both present.
-    let rpm = a.rpm;
-    if (a.rpm != null && b.rpm != null) rpm = (a.rpm + b.rpm) / 2;
-    else rpm = a.rpm ?? b.rpm;
-
-    // Omit null numerics — MapLibre style exprs expect number|undefined, not JSON null.
-    const props = {
-      speed_t,
-      point_index: a.point_index
-    };
-    if (speed != null && Number.isFinite(speed)) props.speed_kph = speed;
-    if (rpm != null && Number.isFinite(rpm)) props.rpm = rpm;
-    if (a.recorded_at) props.recorded_at = a.recorded_at;
-
-    features.push({
-      type: 'Feature',
-      properties: props,
-      geometry: {
-        type: 'LineString',
-        coordinates: [[a.lon, a.lat], [b.lon, b.lat]]
+    let bin = null;
+    if (!congestion) {
+      let speed_t = 0.45;
+      if (hasSpeed && speed != null) {
+        speed_t = span > 1e-6 ? (speed - minSpeed) / span : 0.5;
+        speed_t = Math.max(0, Math.min(1, speed_t));
       }
-    });
-  }
+      bin = Math.round(speed_t * (SPEED_BINS - 1));
+    }
+    const key = congestion ? `t:${congestion}` : `s:${bin}`;
 
-  return { features, minSpeed, maxSpeed, hasSpeed };
+    if (run && run.key === key) {
+      run.coordinates.push([b.lon, b.lat]);
+      run.props.i1 = b.point_index;
+      continue;
+    }
+    if (run) features.push(runFeature(run));
+    // Omit null numerics — MapLibre style exprs expect number|undefined, not JSON null.
+    const props = { i0: a.point_index, i1: b.point_index };
+    if (congestion) {
+      props.congestion_color = TRAFFIC_LEVEL_COLORS[congestion];
+      props.traffic_level = congestion;
+    } else {
+      props.speed_t = bin / (SPEED_BINS - 1);
+    }
+    run = { key, props, coordinates: [[a.lon, a.lat], [b.lon, b.lat]] };
+  }
+  if (run) features.push(runFeature(run));
+
+  return { features, minSpeed, maxSpeed, hasSpeed, usedTraffic };
+}
+
+function runFeature(run) {
+  return {
+    type: 'Feature',
+    properties: run.props,
+    geometry: { type: 'LineString', coordinates: run.coordinates }
+  };
+}
+
+/**
+ * The positioned sample within `[i0, i1]` closest to the cursor, as
+ * `{ index, point }`, or null. Scans only the hovered feature's range.
+ */
+function sampleNearLngLat(points, props, lngLat) {
+  if (!points || !points.length || !props || !lngLat) return null;
+  const i0 = Math.max(0, Math.floor(propNum(props.i0) ?? 0));
+  const i1 = Math.min(points.length - 1, Math.floor(propNum(props.i1) ?? i0));
+  const k = Math.cos((lngLat.lat * Math.PI) / 180);
+  let best = null;
+  let bestD = Infinity;
+  for (let i = i0; i <= i1; i++) {
+    const p = points[i];
+    if (!p || !Number.isFinite(p.lon) || !Number.isFinite(p.lat)) continue;
+    const dx = (p.lon - lngLat.lng) * k;
+    const dy = p.lat - lngLat.lat;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best == null ? null : { index: best, point: points[best] };
 }
 
 const TRAFFIC_LEVEL_COLORS = {
@@ -425,47 +507,6 @@ function speedLinePaintColor() {
       1.0, '#dc2626'
     ]
   ];
-}
-
-/** Furthest a sample may sit from a traffic frame and still take its colour. */
-const TRAFFIC_MATCH_MAX_GAP_MS = 30000;
-
-function levelForTime(frames, tMs) {
-  if (!frames || !frames.length || tMs == null) return null;
-  for (let i = 0; i < frames.length; i++) {
-    const f = frames[i];
-    const a = Date.parse(f.t_start);
-    const b = Date.parse(f.t_end);
-    if (Number.isFinite(a) && Number.isFinite(b) && tMs >= a && tMs <= b) {
-      return f.level || null;
-    }
-  }
-  // Nearest frame by start time, but only close by: without a cap a sample from
-  // minutes (or another trip) away inherited whatever congestion was nearest.
-  let best = null;
-  let bestD = TRAFFIC_MATCH_MAX_GAP_MS;
-  for (let i = 0; i < frames.length; i++) {
-    const a = Date.parse(frames[i].t_start);
-    if (!Number.isFinite(a)) continue;
-    const d = Math.abs(a - tMs);
-    if (d <= bestD) { bestD = d; best = frames[i].level; }
-  }
-  return best;
-}
-
-function applyTrafficColors(features, frames) {
-  if (!frames || !frames.length || !features || !features.length) return false;
-  let any = false;
-  for (let i = 0; i < features.length; i++) {
-    const t = parseTimeMs(features[i].properties && features[i].properties.recorded_at);
-    const level = levelForTime(frames, t);
-    if (level && TRAFFIC_LEVEL_COLORS[level]) {
-      features[i].properties.congestion_color = TRAFFIC_LEVEL_COLORS[level];
-      features[i].properties.traffic_level = level;
-      any = true;
-    }
-  }
-  return any;
 }
 
 /** Prefer {width,height,data} over ImageData to avoid WebGL texImage y-flip deprecation noise. */
@@ -828,9 +869,9 @@ function addTripLayers(map, lineFc, arrowsFc, stopsFc) {
   }
 }
 
-function routeHoverHtml(props) {
-  const speed = formatSpeedKph(propNum(props && props.speed_kph));
-  const rpm = formatRpm(propNum(props && props.rpm));
+function routeHoverHtml(point) {
+  const speed = formatSpeedKph(point ? pointSpeed(point) : null);
+  const rpm = formatRpm(point ? pointRpm(point) : null);
   return `<div class="trip-route-popup-inner">
     <div class="trip-route-popup-row"><span>Velocity</span><strong>${speed}</strong></div>
     <div class="trip-route-popup-row"><span>RPM</span><strong>${rpm}</strong></div>
@@ -936,9 +977,10 @@ function bindTripInteractions(entry) {
     map.getCanvas().style.cursor = 'pointer';
     const f = e.features && e.features[0];
     if (!f) return;
+    const hit = sampleNearLngLat(entry.points, f.properties, e.lngLat);
     popup
       .setLngLat(e.lngLat)
-      .setHTML(routeHoverHtml(f.properties || {}))
+      .setHTML(routeHoverHtml(hit && hit.point))
       .addTo(map);
   };
   const onRouteLeave = () => {
@@ -960,7 +1002,11 @@ function bindTripInteractions(entry) {
     }
     const f = e.features && e.features[0];
     if (!f) return;
-    entry.setSelectionFromProps(f.properties || {}, e.lngLat);
+    const hit = sampleNearLngLat(entry.points, f.properties, e.lngLat);
+    const props = hit
+      ? { recorded_at: hit.point.recorded_at || null, point_index: hit.index }
+      : { point_index: propNum(f.properties && f.properties.i0) };
+    entry.setSelectionFromProps(props, e.lngLat);
   };
   map.on('click', 'trip-line-hit', onRouteClick);
 
@@ -1165,8 +1211,8 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     coordinates = geojson.coordinates;
   }
 
-  const speedBuilt = buildSpeedLineFeatures(points, coordinates);
-  const usedTraffic = applyTrafficColors(speedBuilt.features, trafficFrames);
+  const speedBuilt = buildSpeedLineFeatures(points, coordinates, trafficFrames);
+  const usedTraffic = speedBuilt.usedTraffic;
   const lineFc = { type: 'FeatureCollection', features: speedBuilt.features };
   const stopFeatures = buildStopFeatures(points);
   const stopsFc = { type: 'FeatureCollection', features: stopFeatures };
