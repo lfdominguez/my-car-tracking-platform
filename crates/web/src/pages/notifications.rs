@@ -17,8 +17,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::api::{
-    NotificationItem, list_notifications, mark_all_notifications_read, mark_notification_read,
-    push_subscribe, push_test, push_unsubscribe, push_vapid_key, unread_notification_count,
+    NotificationItem, NotificationPrefs, get_notification_prefs, list_notifications,
+    mark_all_notifications_read, mark_notification_read, push_config, push_subscribe, push_test,
+    push_unsubscribe, put_notification_prefs, unread_notification_count,
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::pages::live::ago;
@@ -397,13 +398,19 @@ fn js_err(e: JsValue) -> String {
 pub fn PushSettingsCard() -> impl IntoView {
     let status = RwSignal::new(String::from("…"));
     let vapid = RwSignal::new(Option::<String>::None);
+    let email_enabled = RwSignal::new(false);
+    let prefs = RwSignal::new(Option::<NotificationPrefs>::None);
     let busy = RwSignal::new(false);
     let msg = RwSignal::new(Option::<String>::None);
     let err = RwSignal::new(Option::<String>::None);
 
     leptos::task::spawn_local(async move {
-        let key = push_vapid_key().await.ok().flatten();
-        let _ = vapid.try_set(key);
+        let config = push_config().await.unwrap_or_default();
+        let _ = vapid.try_set(config.vapid_public_key);
+        let _ = email_enabled.try_set(config.email_enabled);
+        if let Ok(p) = get_notification_prefs().await {
+            let _ = prefs.try_set(Some(p));
+        }
         let s = JsFuture::from(push_status_js())
             .await
             .ok()
@@ -541,12 +548,120 @@ pub fn PushSettingsCard() -> impl IntoView {
                     "Send a test"
                 </button>
             </div>
+            <Show when=move || prefs.get().is_some()>
+                <NotificationPrefsForm prefs=prefs email_enabled=email_enabled msg=msg err=err />
+            </Show>
             <Show when=move || msg.get().is_some()>
                 <p class="muted" role="status">{move || msg.get().unwrap_or_default()}</p>
             </Show>
             <Show when=move || err.get().is_some()>
                 <div class="error">{move || err.get().unwrap_or_default()}</div>
             </Show>
+        </div>
+    }
+}
+
+/// Notification kinds that can be muted for push / email, with labels.
+const MUTABLE_KINDS: [(&str, &str); 7] = [
+    ("alert.speeding", "Speeding"),
+    ("alert.low_voltage", "Low battery voltage"),
+    ("alert.coolant", "Engine running hot"),
+    ("alert.low_fuel", "Low fuel"),
+    ("alert.device_offline", "Tracker offline / trip left open"),
+    ("alert.geofence", "Arrivals and departures"),
+    ("maintenance.due", "Maintenance due"),
+];
+
+/// Delivery preferences (push, email, muted kinds, digest), saved whole on change.
+#[component]
+fn NotificationPrefsForm(
+    prefs: RwSignal<Option<NotificationPrefs>>,
+    email_enabled: RwSignal<bool>,
+    msg: RwSignal<Option<String>>,
+    err: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let saving = RwSignal::new(false);
+    let save = move |change: Box<dyn FnOnce(&mut NotificationPrefs)>| {
+        let Some(mut next) = prefs.get_untracked() else {
+            return;
+        };
+        change(&mut next);
+        prefs.set(Some(next.clone()));
+        saving.set(true);
+        err.set(None);
+        leptos::task::spawn_local(async move {
+            match put_notification_prefs(&next).await {
+                Ok(saved) => {
+                    let _ = prefs.try_set(Some(saved));
+                    let _ = msg.try_set(Some("Notification preferences saved.".into()));
+                }
+                Err(e) => {
+                    let _ = err.try_set(Some(e.to_string()));
+                }
+            }
+            let _ = saving.try_set(false);
+        });
+    };
+    let get = move |f: fn(&NotificationPrefs) -> bool| prefs.with(|p| p.as_ref().is_some_and(f));
+
+    view! {
+        <div class="notif-prefs">
+            <label class="trip-select-toggle">
+                <input type="checkbox" prop:checked=move || get(|p| p.push) prop:disabled=move || saving.get()
+                    on:change=move |ev| {
+                        let on = event_target_checked(&ev);
+                        save(Box::new(move |p| p.push = on));
+                    } />
+                <span>"Send push notifications to my subscribed browsers"</span>
+            </label>
+            <Show when=move || email_enabled.get()>
+                <label class="trip-select-toggle">
+                    <input type="checkbox" prop:checked=move || get(|p| p.email) prop:disabled=move || saving.get()
+                        on:change=move |ev| {
+                            let on = event_target_checked(&ev);
+                            save(Box::new(move |p| p.email = on));
+                        } />
+                    <span>"Email me notifications"</span>
+                </label>
+            </Show>
+            <fieldset class="notif-mute">
+                <legend>"Deliver these (they always reach the bell)"</legend>
+                {MUTABLE_KINDS
+                    .into_iter()
+                    .map(|(kind, label)| view! {
+                        <label class="trip-select-toggle">
+                            <input type="checkbox"
+                                prop:checked=move || prefs.with(|p| p.as_ref().is_some_and(|p| !p.muted.iter().any(|k| k == kind)))
+                                prop:disabled=move || saving.get()
+                                on:change=move |ev| {
+                                    let on = event_target_checked(&ev);
+                                    save(Box::new(move |p| {
+                                        p.muted.retain(|k| k != kind);
+                                        if !on {
+                                            p.muted.push(kind.to_string());
+                                        }
+                                    }));
+                                } />
+                            <span>{label}</span>
+                        </label>
+                    })
+                    .collect_view()}
+            </fieldset>
+            <label class="field">
+                <span>"Driving digest"</span>
+                <select
+                    prop:value=move || prefs.with(|p| p.as_ref().and_then(|p| p.digest.clone()).unwrap_or_else(|| "off".into()))
+                    prop:disabled=move || saving.get()
+                    on:change=move |ev| {
+                        let v = event_target_value(&ev);
+                        save(Box::new(move |p| p.digest = Some(v)));
+                    }
+                >
+                    <option value="off">"Off"</option>
+                    <option value="weekly">"Weekly (Monday 08:00)"</option>
+                    <option value="monthly">"Monthly (the 1st, 08:00)"</option>
+                </select>
+            </label>
         </div>
     }
 }

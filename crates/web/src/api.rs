@@ -1777,12 +1777,62 @@ pub async fn mark_all_notifications_read() -> Result<(), ApiError> {
 }
 
 /// The server's VAPID public key (base64url), or `None` when push is not set up.
-pub async fn push_vapid_key() -> Result<Option<String>, ApiError> {
-    let v: serde_json::Value = send_json(Request::get("/api/push/config")).await?;
-    Ok(v.get("vapid_public_key")
-        .and_then(|k| k.as_str())
-        .map(str::to_string)
-        .filter(|k| !k.is_empty()))
+/// What the server can deliver besides the inbox.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PushConfig {
+    #[serde(default)]
+    pub vapid_public_key: Option<String>,
+    /// Email notifications are configured (SMTP) on the server.
+    #[serde(default)]
+    pub email_enabled: bool,
+}
+
+pub async fn push_config() -> Result<PushConfig, ApiError> {
+    let mut c: PushConfig = send_json(Request::get("/api/push/config")).await?;
+    c.vapid_public_key = c.vapid_public_key.filter(|k| !k.is_empty());
+    Ok(c)
+}
+
+/// Delivery preferences. Sent whole on save.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NotificationPrefs {
+    /// Push to subscribed browsers (the inbox always records).
+    #[serde(default = "default_true")]
+    pub push: bool,
+    #[serde(default)]
+    pub email: bool,
+    /// Kinds not to push, e.g. `alert.speeding`.
+    #[serde(default)]
+    pub muted: Vec<String>,
+    /// `off`, `weekly` or `monthly`.
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for NotificationPrefs {
+    fn default() -> Self {
+        Self {
+            push: true,
+            email: false,
+            muted: Vec::new(),
+            digest: None,
+        }
+    }
+}
+
+pub async fn get_notification_prefs() -> Result<NotificationPrefs, ApiError> {
+    send_json(Request::get("/api/me/notification-prefs")).await
+}
+
+pub async fn put_notification_prefs(
+    prefs: &NotificationPrefs,
+) -> Result<NotificationPrefs, ApiError> {
+    let body = serde_json::to_value(prefs).map_err(|e| ApiError::Message(e.to_string()))?;
+    send_json_body(Request::put("/api/me/notification-prefs"), &body).await
 }
 
 /// Register a browser subscription (`PushSubscription.toJSON()`).
