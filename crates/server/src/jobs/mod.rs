@@ -178,6 +178,11 @@ pub async fn run_due(ctx: &JobCtx, limit: i64) -> AppResult<usize> {
     claim_and_run(ctx, limit, None).await
 }
 
+/// [`run_due`] limited to these tracks' jobs.
+pub async fn run_due_for(ctx: &JobCtx, track_ids: &[Uuid]) -> AppResult<usize> {
+    claim_and_run(ctx, CLAIM_BATCH, Some(track_ids)).await
+}
+
 async fn claim_and_run(ctx: &JobCtx, limit: i64, only: Option<&[Uuid]>) -> AppResult<usize> {
     if SHUTTING_DOWN.load(Ordering::SeqCst) {
         return Ok(0);

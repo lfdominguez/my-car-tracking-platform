@@ -173,7 +173,9 @@ async fn expire_grace_and_finalize(pool: &sqlx::PgPool, track_id: Uuid) {
     .execute(pool)
     .await
     .unwrap();
-    server::jobs::run_due(&job_ctx(pool), 100).await.unwrap();
+    server::jobs::run_due_for(&job_ctx(pool), &[track_id])
+        .await
+        .unwrap();
 }
 
 async fn latest_track_id(pool: &sqlx::PgPool, car_id: Uuid) -> Option<Uuid> {
