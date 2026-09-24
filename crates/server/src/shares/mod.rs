@@ -1,6 +1,7 @@
 //! Direct car sharing APIs and authorization helpers.
 
 pub mod access;
+mod invites;
 
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
@@ -16,7 +17,7 @@ use crate::audit::{self, AuditEvent, ClientMeta, actions};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::middleware::client_ip;
-use crate::shares::access::{can_manage_shares, can_read_car, require_owner};
+use crate::shares::access::{CarAccess, can_manage_shares, can_read_car, require_owner};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -28,6 +29,27 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/cars/{car_id}/shares/{user_id}",
             axum::routing::patch(update_share).delete(delete_share),
+        )
+        .route(
+            "/api/cars/{car_id}/shares/me/leave",
+            axum::routing::post(invites::leave_share),
+        )
+        .route(
+            "/api/cars/{car_id}/share-invites",
+            get(invites::list_car_invites),
+        )
+        .route(
+            "/api/cars/{car_id}/share-invites/{invite_id}",
+            axum::routing::delete(invites::cancel_invite),
+        )
+        .route("/api/me/share-invites", get(invites::my_invites))
+        .route(
+            "/api/me/share-invites/{invite_id}/accept",
+            axum::routing::post(invites::accept_invite),
+        )
+        .route(
+            "/api/me/share-invites/{invite_id}/decline",
+            axum::routing::post(invites::decline_invite),
         )
 }
 
@@ -61,7 +83,9 @@ async fn list_shares(
     user: AuthUser,
     Path(car_id): Path<Uuid>,
 ) -> AppResult<Json<Vec<ShareRow>>> {
-    can_read_car(&state.pool, user.id, car_id).await?;
+    let access = can_read_car(&state.pool, user.id, car_id).await?;
+    // Only the owner sees who else has access; a sharee sees their own row.
+    let only_user = (access != CarAccess::Owner).then_some(user.id);
     let rows = sqlx::query_as::<_, ShareRow>(
         r#"
         SELECT cs.car_id, cs.user_id, u.email, u.name, cs.role, cs.created_at,
@@ -71,11 +95,12 @@ async fn list_shares(
                     ELSE NULL END AS vault_identity_pubkey_b64
         FROM car_shares cs
         JOIN users u ON u.id = cs.user_id
-        WHERE cs.car_id = $1
+        WHERE cs.car_id = $1 AND ($2::uuid IS NULL OR cs.user_id = $2)
         ORDER BY cs.created_at
         "#,
     )
     .bind(car_id)
+    .bind(only_user)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))
@@ -83,79 +108,47 @@ async fn list_shares(
 
 #[derive(Debug, Serialize)]
 pub struct CreateShareResponse {
-    /// Always true on HTTP 200 so missing emails cannot be enumerated.
+    /// Always true on HTTP 200: the response is identical whether or not the
+    /// email has an account, so it cannot be used to probe for accounts.
     pub ok: bool,
-    /// Present only when a share was actually created/updated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub share: Option<ShareRow>,
     pub message: String,
 }
 
+/// Invite `email` to the car. Nothing is looked up: the invite is stored by email
+/// and becomes a share when that person accepts it (see `invites`).
 async fn create_share(
     State(state): State<AppState>,
     user: AuthUser,
+    client: ClientMeta,
     Path(car_id): Path<Uuid>,
-    connect_info: ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(body): Json<CreateShareRequest>,
 ) -> AppResult<Json<CreateShareResponse>> {
     require_owner(&state.pool, user.id, car_id).await?;
     let role = ShareRole::parse(&body.role)
         .ok_or_else(|| AppError::BadRequest("role must be editor or viewer".into()))?;
-
-    let uniform_msg = "If that user exists, they were added";
-
-    let target = sqlx::query_as::<_, (Uuid, String, String)>(
-        "SELECT id, email, name FROM users WHERE LOWER(email) = LOWER($1)",
-    )
-    .bind(body.email.trim())
-    .fetch_optional(&state.pool)
-    .await?;
-
-    let Some(target) = target else {
-        return Ok(Json(CreateShareResponse {
-            ok: true,
-            share: None,
-            message: uniform_msg.into(),
-        }));
-    };
-
-    if target.0 == user.id {
+    let email = body.email.trim().to_lowercase();
+    if !email.contains('@') || email.len() > 320 {
+        return Err(AppError::BadRequest("a valid email is required".into()));
+    }
+    if email == user.email.to_lowercase() {
         return Err(AppError::BadRequest("cannot share with yourself".into()));
     }
 
-    let row = sqlx::query_as::<_, ShareRow>(
-        r#"
-        INSERT INTO car_shares (car_id, user_id, role)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (car_id, user_id) DO UPDATE SET role = EXCLUDED.role
-        RETURNING car_id, user_id,
-          (SELECT email FROM users WHERE id = user_id) AS email,
-          (SELECT name FROM users WHERE id = user_id) AS name,
-          role, created_at,
-          (SELECT vault_identity_pubkey IS NOT NULL FROM users WHERE id = user_id) AS vault_has_pubkey,
-          (SELECT CASE WHEN vault_identity_pubkey IS NOT NULL
-                       THEN encode(vault_identity_pubkey, 'base64')
-                       ELSE NULL END FROM users WHERE id = user_id) AS vault_identity_pubkey_b64
-        "#,
+    let invite_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO share_invites (id, car_id, email_lower, role, invited_by)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (car_id, email_lower) DO UPDATE SET role = EXCLUDED.role, created_at = NOW()
+         RETURNING id",
     )
+    .bind(Uuid::new_v4())
     .bind(car_id)
-    .bind(target.0)
+    .bind(&email)
     .bind(role.as_str())
+    .bind(user.id)
     .fetch_one(&state.pool)
     .await?;
 
-    let ip = client_ip(
-        &headers,
-        Some(connect_info.0),
-        state.config.trust_forwarded_headers,
-    );
-    let ip_str = ip.to_string();
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok());
     let car_id_str = car_id.to_string();
-    let shared_user_id = row.user_id.to_string();
     audit::record(
         &state.pool,
         AuditEvent {
@@ -164,44 +157,50 @@ async fn create_share(
             action: actions::SHARE_CREATED,
             resource_type: Some("car"),
             resource_id: Some(&car_id_str),
-            ip: Some(&ip_str),
-            user_agent,
-            meta: serde_json::json!({
-                "shared_user_id": shared_user_id,
-                "role": row.role,
-            }),
+            ip: Some(&client.ip),
+            user_agent: client.user_agent.as_deref(),
+            // The invitee's email is the owner's own input; record the invite, not
+            // whether an account exists.
+            meta: serde_json::json!({ "invite_id": invite_id, "role": role.as_str() }),
         },
     )
     .await;
 
-    let car_name: String = sqlx::query_scalar("SELECT name FROM cars WHERE id = $1")
-        .bind(car_id)
-        .fetch_one(&state.pool)
+    // Tell the invitee in-app if they already have an account. The owner learns
+    // nothing from this: the response below is the same either way.
+    let invitee: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE LOWER(email) = $1")
+        .bind(&email)
+        .fetch_optional(&state.pool)
         .await?;
-    crate::notifications::notify(
-        &state.pool,
-        row.user_id,
-        crate::notifications::Notification {
-            kind: crate::notifications::kinds::SECURITY,
-            title: format!("{} shared {car_name} with you", user.email),
-            body: format!(
-                "You can now {} this car.",
-                if row.role == "editor" {
-                    "view and edit"
-                } else {
-                    "view"
-                }
-            ),
-            url: Some(format!("/app/cars/{car_id}")),
-            dedup_key: None,
-        },
-    )
-    .await;
+    if let Some(invitee) = invitee {
+        let car_name: String = sqlx::query_scalar("SELECT name FROM cars WHERE id = $1")
+            .bind(car_id)
+            .fetch_one(&state.pool)
+            .await?;
+        crate::notifications::notify(
+            &state.pool,
+            invitee,
+            crate::notifications::Notification {
+                kind: crate::notifications::kinds::SECURITY,
+                title: format!("{} invited you to {car_name}", user.email),
+                body: format!(
+                    "Accept to {} this car.",
+                    if role == ShareRole::Editor {
+                        "view and edit"
+                    } else {
+                        "view"
+                    }
+                ),
+                url: Some("/app/settings#invites".into()),
+                dedup_key: Some(format!("invite:{invite_id}")),
+            },
+        )
+        .await;
+    }
 
     Ok(Json(CreateShareResponse {
         ok: true,
-        share: Some(row),
-        message: uniform_msg.into(),
+        message: "Invitation sent. It takes effect once accepted.".into(),
     }))
 }
 

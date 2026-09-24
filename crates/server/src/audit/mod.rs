@@ -37,6 +37,8 @@ pub mod actions {
     pub const CAR_DELETED: &str = "car.deleted";
     pub const CAR_PHOTO_UPDATED: &str = "car.photo_updated";
     pub const ACCOUNT_DELETED: &str = "account.deleted";
+    pub const SHARE_ACCEPTED: &str = "share.accepted";
+    pub const SHARE_LEFT: &str = "share.left";
 }
 
 /// Client address and user agent for audit rows, resolved the same way as the
