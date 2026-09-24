@@ -149,19 +149,9 @@ async fn track_start(
         .filter(|v| v.is_finite() && *v > 0.0)
         .or(car.tank_capacity_l);
 
-    // Idempotent start: if same car+legacy_key exists, succeed.
-    let existing = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2",
-    )
-    .bind(device.car_id)
-    .bind(legacy_key)
-    .fetch_optional(&state.pool)
-    .await?;
-
-    if existing.is_some() {
-        return Ok(StatusCode::OK);
-    }
-
+    // Idempotent start: a retry for the same car + legacy_key succeeds. Done in the
+    // INSERT itself so two concurrent retries cannot both pass a separate existence
+    // check and have the loser hit the unique key as a 500.
     sqlx::query(
         r#"
         INSERT INTO tracks (
@@ -170,6 +160,7 @@ async fn track_start(
             stoich_afr_snapshot, density_gl_snapshot,
             displacement_l_snapshot, ve_snapshot, tank_capacity_l_snapshot
         ) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9,$10,$11,$12,$13)
+        ON CONFLICT (car_id, legacy_key) DO NOTHING
         "#,
     )
     .bind(track_id)
@@ -235,6 +226,7 @@ fn map_sample_error(e: SampleError) -> AppError {
         SampleError::InvalidCoords => AppError::BadRequest("invalid lat/lon".into()),
         SampleError::Duplicate => AppError::Conflict("duplicate".into()),
         SampleError::TrackFinished => AppError::BadRequest("track_finished".into()),
+        SampleError::BadTimestamp => AppError::BadRequest("bad_timestamp".into()),
         SampleError::Db(err) => AppError::Db(err),
     }
 }
@@ -341,6 +333,10 @@ async fn track_samples(
                 recorded_at: sample.recorded_at,
                 reason: "track_finished".into(),
             }),
+            Err(SampleError::BadTimestamp) => rejected.push(RejectedSample {
+                recorded_at: sample.recorded_at,
+                reason: "bad_timestamp".into(),
+            }),
             Err(SampleError::Db(e)) => {
                 tracing::error!(error = %e, "sample insert failed");
                 rejected.push(RejectedSample {
@@ -365,6 +361,8 @@ enum SampleError {
     InvalidCoords,
     Duplicate,
     TrackFinished,
+    /// `recorded_at` is unrepresentable or outside the trip's plausible window.
+    BadTimestamp,
     Db(sqlx::Error),
 }
 
@@ -487,11 +485,13 @@ async fn insert_sample_for_track(
 ) -> Result<(), SampleError> {
     let coords = sample_coords(sample)?;
 
-    let recorded_at = millis_to_datetime(sample.recorded_at);
-    if track.finished
-        && !finished_track_accepts_sample(recorded_at, track.started_at, track.finished_at)
-    {
-        return Err(SampleError::TrackFinished);
+    let recorded_at = millis_to_datetime(sample.recorded_at).ok_or(SampleError::BadTimestamp)?;
+    if track.finished {
+        if !finished_track_accepts_sample(recorded_at, track.started_at, track.finished_at) {
+            return Err(SampleError::TrackFinished);
+        }
+    } else if !open_track_accepts_sample(recorded_at, track.started_at, Utc::now()) {
+        return Err(SampleError::BadTimestamp);
     }
     let engine_rpm = sample.vehicle_engine_rpm;
     let engine_vel = sample.vehicle_speed_kph;
@@ -577,12 +577,9 @@ async fn insert_sample_for_track(
     }
 }
 
-fn millis_to_datetime(ms: i64) -> DateTime<Utc> {
-    let secs = ms / 1000;
-    let nsecs = ((ms % 1000) * 1_000_000) as u32;
-    Utc.timestamp_opt(secs, nsecs)
-        .single()
-        .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap())
+/// Epoch millis to a timestamp; `None` for values chrono cannot represent.
+fn millis_to_datetime(ms: i64) -> Option<DateTime<Utc>> {
+    DateTime::from_timestamp_millis(ms)
 }
 
 /// Android tracking_id is the start timestamp string (ISO or epoch-like).
@@ -590,17 +587,19 @@ fn parse_legacy_key(id: &str) -> Option<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(id) {
         return Some(dt.with_timezone(&Utc));
     }
-    // Python/Android may send the datetime string without timezone
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(id, "%Y-%m-%dT%H:%M:%S%.f") {
-        return Some(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc));
-    }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(id, "%Y-%m-%dT%H:%M:%S") {
-        return Some(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc));
+    // Python/Android may send the datetime string without timezone. The contract is
+    // that tracking ids are UTC; a client sending local time would never match its
+    // own /start, so say so loudly rather than failing silently.
+    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S"] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(id, fmt) {
+            tracing::debug!(tracking_id = id, "tracking id without offset; assuming UTC");
+            return Some(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc));
+        }
     }
     if let Ok(ms) = id.parse::<i64>() {
         // heuristic: treat large numbers as millis
         if ms > 1_000_000_000_000 {
-            return Some(millis_to_datetime(ms));
+            return millis_to_datetime(ms);
         }
         return Utc.timestamp_opt(ms, 0).single();
     }
@@ -735,6 +734,22 @@ pub const LATE_SAMPLE_GRACE: chrono::Duration = chrono::Duration::hours(48);
 /// Allow small clock skew before `started_at`.
 const START_SKEW: chrono::Duration = chrono::Duration::minutes(5);
 
+/// How far ahead of the server clock a sample may be dated (phone clock drift).
+const FUTURE_SKEW: chrono::Duration = chrono::Duration::minutes(5);
+
+/// Whether a sample timestamp is plausible for a trip that is still open.
+///
+/// Without this a phone with a wrong clock could date a sample days in the future;
+/// the stale sweeper keys off the newest point, so that trip would never auto-close,
+/// and far-off timestamps create stray hypertable chunks.
+fn open_track_accepts_sample(
+    recorded_at: DateTime<Utc>,
+    started_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    recorded_at >= started_at - START_SKEW && recorded_at <= now + FUTURE_SKEW
+}
+
 /// Whether a sample timestamp may still be written after the track was stopped.
 ///
 /// Phones often call `/stop` before the local queue is empty; points recorded
@@ -810,8 +825,34 @@ mod tests {
 
     #[test]
     fn millis_conversion() {
-        let dt = millis_to_datetime(1704164645123);
+        let dt = millis_to_datetime(1704164645123).unwrap();
         assert_eq!(dt.timestamp_subsec_millis(), 123);
+        // Negative millis used to wrap the nanosecond field and fall back to 1970.
+        let before_epoch = millis_to_datetime(-1).unwrap();
+        assert_eq!(before_epoch.timestamp_millis(), -1);
+        assert_eq!(millis_to_datetime(i64::MAX), None);
+    }
+
+    #[test]
+    fn open_track_rejects_future_and_pre_start_samples() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 12, 0, 0).unwrap();
+        let now = start + chrono::Duration::minutes(30);
+        assert!(open_track_accepts_sample(start, start, now));
+        assert!(open_track_accepts_sample(
+            now + chrono::Duration::minutes(2),
+            start,
+            now
+        ));
+        assert!(!open_track_accepts_sample(
+            now + chrono::Duration::days(2),
+            start,
+            now
+        ));
+        assert!(!open_track_accepts_sample(
+            start - chrono::Duration::hours(1),
+            start,
+            now
+        ));
     }
 
     #[test]

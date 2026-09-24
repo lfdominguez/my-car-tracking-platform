@@ -164,8 +164,57 @@ pub struct UpdateCarRequest {
     pub density_gl: Option<f64>,
     pub displacement_l: Option<f64>,
     pub ve: Option<f64>,
-    pub battery_capacity_kwh: Option<f64>,
+    /// Absent keeps the stored value; an explicit `null` clears it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub battery_capacity_kwh: Option<Option<f64>>,
     pub notes: Option<String>,
+}
+
+/// Distinguish a missing field (`None`) from an explicit `null` (`Some(None)`).
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// Reject engine and fuel parameters that would turn every fuel figure into NaN,
+/// zero or a negative number.
+fn validate_engine_params(
+    stoich_afr: f64,
+    density_gl: f64,
+    displacement_l: f64,
+    ve: f64,
+    battery_kwh: Option<f64>,
+) -> AppResult<()> {
+    let positive = |v: f64| v.is_finite() && v > 0.0;
+    if !positive(stoich_afr) || stoich_afr > 30.0 {
+        return Err(AppError::BadRequest(
+            "stoich_afr must be between 0 and 30".into(),
+        ));
+    }
+    if !positive(density_gl) || density_gl > 2000.0 {
+        return Err(AppError::BadRequest(
+            "density_gl must be between 0 and 2000".into(),
+        ));
+    }
+    if !positive(displacement_l) || displacement_l > 20.0 {
+        return Err(AppError::BadRequest(
+            "displacement_l must be between 0 and 20".into(),
+        ));
+    }
+    if !positive(ve) || ve > 1.5 {
+        return Err(AppError::BadRequest("ve must be between 0 and 1.5".into()));
+    }
+    if let Some(b) = battery_kwh
+        && (!positive(b) || b > 1000.0)
+    {
+        return Err(AppError::BadRequest(
+            "battery_capacity_kwh must be between 0 and 1000".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn list_cars(State(state): State<AppState>, user: AuthUser) -> AppResult<Json<Vec<CarRow>>> {
@@ -217,6 +266,11 @@ async fn create_car(
         .density_gl
         .or_else(|| fuel_type.density_gl())
         .unwrap_or(defaults::FUEL_DENSITY_GL);
+    let displacement = body
+        .displacement_l
+        .unwrap_or(defaults::ENGINE_DISPLACEMENT_L);
+    let ve = body.ve.unwrap_or(defaults::ENGINE_VE);
+    validate_engine_params(stoich, density, displacement, ve, body.battery_capacity_kwh)?;
     let row = sqlx::query_as::<_, CarRow>(
         r#"
         INSERT INTO cars (
@@ -238,8 +292,8 @@ async fn create_car(
     .bind(body.battery_capacity_kwh)
     .bind(stoich)
     .bind(density)
-    .bind(body.displacement_l.unwrap_or(defaults::ENGINE_DISPLACEMENT_L))
-    .bind(body.ve.unwrap_or(defaults::ENGINE_VE))
+    .bind(displacement)
+    .bind(ve)
     .bind(body.notes)
     .fetch_one(&state.pool)
     .await?;
@@ -321,24 +375,51 @@ async fn update_car(
     .fetch_one(&state.pool)
     .await?;
 
+    let current_class = shared::FuelClass::parse(&current.fuel_class);
+    let current_type = shared::FuelType::parse(&current.fuel_type);
     let (fuel_class, fuel_type) = if body.fuel_class.is_some() || body.fuel_type.is_some() {
+        let class_changed = body
+            .fuel_class
+            .as_deref()
+            .is_some_and(|c| shared::FuelClass::parse(c) != current_class);
         shared::normalize_fuel(
             body.fuel_class
                 .as_deref()
                 .or(Some(current.fuel_class.as_str())),
+            // A new powertrain with no grade takes that powertrain's default grade
+            // rather than inheriting the old one (DIESEL must become B7, not E10).
             body.fuel_type
                 .as_deref()
-                .or(Some(current.fuel_type.as_str())),
+                .or((!class_changed).then_some(current.fuel_type.as_str())),
         )
     } else {
-        (
-            shared::FuelClass::parse(&current.fuel_class),
-            shared::FuelType::parse(&current.fuel_type),
-        )
+        (current_class, current_type.clone())
     };
-    let stoich = body.stoich_afr.unwrap_or(current.stoich_afr);
-    let density = body.density_gl.unwrap_or(current.density_gl);
-    let battery = body.battery_capacity_kwh.or(current.battery_capacity_kwh);
+    // A different grade re-derives its AFR and density unless the caller set them.
+    let grade_changed = fuel_type != current_type;
+    let stoich = body.stoich_afr.unwrap_or(if grade_changed {
+        fuel_type.stoich_afr().unwrap_or(current.stoich_afr)
+    } else {
+        current.stoich_afr
+    });
+    let density = body.density_gl.unwrap_or(if grade_changed {
+        fuel_type.density_gl().unwrap_or(current.density_gl)
+    } else {
+        current.density_gl
+    });
+    let battery = match body.battery_capacity_kwh {
+        Some(v) => v,
+        None => current.battery_capacity_kwh,
+    };
+    let displacement = body.displacement_l.unwrap_or(current.displacement_l);
+    let ve = body.ve.unwrap_or(current.ve);
+    validate_engine_params(stoich, density, displacement, ve, battery)?;
+    let fuel_params_changed = fuel_class != current_class
+        || stoich != current.stoich_afr
+        || density != current.density_gl
+        || displacement != current.displacement_l
+        || ve != current.ve
+        || battery != current.battery_capacity_kwh;
     let row = sqlx::query_as::<_, CarRow>(
         r#"
         UPDATE cars SET
@@ -368,15 +449,19 @@ async fn update_car(
     .bind(battery)
     .bind(stoich)
     .bind(density)
-    .bind(body.displacement_l.unwrap_or(current.displacement_l))
-    .bind(body.ve.unwrap_or(current.ve))
+    .bind(displacement)
+    .bind(ve)
     .bind(body.notes.or(current.notes))
     .fetch_one(&state.pool)
     .await?;
     // A track whose powertrain snapshot is NULL falls back to the car's live values
-    // when its fuel figures are computed, so editing the car changes historical trip
-    // numbers. Invalidate the cached statistics to keep that behaviour.
-    if let Err(e) = crate::trips::stats::mark_stale_for_car(&state.pool, id).await {
+    // when its fuel figures are computed, so editing those values changes historical
+    // trip numbers. Only then are cached statistics invalidated: a rename changes
+    // nothing, and invalidating a car's whole history makes the trips list slow for
+    // hours while the sweeper catches up.
+    if fuel_params_changed
+        && let Err(e) = crate::trips::stats::mark_stale_for_car(&state.pool, id).await
+    {
         tracing::warn!(car_id = %id, error = %e, "marking car track stats stale failed");
     }
 

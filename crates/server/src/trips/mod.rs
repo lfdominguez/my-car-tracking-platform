@@ -51,19 +51,6 @@ pub struct FinishTrackResult {
     pub newly_finished: bool,
 }
 
-/// Pick `finished_at` when closing a trip (prefer last GPS sample).
-pub fn resolve_finished_at(
-    existing_finished_at: Option<DateTime<Utc>>,
-    last_point_at: Option<DateTime<Utc>>,
-    started_at: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> DateTime<Utc> {
-    existing_finished_at
-        .or(last_point_at)
-        .unwrap_or(started_at)
-        .min(now.max(started_at))
-}
-
 /// True when an unfinished trip has been quiet long enough to auto-close.
 pub fn is_stale_open_trip(
     now: DateTime<Utc>,
@@ -102,11 +89,15 @@ pub async fn finish_track(
         r#"
         UPDATE tracks
         SET finished = true,
-            finished_at = COALESCE(
-                finished_at,
-                (SELECT MAX(recorded_at) FROM track_points WHERE track_id = $1),
-                started_at,
-                NOW()
+            -- Clamped to now: a phone with a fast clock must not end a trip in
+            -- the future.
+            finished_at = LEAST(
+                COALESCE(
+                    finished_at,
+                    (SELECT MAX(recorded_at) FROM track_points WHERE track_id = $1),
+                    started_at
+                ),
+                GREATEST(NOW(), started_at)
             )
         WHERE id = $1 AND finished = false
         "#,
@@ -1156,8 +1147,7 @@ async fn _unused() {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_TRIP_LIST_LIMIT, MAX_TRIP_LIST_LIMIT, is_stale_open_trip, resolve_finished_at,
-        trip_list_limit,
+        DEFAULT_TRIP_LIST_LIMIT, MAX_TRIP_LIST_LIMIT, is_stale_open_trip, trip_list_limit,
     };
     use chrono::{Duration, TimeZone, Utc};
 
@@ -1175,20 +1165,6 @@ mod tests {
             trip_list_limit(Some(MAX_TRIP_LIST_LIMIT + 50)),
             MAX_TRIP_LIST_LIMIT
         );
-    }
-
-    #[test]
-    fn resolve_finished_at_prefers_last_point() {
-        let start = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap();
-        let last = start + Duration::minutes(7);
-        let now = start + Duration::hours(1);
-        assert_eq!(resolve_finished_at(None, Some(last), start, now), last);
-        let existing = start + Duration::minutes(5);
-        assert_eq!(
-            resolve_finished_at(Some(existing), Some(last), start, now),
-            existing
-        );
-        assert_eq!(resolve_finished_at(None, None, start, now), start);
     }
 
     #[test]

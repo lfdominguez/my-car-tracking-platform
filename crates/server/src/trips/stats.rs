@@ -310,11 +310,22 @@ pub async fn mark_stale(pool: &PgPool, track_ids: &[Uuid]) -> AppResult<()> {
     Ok(())
 }
 
-/// Mark every stored row belonging to a car stale. See [`mark_stale`].
+/// Mark stale the stored rows of a car's tracks that read fuel parameters through to
+/// the live `cars` row, i.e. those missing a snapshot. See [`mark_stale`].
+///
+/// Tracks recorded since snapshots existed carry their own copy and are unaffected
+/// by editing the car.
 pub async fn mark_stale_for_car(pool: &PgPool, car_id: Uuid) -> AppResult<()> {
     sqlx::query(
         "UPDATE track_stats SET stale = true
-         WHERE track_id IN (SELECT id FROM tracks WHERE car_id = $1) AND NOT stale",
+         WHERE track_id IN (
+             SELECT id FROM tracks
+             WHERE car_id = $1
+               -- The snapshots TRACK_POINT_AGGREGATE reads (with a `cars` fallback).
+               AND (fuel_class_snapshot IS NULL
+                    OR stoich_afr_snapshot IS NULL OR density_gl_snapshot IS NULL
+                    OR displacement_l_snapshot IS NULL OR ve_snapshot IS NULL)
+         ) AND NOT stale",
     )
     .bind(car_id)
     .execute(pool)

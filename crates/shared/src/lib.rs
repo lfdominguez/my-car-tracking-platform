@@ -105,6 +105,18 @@ impl FuelType {
         }
     }
 
+    /// Whether this grade can be burnt by `class`. `Custom` fits anything.
+    pub fn fits(&self, class: FuelClass) -> bool {
+        match (self, class) {
+            (Self::Custom, _) => true,
+            (_, FuelClass::FullElectric) => false,
+            (Self::B7, FuelClass::Gasoline) => false,
+            (Self::B7, _) => true,
+            (_, FuelClass::Diesel) => false,
+            _ => true,
+        }
+    }
+
     pub fn default_for(class: FuelClass) -> Self {
         match class {
             FuelClass::Diesel => Self::B7,
@@ -147,6 +159,9 @@ pub fn normalize_fuel(class: Option<&str>, grade: Option<&str>) -> (FuelClass, F
         .map(FuelType::parse);
     match (class, grade) {
         (Some(FuelClass::FullElectric), _) => (FuelClass::FullElectric, FuelType::Custom),
+        // A grade the powertrain cannot burn (diesel + E10) is a stale leftover, not
+        // a choice: fall back to the class default (Diesel → B7).
+        (Some(c), Some(g)) if !g.fits(c) => (c, FuelType::default_for(c)),
         (Some(c), Some(g)) => (c, g),
         (Some(c), None) => (c, FuelType::default_for(c)),
         (None, Some(g)) => (g.implied_class(), g),
@@ -222,6 +237,22 @@ impl ShareRole {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diesel_never_keeps_a_gasoline_grade() {
+        assert_eq!(
+            normalize_fuel(Some("DIESEL"), Some("E10")),
+            (FuelClass::Diesel, FuelType::B7)
+        );
+        assert_eq!(
+            normalize_fuel(Some("GASOLINE"), Some("B7")),
+            (FuelClass::Gasoline, FuelType::E10)
+        );
+        assert_eq!(
+            normalize_fuel(Some("HYBRID"), Some("E27")),
+            (FuelClass::Hybrid, FuelType::E27)
+        );
+    }
 
     #[test]
     fn fuel_type_default_is_e10() {
