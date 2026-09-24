@@ -6,7 +6,7 @@ mod session;
 
 pub use extractors::{AuthUser, OptionalAuthUser};
 pub use google::google_auth_router;
-pub use session::{create_session, destroy_session};
+pub use session::{clear_session_cookie, create_session, destroy_session};
 
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::HeaderMap;

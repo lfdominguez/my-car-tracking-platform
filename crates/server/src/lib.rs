@@ -1,3 +1,4 @@
+pub mod account;
 pub mod analysis;
 pub mod analytics;
 pub mod audit;
@@ -61,6 +62,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
 
     let mut app = Router::new()
         .merge(ingest::router())
+        .merge(account::router())
         .merge(auth::router())
         .merge(mcp::settings_router())
         .merge(mcp::router(state.clone()))

@@ -92,6 +92,11 @@ fn content_type_for_path(path: &str) -> &'static str {
     }
 }
 
+/// [`resolve_photo_file`] for other modules that clean up photos.
+pub(crate) fn resolve_photo_path(upload_dir: &Path, photo_path: &str) -> AppResult<PathBuf> {
+    resolve_photo_file(upload_dir, photo_path)
+}
+
 /// Ensure stored photo_path stays under upload_dir (no path traversal).
 fn resolve_photo_file(upload_dir: &Path, photo_path: &str) -> AppResult<PathBuf> {
     if photo_path.is_empty() || photo_path.contains("..") || Path::new(photo_path).is_absolute() {

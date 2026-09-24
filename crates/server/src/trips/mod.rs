@@ -1,5 +1,6 @@
 //! Trip list/detail/points/map APIs.
 
+pub mod export;
 mod fuel_stats;
 pub mod stats;
 
@@ -30,6 +31,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/trips/{id}", get(get_trip).delete(delete_trip))
         .route("/api/trips/{id}/finish", post(finish_trip))
         .route("/api/trips/{id}/points", get(trip_points))
+        .route("/api/trips/{id}/export", get(export::export_trip))
         .route("/api/trips/{id}/map", get(trip_map))
         .route("/api/trips/{id}/traffic/frames", get(trip_traffic_frames))
         .route(
@@ -1036,6 +1038,27 @@ async fn trip_points(
         return Ok(Json(vec![]));
     }
 
+    // Sanitized before thinning, so a spike cannot be picked as a bucket's maximum.
+    let mut rows = load_trip_points(&state.pool, id, q.from, q.to).await?;
+    if let Some(max) = q.max_points {
+        rows = downsample_min_max(rows, max.max(MIN_DOWNSAMPLE_POINTS));
+    }
+    let system = user.unit_system;
+    let rows = rows
+        .into_iter()
+        .map(|p| apply_trip_point_units(p, system))
+        .collect();
+    Ok(Json(rows))
+}
+
+/// Every stored point of a trip, oldest first, with isolated speed/RPM spikes
+/// removed, optionally limited to `[from, to]`. Values are SI; callers convert.
+pub(crate) async fn load_trip_points(
+    pool: &PgPool,
+    id: Uuid,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+) -> AppResult<Vec<TripPoint>> {
     let mut rows = sqlx::query_as::<_, TripPoint>(
         r#"
         SELECT
@@ -1077,21 +1100,12 @@ async fn trip_points(
         "#,
     )
     .bind(id)
-    .bind(q.from)
-    .bind(q.to)
-    .fetch_all(&state.pool)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
     .await?;
-    // Sanitize before thinning, so a spike cannot be picked as a bucket's maximum.
     sanitize_trip_points(&mut rows);
-    if let Some(max) = q.max_points {
-        rows = downsample_min_max(rows, max.max(MIN_DOWNSAMPLE_POINTS));
-    }
-    let system = user.unit_system;
-    let rows = rows
-        .into_iter()
-        .map(|p| apply_trip_point_units(p, system))
-        .collect();
-    Ok(Json(rows))
+    Ok(rows)
 }
 
 /// Thin a chronological series to about `max` points: split it into `max / 2`

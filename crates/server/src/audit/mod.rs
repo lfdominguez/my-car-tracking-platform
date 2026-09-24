@@ -36,6 +36,7 @@ pub mod actions {
     pub const CAR_CREATED: &str = "car.created";
     pub const CAR_DELETED: &str = "car.deleted";
     pub const CAR_PHOTO_UPDATED: &str = "car.photo_updated";
+    pub const ACCOUNT_DELETED: &str = "account.deleted";
 }
 
 /// Client address and user agent for audit rows, resolved the same way as the
