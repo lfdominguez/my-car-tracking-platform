@@ -368,6 +368,7 @@ impl GenerationJob {
         let tool_user = McpUser {
             id: self.user_id,
             unit_system: self.unit_system,
+            car_scope: None,
         };
         let toolbox = CarDataToolbox::new(self.state.clone(), tool_user, self.car_focus);
 
@@ -466,6 +467,7 @@ pub async fn system_prompt_for(
     let tool_user = McpUser {
         id: user_id,
         unit_system,
+        car_scope: None,
     };
     let ctx = crate::mcp::tools::ToolCtx {
         state,
@@ -510,6 +512,7 @@ pub async fn call_tool(
     let user = McpUser {
         id: user_id,
         unit_system,
+        car_scope: None,
     };
     CarDataToolbox::new(state.clone(), user, CarFocus(car_focus))
         .dispatch(name, arguments)

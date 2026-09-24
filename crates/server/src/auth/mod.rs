@@ -130,8 +130,11 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
             openrouter_key_hint,
             (ors_api_key_enc IS NOT NULL) AS ors_api_key_set,
             ors_key_hint,
-            (mcp_token_hash IS NOT NULL) AS mcp_token_set,
-            mcp_token_hint,
+            EXISTS (SELECT 1 FROM mcp_tokens m WHERE m.user_id = users.id
+                    AND m.revoked_at IS NULL
+                    AND (m.expires_at IS NULL OR m.expires_at > NOW())) AS mcp_token_set,
+            (SELECT m.hint FROM mcp_tokens m WHERE m.user_id = users.id
+               AND m.revoked_at IS NULL ORDER BY m.created_at DESC LIMIT 1) AS mcp_token_hint,
             unit_system,
             timezone,
             locale

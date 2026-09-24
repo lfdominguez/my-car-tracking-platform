@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::state::AppState;
 use crate::units::UnitSystem;
 
-use super::token::hash_token;
+use super::token::{hash_token, legacy_hash_token};
 
 /// Identity of a read-only tool caller.
 ///
@@ -21,6 +21,9 @@ use super::token::hash_token;
 pub struct McpUser {
     pub id: Uuid,
     pub unit_system: UnitSystem,
+    /// Cars an MCP token is limited to; `None` = every car the user can read.
+    /// Always `None` for the in-app chat.
+    pub car_scope: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug)]
@@ -50,14 +53,20 @@ pub async fn resolve_mcp_user(
     plaintext: &str,
 ) -> Result<McpUser, McpAuthError> {
     let hash = hash_token(plaintext, pepper);
-    let row = sqlx::query_as::<_, (Uuid, String)>(
+    let legacy = legacy_hash_token(plaintext, pepper);
+    let row = sqlx::query_as::<_, (Uuid, Uuid, i16, Option<Vec<Uuid>>, String)>(
         r#"
-        SELECT id, unit_system
-        FROM users
-        WHERE mcp_token_hash = $1
+        SELECT m.id, u.id, m.hash_version, m.car_ids, u.unit_system
+        FROM mcp_tokens m
+        JOIN users u ON u.id = m.user_id
+        WHERE ((m.token_hash = $1 AND m.hash_version = 2)
+               OR (m.token_hash = $2 AND m.hash_version = 1))
+          AND m.revoked_at IS NULL
+          AND (m.expires_at IS NULL OR m.expires_at > NOW())
         "#,
     )
     .bind(&hash)
+    .bind(&legacy)
     .fetch_optional(pool)
     .await
     .map_err(|e| {
@@ -65,12 +74,32 @@ pub async fn resolve_mcp_user(
         McpAuthError::Unavailable
     })?;
 
-    let Some((id, unit_system)) = row else {
+    let Some((token_id, user_id, version, car_scope, unit_system)) = row else {
         return Err(McpAuthError::Invalid);
     };
+    // Upgrade a pre-label hash in place, and note use at most once a minute.
+    let res = sqlx::query(
+        r#"
+        UPDATE mcp_tokens
+        SET token_hash = CASE WHEN hash_version = 1 THEN $2 ELSE token_hash END,
+            hash_version = 2,
+            last_used_at = NOW()
+        WHERE id = $1
+          AND (hash_version = 1 OR last_used_at IS NULL
+               OR last_used_at < NOW() - interval '60 seconds')
+        "#,
+    )
+    .bind(token_id)
+    .bind(&hash)
+    .execute(pool)
+    .await;
+    if let Err(e) = res {
+        tracing::warn!(error = %e, version, "updating mcp token use failed");
+    }
     Ok(McpUser {
-        id,
+        id: user_id,
         unit_system: UnitSystem::parse(&unit_system).unwrap_or(UnitSystem::Metric),
+        car_scope,
     })
 }
 
@@ -88,13 +117,35 @@ pub async fn mcp_bearer_middleware(
         Ok(t) => t.to_string(),
         Err(e) => return auth_error_response(e),
     };
-    match resolve_mcp_user(&state.pool, &state.config.device_token_pepper, &token).await {
-        Ok(user) => {
-            req.extensions_mut().insert(user);
-            next.run(req).await
+    let user = match resolve_mcp_user(&state.pool, &state.config.device_token_pepper, &token).await
+    {
+        Ok(user) => user,
+        Err(e) => return auth_error_response(e),
+    };
+    if let Some(scope) = user.car_scope.clone() {
+        // Buffer the JSON-RPC body to check it, then hand the same bytes on.
+        let (parts, body) = req.into_parts();
+        let bytes = match axum::body::to_bytes(body, 2 * 1024 * 1024).await {
+            Ok(b) => b,
+            Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "request too large").into_response(),
+        };
+        if let Err(reason) = super::scope::check(&state.pool, &scope, &bytes).await {
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|v| v.get("id").cloned()),
+                    "error": { "code": -32602, "message": reason },
+                })),
+            )
+                .into_response();
         }
-        Err(e) => auth_error_response(e),
+        req = Request::from_parts(parts, axum::body::Body::from(bytes));
     }
+    req.extensions_mut().insert(user);
+    next.run(req).await
 }
 
 /// RFC 6750 responses: a 401 names the scheme in `WWW-Authenticate` so clients

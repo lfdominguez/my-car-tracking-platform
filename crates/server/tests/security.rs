@@ -379,3 +379,75 @@ async fn invites_do_not_reveal_accounts_and_need_acceptance() {
         .unwrap();
     assert!(!resp.status().is_success());
 }
+
+async fn mcp_call(base: &str, token: &str, tool: &str, args: Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{base}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                       "params": { "name": tool, "arguments": args } }))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn scoped_mcp_tokens_cannot_reach_other_cars_and_expire() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let user = login(&base).await;
+    let allowed = create_car(&base, &user).await;
+    let other = create_car(&base, &user).await;
+
+    let created: Value = user
+        .client
+        .post(format!("{base}/api/me/mcp-tokens"))
+        .json(&json!({ "name": "one car", "car_ids": [allowed], "expires_in_days": 30 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = created["token"].as_str().unwrap().to_string();
+
+    let r = mcp_call(&base, &token, "get_car", json!({ "car_id": other })).await;
+    assert_eq!(r.status(), reqwest::StatusCode::FORBIDDEN);
+    let r = mcp_call(&base, &token, "list_cars", json!({})).await;
+    assert_eq!(r.status(), reqwest::StatusCode::FORBIDDEN);
+    let r = mcp_call(&base, &token, "get_car", json!({ "car_id": allowed })).await;
+    assert_ne!(r.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_ne!(r.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let list: Value = user
+        .client
+        .get(format!("{base}/api/me/mcp-tokens"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == created["id"])
+        .unwrap();
+    assert!(!row["last_used_at"].is_null(), "use is recorded: {row}");
+
+    // An expired token is refused.
+    let pool = common::pool().await;
+    sqlx::query(
+        "UPDATE mcp_tokens SET expires_at = NOW() - interval '1 minute' WHERE id = $1::uuid",
+    )
+    .bind(created["id"].as_str().unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let r = mcp_call(&base, &token, "get_car", json!({ "car_id": allowed })).await;
+    assert_eq!(r.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
