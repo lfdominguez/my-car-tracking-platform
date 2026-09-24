@@ -153,42 +153,14 @@ async fn post_message(
     }
 
     let conversation = store::owned_conversation(&state.pool, user.id, id).await?;
-
-    // One generation per conversation: a second would interleave two answers into
-    // the same transcript and race on `seq`.
-    if store::has_active_message(&state.pool, id).await? {
-        return Err(AppError::Conflict(
-            "This conversation is still answering. Wait for it to finish.".into(),
-        ));
-    }
-
     let creds = openrouter_credentials(&state, user.id).await?;
 
-    let (user_message_id, _) = store::append_message(
-        &state.pool,
-        id,
-        "user",
-        &content,
-        "complete",
-        None,
-        None,
-        None,
-    )
-    .await?;
-    let (assistant_message_id, _) = store::append_message(
-        &state.pool,
-        id,
-        "assistant",
-        "",
-        "pending",
-        None,
-        None,
-        None,
-    )
-    .await?;
-
-    store::title_from_first_message(&state.pool, id, &content).await?;
-    store::touch_conversation(&state.pool, id).await?;
+    // One generation per conversation: a second would interleave two answers into
+    // the same transcript. The check and both inserts share one locked transaction.
+    let store::StartedTurn {
+        user_message_id,
+        assistant_message_id,
+    } = store::start_turn(&state.pool, user.id, id, &content).await?;
 
     // Register before spawning so a fast client cannot subscribe to a missing channel.
     let tx = state.chat_hub.register(assistant_message_id).await;
@@ -206,9 +178,14 @@ async fn post_message(
     tokio::spawn(async move {
         let state = job.state.clone();
         let message_id = job.assistant_message_id;
+        let events = tx.clone();
         if let Err(e) = job.run(tx).await {
             tracing::error!(%message_id, error = %e, "chat generation failed");
+            // Persist first: a client reacting to the event re-reads the row.
             let _ = store::fail_message(&state.pool, message_id, &e).await;
+            let _ = events.send(ai::ChatEvent::Failed {
+                message: store::public_error("failed", Some(&e)).unwrap_or_default(),
+            });
         }
         state.chat_hub.unregister(message_id).await;
     });
@@ -390,42 +367,31 @@ impl GenerationJob {
 
         let outcome = match result {
             Ok(outcome) => outcome,
-            Err(e) => {
-                let message = e.to_string();
-                // The sink's Failed event is what an attached client renders; the DB
-                // row is what a reconnecting one reads.
-                let _ = tx.send(ai::ChatEvent::Failed {
-                    message: "That answer could not be generated. Try again in a moment."
-                        .to_string(),
-                });
-                return Err(message);
-            }
+            Err(e) => return Err(e.to_string()),
         };
 
         let trace = serde_json::to_value(&outcome.tool_trace).unwrap_or(Value::Null);
-        store::complete_message(
-            &pool,
-            self.assistant_message_id,
-            &outcome.content,
-            &trace,
-            outcome.model.as_deref().or(Some(self.creds.model.as_str())),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-        store::append_turn_messages(
+        let saved = store::finish_turn(
             &pool,
             self.conversation_id,
             self.assistant_message_id,
-            &outcome.new_messages,
+            store::FinishedTurn {
+                content: &outcome.content,
+                tool_trace: &trace,
+                model: outcome.model.as_deref().or(Some(self.creds.model.as_str())),
+                new_messages: &outcome.new_messages,
+            },
         )
         .await
         .map_err(|e| e.to_string())?;
 
-        store::touch_conversation(&pool, self.conversation_id)
-            .await
-            .map_err(|e| e.to_string())?;
-
+        // Only now is the answer durable, so only now may a client that re-reads the
+        // conversation on `done` be told it is finished.
+        if saved {
+            let _ = tx.send(ai::ChatEvent::Done {
+                content: outcome.content,
+            });
+        }
         Ok(())
     }
 

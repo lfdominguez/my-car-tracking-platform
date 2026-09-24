@@ -50,6 +50,10 @@ pub enum ChatEvent {
     /// A tool call finished.
     ToolFinished { name: String, ok: bool, ms: u64 },
     /// The turn completed; `content` is the full assistant text.
+    ///
+    /// [`run_chat`] never emits this itself: only the caller knows when the turn has
+    /// been persisted, and a client that sees `Done` and immediately re-reads the
+    /// conversation must find the answer there. The caller emits it after saving.
     Done { content: String },
     /// The turn failed. The message is already caller-safe.
     Failed { message: String },
@@ -104,6 +108,8 @@ pub struct ChatTurnResult {
 }
 
 /// Run one user turn to completion, streaming fragments to `sink`.
+///
+/// Emits deltas and tool progress but not [`ChatEvent::Done`]; see its docs.
 ///
 /// `history` is the replayed transcript **including** the new user message; the
 /// system prompt is passed separately and is never persisted by the caller.
@@ -179,9 +185,6 @@ pub async fn run_chat(
                 content
             };
 
-            sink.emit(ChatEvent::Done {
-                content: final_content.clone(),
-            });
             return Ok(ChatTurnResult {
                 content: final_content,
                 new_messages,
@@ -249,9 +252,6 @@ pub async fn run_chat(
         content
     };
     new_messages.push(json!({ "role": "assistant", "content": message }));
-    sink.emit(ChatEvent::Done {
-        content: message.clone(),
-    });
     Ok(ChatTurnResult {
         content: message,
         new_messages,
