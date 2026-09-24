@@ -466,6 +466,7 @@ async fn insert_sample(
 /// Failure is logged and swallowed: a stale row is only ever a missed optimisation,
 /// since the read paths fall back to aggregating live.
 async fn after_points_landed(state: &AppState, track_ids: &[Uuid]) {
+    crate::live::publish_latest(state, track_ids).await;
     let finished: Vec<Uuid> =
         match sqlx::query_scalar("SELECT id FROM tracks WHERE id = ANY($1) AND finished")
             .bind(track_ids)

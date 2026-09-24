@@ -16,6 +16,8 @@ pub struct AppState {
     /// In-flight chat generations, so an SSE reader can attach to a task that
     /// outlives the request which started it.
     pub chat_hub: Arc<ChatHub>,
+    /// Fresh car positions from ingest to live-map subscribers.
+    pub live: Arc<crate::live::LiveHub>,
 }
 
 impl AppState {
@@ -31,6 +33,7 @@ impl AppState {
             keyring,
             rate_limits: Arc::new(RateLimited::new()),
             chat_hub: Arc::new(ChatHub::new()),
+            live: Arc::new(crate::live::LiveHub::default()),
         }
     }
 }

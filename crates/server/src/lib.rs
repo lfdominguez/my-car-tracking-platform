@@ -13,6 +13,7 @@ pub mod error;
 pub mod http_client;
 pub mod ingest;
 pub mod jobs;
+pub mod live;
 pub mod maintenance;
 pub mod mcp;
 pub mod middleware;
@@ -66,6 +67,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(auth::router())
         .merge(mcp::settings_router())
         .merge(mcp::router(state.clone()))
+        .merge(live::router())
         .merge(cars::router())
         .merge(photo_routes)
         .merge(devices::router())
