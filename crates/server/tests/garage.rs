@@ -87,13 +87,7 @@ async fn fuel_log_summary_and_permissions() {
     let owner = login(&base).await;
     let viewer = login(&base).await;
     let car_id = create_car(&base, &owner).await;
-    owner
-        .client
-        .post(format!("{base}/api/cars/{car_id}/shares"))
-        .json(&json!({ "email": viewer.email, "role": "viewer" }))
-        .send()
-        .await
-        .unwrap();
+    common::share_car(&base, &owner, &car_id, &viewer, "viewer").await;
     let url = |p: &str| format!("{base}/api/cars/{car_id}/{p}");
 
     for (odo, qty) in [(10000, 40.0), (10500, 30.0)] {

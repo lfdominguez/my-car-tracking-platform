@@ -158,3 +158,40 @@ pub async fn seed_trip(pool: &sqlx::PgPool, car_id: &str) -> Uuid {
     }
     track_id
 }
+
+/// Owner invites `invitee` and the invitee accepts, as the UI does.
+pub async fn share_car(base: &str, owner: &User, car_id: &str, invitee: &User, role: &str) {
+    let resp = owner
+        .client
+        .post(format!("{base}/api/cars/{car_id}/shares"))
+        .json(&json!({ "email": invitee.email, "role": role }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "invite: {}", resp.status());
+    let invites: Value = invitee
+        .client
+        .get(format!("{base}/api/me/share-invites"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = invites
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["car_id"] == car_id)
+        .expect("invite listed")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = invitee
+        .client
+        .post(format!("{base}/api/me/share-invites/{id}/accept"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "accept: {}", resp.status());
+}

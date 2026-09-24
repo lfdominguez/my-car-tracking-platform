@@ -97,14 +97,7 @@ async fn removing_an_editor_revokes_the_devices_they_created() {
     let editor = login(&base).await;
     let car_id = create_car(&base, &owner).await;
 
-    let share = owner
-        .client
-        .post(format!("{base}/api/cars/{car_id}/shares"))
-        .json(&json!({ "email": editor.email, "role": "editor" }))
-        .send()
-        .await
-        .unwrap();
-    assert!(share.status().is_success());
+    common::share_car(&base, &owner, &car_id, &editor, "editor").await;
 
     let owner_device: Value = owner
         .client
@@ -268,13 +261,7 @@ async fn owners_hear_about_devices_added_by_others_and_sharees_about_shares() {
     let owner = login(&base).await;
     let editor = login(&base).await;
     let car_id = create_car(&base, &owner).await;
-    owner
-        .client
-        .post(format!("{base}/api/cars/{car_id}/shares"))
-        .json(&json!({ "email": editor.email, "role": "editor" }))
-        .send()
-        .await
-        .unwrap();
+    common::share_car(&base, &owner, &car_id, &editor, "editor").await;
     editor
         .client
         .post(format!("{base}/api/cars/{car_id}/devices"))
@@ -302,7 +289,93 @@ async fn owners_hear_about_devices_added_by_others_and_sharees_about_shares() {
     );
     let editor_titles = titles(&editor).await;
     assert!(
-        editor_titles.iter().any(|t| t.contains("shared")),
+        editor_titles.iter().any(|t| t.contains("invited you")),
         "{editor_titles:?}"
     );
+}
+
+#[tokio::test]
+async fn invites_do_not_reveal_accounts_and_need_acceptance() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let owner = login(&base).await;
+    let friend = login(&base).await;
+    let car_id = create_car(&base, &owner).await;
+
+    let invite = |email: String| {
+        owner
+            .client
+            .post(format!("{base}/api/cars/{car_id}/shares"))
+            .json(&json!({ "email": email, "role": "viewer" }))
+            .send()
+    };
+    let a: Value = invite(friend.email.clone())
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let b: Value = invite(format!("nobody-{}@example.com", uuid::Uuid::new_v4()))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(a, b, "responses must not differ by account existence");
+
+    // Not shared until accepted.
+    let resp = friend
+        .client
+        .get(format!("{base}/api/cars/{car_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(!resp.status().is_success());
+    let pending: Value = owner
+        .client
+        .get(format!("{base}/api/cars/{car_id}/share-invites"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pending.as_array().unwrap().len(), 2);
+
+    common::share_car(&base, &owner, &car_id, &friend, "viewer").await;
+    let resp = friend
+        .client
+        .get(format!("{base}/api/cars/{car_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    // A sharee sees only their own share row, and can leave.
+    let rows: Value = friend
+        .client
+        .get(format!("{base}/api/cars/{car_id}/shares"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    let resp = friend
+        .client
+        .post(format!("{base}/api/cars/{car_id}/shares/me/leave"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let resp = friend
+        .client
+        .get(format!("{base}/api/cars/{car_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(!resp.status().is_success());
 }
