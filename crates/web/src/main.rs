@@ -18,6 +18,7 @@ use crate::pages::dashboard::DashboardPage;
 use crate::pages::landing::LandingPage;
 use crate::pages::login::LoginPage;
 use crate::pages::not_found::NotFoundPage;
+use crate::pages::notifications::NotificationsPage;
 use crate::pages::routes::{RouteCorridorPage, RoutesPage};
 use crate::pages::settings::SettingsPage;
 use crate::pages::stats::StatsPage;
@@ -49,6 +50,7 @@ fn main() {
                         <Route path=path!("routes/:id") view=RouteCorridorPage/>
                         <Route path=path!("stats") view=StatsPage/>
                         <Route path=path!("settings") view=SettingsPage/>
+                        <Route path=path!("notifications") view=NotificationsPage/>
                     </ParentRoute>
                 </Routes>
             </Router>

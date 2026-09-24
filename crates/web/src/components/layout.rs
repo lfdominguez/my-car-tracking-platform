@@ -5,6 +5,7 @@ use wasm_bindgen::JsCast;
 
 use crate::api::{Me, get_me, logout};
 use crate::components::{Icon, IconColor, ThemeToggle};
+use crate::pages::notifications::NotificationBell;
 use crate::units::{UnitPrefs, UnitPrefsSignal};
 
 #[component]
@@ -19,6 +20,7 @@ pub fn AppLayout() -> impl IntoView {
     let update_available = RwSignal::new(false);
     let navigate = StoredValue::new(use_navigate());
     let location = use_location();
+    crate::pages::notifications::provide_notifications();
 
     // Close drawer on route change.
     Effect::new(move |_| {
@@ -116,12 +118,15 @@ pub fn AppLayout() -> impl IntoView {
                     <span>"Car Tracking"</span>
                 </div>
                 <span class="mobile-topbar-spacer" aria-hidden="true"></span>
+                <NotificationBell/>
                 <ThemeToggle/>
             </header>
             <aside class="sidebar" id="app-sidebar">
                 <div class="brand">
                     <img class="brand-logo" src="/icons/icon-192.png" alt="" width="32" height="32"/>
                     "Car Tracking"
+                    <span class="brand-spacer" aria-hidden="true"></span>
+                    <NotificationBell/>
                 </div>
                 <nav class="nav" aria-label="Primary">
                     <span class="nav-group-label">"Overview"</span>

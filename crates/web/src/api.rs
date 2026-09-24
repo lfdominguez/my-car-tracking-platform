@@ -1700,3 +1700,81 @@ pub async fn leave_shared_car(car_id: &str) -> Result<(), ApiError> {
     .await?;
     Ok(())
 }
+
+// --- notifications & web push (#109, #112) -----------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NotificationItem {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    /// In-app path to open, e.g. `/app/trips/<id>`.
+    pub url: Option<String>,
+    pub created_at: String,
+    pub read_at: Option<String>,
+}
+
+pub async fn list_notifications(
+    unread_only: bool,
+    limit: i64,
+) -> Result<Vec<NotificationItem>, ApiError> {
+    send_json(Request::get(&format!(
+        "/api/notifications?unread={unread_only}&limit={limit}"
+    )))
+    .await
+}
+
+pub async fn unread_notification_count() -> Result<i64, ApiError> {
+    let v: serde_json::Value = send_json(Request::get("/api/notifications/unread-count")).await?;
+    Ok(v.get("unread").and_then(|n| n.as_i64()).unwrap_or(0))
+}
+
+pub async fn mark_notification_read(id: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post(&format!("/api/notifications/{id}/read")),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_all_notifications_read() -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::post("/api/notifications/read-all"),
+        &serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+/// The server's VAPID public key (base64url), or `None` when push is not set up.
+pub async fn push_vapid_key() -> Result<Option<String>, ApiError> {
+    let v: serde_json::Value = send_json(Request::get("/api/push/config")).await?;
+    Ok(v.get("vapid_public_key")
+        .and_then(|k| k.as_str())
+        .map(str::to_string)
+        .filter(|k| !k.is_empty()))
+}
+
+/// Register a browser subscription (`PushSubscription.toJSON()`).
+pub async fn push_subscribe(subscription: &serde_json::Value) -> Result<(), ApiError> {
+    let _: serde_json::Value =
+        send_json_body(Request::post("/api/push/subscriptions"), subscription).await?;
+    Ok(())
+}
+
+pub async fn push_unsubscribe(endpoint: &str) -> Result<(), ApiError> {
+    let _: serde_json::Value = send_json_body(
+        Request::delete("/api/push/subscriptions"),
+        &serde_json::json!({ "endpoint": endpoint }),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn push_test() -> Result<(), ApiError> {
+    let _: serde_json::Value =
+        send_json_body(Request::post("/api/push/test"), &serde_json::json!({})).await?;
+    Ok(())
+}
