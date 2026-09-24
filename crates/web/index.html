@@ -66,11 +66,13 @@
   <link rel="stylesheet" href="/fonts.css"/>
   <link rel="stylesheet" type="text/css" href="/vendor/phosphor-duotone.css"/>
   <link rel="stylesheet" type="text/css" href="/vendor/phosphor-regular.css"/>
-  <link rel="stylesheet" href="/vendor/maplibre-gl.css"/>
-  <script src="/vendor/maplibre-gl.js"></script>
-  <script src="/vendor/echarts.min.js"></script>
-  <!-- Absolute path: relative src breaks on client routes like /cars/:id (SPA deep links). -->
-  <script src="/qrcode.min.js"></script>
+  <!-- MapLibre (JS + CSS) and ECharts are no longer render-blocking: the map and
+       chart components load them from /vendor on first use (same-origin, so CSP
+       script-src 'self' still covers them). -->
+  <!-- Absolute path: relative src breaks on client routes like /cars/:id (SPA deep links).
+       Deferred so it never blocks first paint; the QR component also loads it on
+       demand if this tag is missing. The Dockerfile checks for this tag. -->
+  <script defer src="/qrcode.min.js"></script>
   <script src="/pwa-register.js"></script>
 </head>
 <body></body>

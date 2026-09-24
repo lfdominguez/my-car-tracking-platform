@@ -4,6 +4,56 @@ use wasm_bindgen::prelude::*;
 use crate::api::TripPoint;
 
 #[wasm_bindgen(inline_js = r#"
+/**
+ * Load a self-hosted vendor script on first use instead of blocking <head>.
+ * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
+ * shared on `window`, so every snippet that needs the library waits on one fetch.
+ */
+function loadVendorScript(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[src]) {
+    loads[src] = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => (window[globalName] ? resolve() : reject(new Error(`${src} loaded without ${globalName}`)));
+      s.onerror = () => {
+        delete loads[src];
+        reject(new Error(`failed to load ${src}`));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return loads[src];
+}
+/** Stylesheet counterpart of loadVendorScript; resolves once applied (errors too). */
+function loadVendorCss(href) {
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[href]) {
+    loads[href] = new Promise((resolve) => {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = href;
+      // A missing stylesheet degrades the controls, not the map: never block on it.
+      l.onload = l.onerror = () => resolve();
+      document.head.appendChild(l);
+    });
+  }
+  return loads[href];
+}
+
+/** MapLibre warns about (and mis-lays out) a map created before its CSS applied. */
+function loadMapLibre() {
+  return Promise.all([
+    loadVendorCss('/vendor/maplibre-gl.css'),
+    loadVendorScript('/vendor/maplibre-gl.js', 'maplibregl'),
+  ]);
+}
+
+/** Latest render arguments per map element while MapLibre is still loading. */
+const __pendingTripMaps = new Map();
+
 let __tripSpeedUnit = 'km/h';
 const TRIP_MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const TRIP_MAP_PITCH = 48;
@@ -1067,6 +1117,7 @@ export function clearTripMap(elId) {
 
 /** Tear down MapLibre instance when the Leptos map component unmounts. */
 export function disposeTripMap(elId) {
+  __pendingTripMaps.delete(elId);
   const entry = __tripMaps.get(elId);
   if (!entry) return;
   destroyTripMapEntry(elId, entry);
@@ -1077,8 +1128,19 @@ export function disposeTripMap(elId) {
 }
 
 export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
+  if (!window.maplibregl) {
+    __pendingTripMaps.set(elId, [geojson, pointsJson, trafficJson]);
+    loadMapLibre()
+      .then(() => {
+        const args = __pendingTripMaps.get(elId);
+        __pendingTripMaps.delete(elId);
+        if (args) renderTripMap(elId, ...args);
+      })
+      .catch((err) => console.error('MapLibre failed to load', err));
+    return;
+  }
   const el = document.getElementById(elId);
-  if (!el || !window.maplibregl) return;
+  if (!el) return;
 
   let points = [];
   try {
@@ -1322,6 +1384,48 @@ fn serde_wasm_bindgen_compat(v: &serde_json::Value) -> Result<JsValue, String> {
 }
 
 #[wasm_bindgen(inline_js = r#"
+/**
+ * Load a self-hosted vendor script on first use instead of blocking <head>.
+ * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
+ * shared on `window`, so every snippet that needs the library waits on one fetch.
+ */
+function loadVendorScript(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[src]) {
+    loads[src] = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => (window[globalName] ? resolve() : reject(new Error(`${src} loaded without ${globalName}`)));
+      s.onerror = () => {
+        delete loads[src];
+        reject(new Error(`failed to load ${src}`));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return loads[src];
+}
+/** Stylesheet counterpart of loadVendorScript; resolves once applied (errors too). */
+function loadVendorCss(href) {
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[href]) {
+    loads[href] = new Promise((resolve) => {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = href;
+      // A missing stylesheet degrades the controls, not the map: never block on it.
+      l.onload = l.onerror = () => resolve();
+      document.head.appendChild(l);
+    });
+  }
+  return loads[href];
+}
+
+/** Latest mount request while MapLibre is still loading. */
+let __routeOptPending = null;
+
 const ROUTE_OPT_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 // Saturated solid colors for *your* recorded path variants.
 const VARIANT_COLORS = ['#0077ff', '#00c853', '#ffd600', '#00e5ff', '#304ffe', '#76ff03'];
@@ -1403,6 +1507,7 @@ function enrichRouteOptGeojson(data) {
 }
 
 export function disposeRouteOptMap() {
+  __routeOptPending = null;
   try {
     if (__routeOptPopup) {
       __routeOptPopup.remove();
@@ -1553,7 +1658,21 @@ function ensureRouteOptLayers(map) {
 }
 
 export function mountRouteOptMap(host, geojson) {
-  if (!host || typeof maplibregl === 'undefined') return;
+  if (!host) return;
+  if (typeof window.maplibregl === 'undefined') {
+    __routeOptPending = { host, geojson };
+    Promise.all([
+      loadVendorCss('/vendor/maplibre-gl.css'),
+      loadVendorScript('/vendor/maplibre-gl.js', 'maplibregl'),
+    ])
+      .then(() => {
+        const p = __routeOptPending;
+        __routeOptPending = null;
+        if (p && p.host.isConnected) mountRouteOptMap(p.host, p.geojson);
+      })
+      .catch((err) => console.error('MapLibre failed to load', err));
+    return;
+  }
   if (__routeOptMap && __routeOptHost !== host) {
     disposeRouteOptMap();
   }

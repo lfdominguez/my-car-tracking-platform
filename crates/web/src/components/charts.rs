@@ -10,6 +10,33 @@ use crate::units::{
 use shared::telemetry_sanitize::{SpeedRpmPoint, sanitize_speed_rpm};
 
 #[wasm_bindgen(inline_js = r#"
+/**
+ * Load a self-hosted vendor script on first use instead of blocking <head>.
+ * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
+ * shared on `window`, so every snippet that needs the library waits on one fetch.
+ */
+function loadVendorScript(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[src]) {
+    loads[src] = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => (window[globalName] ? resolve() : reject(new Error(`${src} loaded without ${globalName}`)));
+      s.onerror = () => {
+        delete loads[src];
+        reject(new Error(`failed to load ${src}`));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return loads[src];
+}
+
+/** Latest option per chart id while ECharts is still loading (older ones are moot). */
+const __pendingCharts = new Map();
+
 const __tripCharts = new Map();
 const __tripChartTimes = new Map(); // elId -> full ISO timestamps aligned with category axis
 let __tripSelection = null; // { iso, dataIndexHint }
@@ -381,8 +408,19 @@ function applyChartOption(elId, chart, option) {
 }
 
 export function renderTelemetryChart(elId, optionJson) {
+  if (!window.echarts) {
+    __pendingCharts.set(elId, optionJson);
+    loadVendorScript('/vendor/echarts.min.js', 'echarts')
+      .then(() => {
+        const pending = __pendingCharts.get(elId);
+        __pendingCharts.delete(elId);
+        if (pending != null) renderTelemetryChart(elId, pending);
+      })
+      .catch((err) => console.error('ECharts failed to load', err));
+    return;
+  }
   const el = document.getElementById(elId);
-  if (!el || !window.echarts) return;
+  if (!el) return;
 
   let option;
   try {
@@ -453,6 +491,7 @@ export function renderTelemetryChart(elId, optionJson) {
 }
 
 export function disposeTelemetryChart(elId) {
+  __pendingCharts.delete(elId);
   const chart = __tripCharts.get(elId);
   if (!chart) return;
   if (chart.__onResize) {

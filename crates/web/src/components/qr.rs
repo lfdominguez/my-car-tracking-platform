@@ -2,6 +2,30 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(inline_js = r#"
+/**
+ * Load a self-hosted vendor script on first use instead of blocking <head>.
+ * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
+ * shared on `window`, so every snippet that needs the library waits on one fetch.
+ */
+function loadVendorScript(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  const loads = (window.__ctpVendorLoads = window.__ctpVendorLoads || {});
+  if (!loads[src]) {
+    loads[src] = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => (window[globalName] ? resolve() : reject(new Error(`${src} loaded without ${globalName}`)));
+      s.onerror = () => {
+        delete loads[src];
+        reject(new Error(`failed to load ${src}`));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return loads[src];
+}
+
 export function renderQr(elId, text) {
   const el = document.getElementById(elId);
   if (!el) return 'missing-el';
@@ -41,6 +65,9 @@ export function scheduleRenderQr(elId, text) {
   // Also re-check window.QRCode — a relative script src on /cars/:id can 404
   // as SPA HTML; absolute /qrcode.min.js is required in index.html.
   let attempts = 0;
+  // index.html loads the library with `defer`; if that tag is missing or failed,
+  // fetch it here so the retries below have something to wait for.
+  loadVendorScript('/qrcode.min.js', 'QRCode').catch(() => {});
   function tick() {
     attempts += 1;
     const status = renderQr(elId, text);
