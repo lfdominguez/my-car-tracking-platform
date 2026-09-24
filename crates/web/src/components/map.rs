@@ -110,6 +110,12 @@ function isStoppedSample(p, prev) {
   return (d / 1000) / dtH <= 2;
 }
 
+/** UI text published by the app (src/i18n.rs) for the current language. */
+function tt(key, fallback) {
+  const table = window.__ctpI18n;
+  return (table && table[key]) || fallback;
+}
+
 function formatDwell(ms) {
   if (!Number.isFinite(ms) || ms < 0) return '—';
   const totalSec = Math.round(ms / 1000);
@@ -538,8 +544,11 @@ function renderTrafficLegend(visible) {
   const list = document.getElementById('trip-traffic-legend');
   if (!list) return;
   list.hidden = !visible;
-  if (!visible || list.childElementCount) return;
-  for (const [, label, color] of TRAFFIC_LEVELS) {
+  if (!visible) return;
+  // Rebuilt on every show so the labels follow the current language.
+  list.replaceChildren();
+  for (const [key, fallback, color] of TRAFFIC_LEVELS) {
+    const label = tt('js.traffic.' + key, fallback);
     const li = document.createElement('li');
     li.className = 'map-traffic-legend-item';
     const sw = document.createElement('span');
@@ -920,7 +929,7 @@ function routeHoverHtml(point) {
   const speed = formatSpeedKph(point ? pointSpeed(point) : null);
   const rpm = formatRpm(point ? pointRpm(point) : null);
   return `<div class="trip-route-popup-inner">
-    <div class="trip-route-popup-row"><span>Velocity</span><strong>${speed}</strong></div>
+    <div class="trip-route-popup-row"><span>${tt('js.map.speed', 'Speed')}</span><strong>${speed}</strong></div>
     <div class="trip-route-popup-row"><span>RPM</span><strong>${rpm}</strong></div>
   </div>`;
 }
@@ -1005,10 +1014,10 @@ function bindTripInteractions(entry) {
     const f = e.features && e.features[0];
     if (!f) return;
     const coords = f.geometry.coordinates.slice();
-    const label = (f.properties && f.properties.dwell_label) || 'Stop';
+    const label = (f.properties && f.properties.dwell_label) || tt('js.map.stop', 'Stop');
     stopPopup
       .setLngLat(coords)
-      .setHTML(`<div class="trip-stop-popup-inner"><strong>Stopped</strong><span>${label}</span></div>`)
+      .setHTML(`<div class="trip-stop-popup-inner"><strong>${tt('js.map.stopped', 'Stopped')}</strong><span>${label}</span></div>`)
       .addTo(map);
   });
   map.on('mouseleave', 'trip-stops', () => {
@@ -1329,8 +1338,8 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     const minEl = document.getElementById('trip-speed-min');
     const maxEl = document.getElementById('trip-speed-max');
     const bar = document.getElementById('trip-speed-bar');
-    if (minEl) minEl.textContent = 'Free';
-    if (maxEl) maxEl.textContent = 'Jam';
+    if (minEl) minEl.textContent = tt('js.map.free', 'Free');
+    if (maxEl) maxEl.textContent = tt('js.map.jam', 'Jam');
     if (bar) {
       bar.classList.remove('is-empty');
       bar.style.background = trafficRampCss();
@@ -1544,6 +1553,12 @@ fn serde_wasm_bindgen_compat(v: &serde_json::Value) -> Result<JsValue, String> {
 }
 
 #[wasm_bindgen(inline_js = r#"
+/** UI text published by the app (src/i18n.rs) for the current language. */
+function tt(key, fallback) {
+  const table = window.__ctpI18n;
+  return (table && table[key]) || fallback;
+}
+
 /**
  * Load a self-hosted vendor script on first use instead of blocking <head>.
  * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
@@ -1633,10 +1648,10 @@ function routeOptDisplayLabel(props) {
   if (!props) return '';
   const raw = props.label || '';
   if (props.kind === 'ors') {
-    const name = raw.replace(/^ORS\s+/i, '') || 'alternative';
-    return 'Router · ' + name;
+    const name = raw.replace(/^ORS\s+/i, '') || tt('js.route.alternative', 'alternative');
+    return tt('js.route.router_prefix', 'Router ·') + ' ' + name;
   }
-  return 'Variant · ' + (raw || 'path');
+  return tt('js.route.variant_prefix', 'Variant ·') + ' ' + (raw || tt('js.route.path', 'path'));
 }
 
 function routeOptColorFor(props) {
@@ -1655,7 +1670,7 @@ function enrichRouteOptGeojson(data) {
   const out = features.map((f) => {
     const props = Object.assign({}, f.properties || {});
     props.display_label = routeOptDisplayLabel(props);
-    props.kind_label = props.kind === 'ors' ? 'OpenRouteService' : 'Your path';
+    props.kind_label = props.kind === 'ors' ? 'OpenRouteService' : tt('js.route.your_path', 'Your path');
     props.route_color = routeOptColorFor(props);
     return {
       type: 'Feature',
@@ -1795,11 +1810,13 @@ function ensureRouteOptLayers(map) {
     map.getCanvas().style.cursor = 'pointer';
     const f = e.features[0];
     const props = f.properties || {};
-    const kind = props.kind === 'ors' ? 'OpenRouteService alternative' : 'Your path variant';
+    const kind = props.kind === 'ors'
+      ? tt('js.route.ors_alt', 'OpenRouteService alternative')
+      : tt('js.route.variant_kind', 'Your path variant');
     const name = props.label || '';
     const title = props.kind === 'ors'
-      ? (name.replace(/^ORS\s+/i, '') || 'Router alt')
-      : (name || 'Variant');
+      ? (name.replace(/^ORS\s+/i, '') || tt('js.route.router_alt', 'Router alt'))
+      : (name || tt('js.route.variant', 'Variant'));
     const html =
       '<div class="route-opt-popup-inner">' +
       '<span class="route-opt-popup-kind ' + (props.kind === 'ors' ? 'is-ors' : 'is-variant') + '">' +
@@ -1807,7 +1824,9 @@ function ensureRouteOptLayers(map) {
       '</span>' +
       '<strong>' + title + '</strong>' +
       '<span class="route-opt-popup-style">' +
-      (props.kind === 'ors' ? 'Dashed line · router estimate' : 'Solid line · recorded trips') +
+      (props.kind === 'ors'
+        ? tt('js.route.dashed', 'Dashed line · router estimate')
+        : tt('js.route.solid', 'Solid line · recorded trips')) +
       '</span></div>';
     __routeOptPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
   });

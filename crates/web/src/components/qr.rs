@@ -2,6 +2,12 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(inline_js = r#"
+/** UI text published by the app (src/i18n.rs) for the current language. */
+function tt(key, fallback) {
+  const table = window.__ctpI18n;
+  return (table && table[key]) || fallback;
+}
+
 /**
  * Load a self-hosted vendor script on first use instead of blocking <head>.
  * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
@@ -76,9 +82,9 @@ export function scheduleRenderQr(elId, text) {
       const el = document.getElementById(elId);
       if (!el) return;
       if (status === 'missing-lib') {
-        el.textContent = 'QR library not loaded';
+        el.textContent = tt('js.qr.no_lib', 'QR library not loaded');
       } else {
-        el.textContent = 'QR container not ready';
+        el.textContent = tt('js.qr.not_ready', 'QR container not ready');
       }
       return;
     }

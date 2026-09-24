@@ -33,20 +33,20 @@ pub fn LoginPage() -> impl IntoView {
                 <div class="empty-state" style="padding:0.25rem 0 0.5rem">
                     <Icon name="gauge" size=IconSize::Xl color=IconColor::Accent />
                 </div>
-                <h1>"Car Tracking Platform"</h1>
-                <p class="muted">"Sign in to manage cars, share access, provision Android devices, and explore trip analytics."</p>
+                <h1>{tr!("login.title")}</h1>
+                <p class="muted">{tr!("login.lead")}</p>
                 // rel="external" bypasses the Leptos client router so the browser
                 // hits the Axum OAuth start handler (full redirect to Google).
                 <a class="btn primary" href="/auth/google" rel="external">
                     <Icon name="google-logo" color=IconColor::Default />
-                    "Continue with Google"
+                    {tr!("login.google")}
                 </a>
                 <a class="muted" href="/" style="font-size:var(--text-md);text-align:center">
-                    "← Back to home"
+                    {tr!("login.back_home")}
                 </a>
                 <Show when=move || allow_dev_login.get()>
                     <p class="muted" style="font-size:var(--text-sm)">
-                        "Dev mode: POST /auth/dev-login with ALLOW_DEV_LOGIN=1"
+                        {tr!("login.dev_mode")}
                     </p>
                 </Show>
             </div>

@@ -28,7 +28,7 @@ pub fn LandingPage() -> impl IntoView {
             fallback=move || {
                 view! {
                     <div class="landing-boot">
-                        <div class="landing-boot-inner muted">"Loading…"</div>
+                        <div class="landing-boot-inner muted">{tr!("common.loading")}</div>
                     </div>
                 }
             }
@@ -46,15 +46,15 @@ pub fn LandingPage() -> impl IntoView {
                         <span>"Car Tracking"</span>
                     </a>
                     <nav class="landing-nav-links">
-                        <a href="#features">"Features"</a>
-                        <a href="#how">"How it works"</a>
-                        <a href="#intelligence">"Intelligence"</a>
-                        <a href="#telemetry">"Telemetry"</a>
+                        <a href="#features">{tr!("landing.nav_features")}</a>
+                        <a href="#how">{tr!("landing.nav_how")}</a>
+                        <a href="#intelligence">{tr!("landing.nav_intelligence")}</a>
+                        <a href="#telemetry">{tr!("landing.nav_telemetry")}</a>
                     </nav>
                     <div class="landing-nav-actions">
                         <a class="btn primary landing-btn-cta" href="/auth/google" rel="external">
                             <Icon name="google-logo" color=IconColor::Default />
-                            "Continue with Google"
+                            {tr!("login.google")}
                         </a>
                     </div>
                 </header>
@@ -64,41 +64,39 @@ pub fn LandingPage() -> impl IntoView {
                         <div class="landing-hero-copy">
                             <p class="landing-kicker">
                                 <span class="landing-kicker-dot"></span>
-                                "Personal multi-user car telemetry"
+                                {tr!("landing.kicker")}
                             </p>
                             <h1 class="landing-title">
-                                "Your garage."
+                                {tr!("landing.title_1")}
                                 <br/>
-                                <span class="landing-title-accent">"Every trip."</span>
+                                <span class="landing-title-accent">{tr!("landing.title_2")}</span>
                                 <br/>
-                                "One dark cockpit."
+                                {tr!("landing.title_3")}
                             </h1>
                             <p class="landing-lead">
-                                "Ingest from Android with the same Basic-auth track API. Explore speed-colored maps, full OBD charts, "
-                                "family sharing, QR device bootstrap, optional AI coaching, and corridor route intelligence — "
-                                "self-hosted in a single Rust binary."
+                                {tr!("landing.lead")}
                             </p>
                             <div class="landing-hero-ctas">
                                 <a class="btn primary landing-btn-lg" href="/auth/google" rel="external">
                                     <Icon name="google-logo" color=IconColor::Default />
-                                    "Start free with Google"
+                                    {tr!("landing.start_free")}
                                 </a>
                                 <a class="btn landing-btn-lg landing-btn-ghost" href="#features">
-                                    "See what’s inside"
+                                    {tr!("landing.see_inside")}
                                 </a>
                             </div>
                             <ul class="landing-hero-bullets">
                                 <li>
                                     <Icon name="path" size=IconSize::Sm color=IconColor::Success />
-                                    "Wire-compatible phone ingest"
+                                    {tr!("landing.bullet_ingest")}
                                 </li>
                                 <li>
                                     <Icon name="chart-line-up" size=IconSize::Sm color=IconColor::Accent />
-                                    "Trip analytics cockpit"
+                                    {tr!("landing.bullet_cockpit")}
                                 </li>
                                 <li>
                                     <Icon name="car" size=IconSize::Sm color=IconColor::Accent />
-                                    "Share cars · Owner / Editor / Viewer"
+                                    {tr!("landing.bullet_share")}
                                 </li>
                             </ul>
                         </div>
@@ -109,24 +107,24 @@ pub fn LandingPage() -> impl IntoView {
                                     <span class="landing-mock-dot"></span>
                                     <span class="landing-mock-dot"></span>
                                     <span class="landing-mock-dot"></span>
-                                    <span class="landing-mock-title">"Trip cockpit"</span>
+                                    <span class="landing-mock-title">{tr!("landing.mock_title")}</span>
                                 </div>
                                 <div class="landing-mock-kpis">
                                     <div class="landing-mock-kpi">
-                                        <span class="muted">"Distance"</span>
-                                        <strong>"42.6 km"</strong>
+                                        <span class="muted">{tr!("common.distance")}</span>
+                                        <strong>{tr!("landing.mock_distance_value")}</strong>
                                     </div>
                                     <div class="landing-mock-kpi">
-                                        <span class="muted">"Avg speed"</span>
+                                        <span class="muted">{tr!("landing.mock_avg_speed")}</span>
                                         <strong>"54 km/h"</strong>
                                     </div>
                                     <div class="landing-mock-kpi">
-                                        <span class="muted">"Fuel"</span>
-                                        <strong>"3.1 L"</strong>
+                                        <span class="muted">{tr!("common.fuel")}</span>
+                                        <strong>{tr!("landing.mock_fuel_value")}</strong>
                                     </div>
                                     <div class="landing-mock-kpi">
-                                        <span class="muted">"Max RPM"</span>
-                                        <strong>"4.2k"</strong>
+                                        <span class="muted">{tr!("landing.mock_max_rpm")}</span>
+                                        <strong>{tr!("landing.mock_rpm_value")}</strong>
                                     </div>
                                 </div>
                                 <div class="landing-mock-map">
@@ -162,10 +160,10 @@ pub fn LandingPage() -> impl IntoView {
                                     </div>
                                 </div>
                                 <div class="landing-mock-tags">
-                                    <span>"Drive"</span>
-                                    <span>"Engine"</span>
-                                    <span>"Fuel"</span>
-                                    <span>"Thermal"</span>
+                                    <span>{tr!("landing.tag_drive")}</span>
+                                    <span>{tr!("landing.tag_engine")}</span>
+                                    <span>{tr!("common.fuel")}</span>
+                                    <span>{tr!("landing.tag_thermal")}</span>
                                 </div>
                             </div>
                         </div>
@@ -176,119 +174,117 @@ pub fn LandingPage() -> impl IntoView {
                             <span class="landing-trust-item">"🦀 Rust · Axum"</span>
                             <span class="landing-trust-item">"🗄️ PostgreSQL · PostGIS"</span>
                             <span class="landing-trust-item">"✨ Leptos CSR"</span>
-                            <span class="landing-trust-item">"📱 Android wire-compat"</span>
-                            <span class="landing-trust-item">"🐳 Single Docker image"</span>
+                            <span class="landing-trust-item">{tr!("landing.trust_android")}</span>
+                            <span class="landing-trust-item">{tr!("landing.trust_docker")}</span>
                             <span class="landing-trust-item">"📜 AGPL-3.0"</span>
                         </div>
                     </section>
 
                     <section class="landing-section" id="features">
                         <div class="landing-section-head">
-                            <p class="landing-kicker">"Product"</p>
-                            <h2>"Everything your garage needs — without a SaaS leash"</h2>
+                            <p class="landing-kicker">{tr!("landing.product")}</p>
+                            <h2>{tr!("landing.features_title")}</h2>
                             <p class="muted landing-section-lead">
-                                "From device QR bootstrap to family sharing and unit-aware dashboards, built for real cars on real roads."
+                                {tr!("landing.features_lead")}
                             </p>
                         </div>
                         <div class="landing-feature-grid">
                             <article class="landing-feature-card">
                                 <div class="landing-feature-icon"><Icon name="car" size=IconSize::Lg color=IconColor::Accent /></div>
-                                <h3>"Car garage"</h3>
-                                <p class="muted">"Profiles, photos, fuel and engine settings, per-car device tokens — one source of truth for phone and web."</p>
+                                <h3>{tr!("landing.f_garage_title")}</h3>
+                                <p class="muted">{tr!("landing.f_garage_body")}</p>
                             </article>
                             <article class="landing-feature-card">
                                 <div class="landing-feature-icon"><Icon name="path" size=IconSize::Lg color=IconColor::Success /></div>
-                                <h3>"Phone ingest"</h3>
-                                <p class="muted">"start / sample(s) / stop with Authorization: Basic. Keep your Android app’s contract; upgrade the backend."</p>
+                                <h3>{tr!("landing.f_ingest_title")}</h3>
+                                <p class="muted">{tr!("landing.f_ingest_body")}</p>
                             </article>
                             <article class="landing-feature-card">
                                 <div class="landing-feature-icon"><Icon name="map-trifold" size=IconSize::Lg color=IconColor::Accent /></div>
-                                <h3>"Trip cockpit"</h3>
-                                <p class="muted">"Liberty basemap, speed-gradient polylines, flow chevrons, stop markers, and chart ↔ map time sync."</p>
+                                <h3>{tr!("landing.mock_title")}</h3>
+                                <p class="muted">{tr!("landing.f_cockpit_body")}</p>
                             </article>
                             <article class="landing-feature-card">
                                 <div class="landing-feature-icon"><Icon name="chart-line-up" size=IconSize::Lg color=IconColor::Accent /></div>
-                                <h3>"Full OBD suite"</h3>
-                                <p class="muted">"Drive, engine, fuel, thermal and electrical panels — every stored field when your ECU delivers it."</p>
+                                <h3>{tr!("landing.f_obd_title")}</h3>
+                                <p class="muted">{tr!("landing.f_obd_body")}</p>
                             </article>
                             <article class="landing-feature-card">
                                 <div class="landing-feature-icon"><Icon name="users" size=IconSize::Lg color=IconColor::Accent /></div>
-                                <h3>"Sharing & QR"</h3>
-                                <p class="muted">"Invite by account with Owner / Editor / Viewer. Provision phones with a one-time token QR payload."</p>
+                                <h3>{tr!("landing.f_share_title")}</h3>
+                                <p class="muted">{tr!("landing.f_share_body")}</p>
                             </article>
                             <article class="landing-feature-card">
                                 <div class="landing-feature-icon"><Icon name="gear" size=IconSize::Lg color=IconColor::Accent /></div>
-                                <h3>"Metric or Imperial"</h3>
-                                <p class="muted">"Preference on the server: distance, speed, fuel volume and economy — database stays SI/raw forever."</p>
+                                <h3>{tr!("landing.f_units_title")}</h3>
+                                <p class="muted">{tr!("landing.f_units_body")}</p>
                             </article>
                         </div>
                     </section>
 
                     <section class="landing-section landing-how" id="how">
                         <div class="landing-section-head">
-                            <p class="landing-kicker">"Flow"</p>
-                            <h2>"From driveway to dashboard in three moves"</h2>
+                            <p class="landing-kicker">{tr!("landing.flow")}</p>
+                            <h2>{tr!("landing.how_title")}</h2>
                         </div>
                         <div class="landing-steps">
                             <div class="landing-step">
                                 <div class="landing-step-num">"01"</div>
-                                <h3>"Register the car"</h3>
-                                <p class="muted">"Sign in with Google, set fuel math, mint a device token, scan the QR on Android."</p>
+                                <h3>{tr!("landing.step1_title")}</h3>
+                                <p class="muted">{tr!("landing.step1_body")}</p>
                             </div>
                             <div class="landing-step-arrow" aria-hidden="true">"→"</div>
                             <div class="landing-step">
                                 <div class="landing-step-num">"02"</div>
-                                <h3>"Drive & upload"</h3>
-                                <p class="muted">"The phone streams GPS + OBD samples. Tracks land in PostGIS the moment you stop."</p>
+                                <h3>{tr!("landing.step2_title")}</h3>
+                                <p class="muted">{tr!("landing.step2_body")}</p>
                             </div>
                             <div class="landing-step-arrow" aria-hidden="true">"→"</div>
                             <div class="landing-step">
                                 <div class="landing-step-num">"03"</div>
-                                <h3>"Analyze & optimize"</h3>
-                                <p class="muted">"Open the trip cockpit, run optional AI analysis, and watch corridor insights stack up over time."</p>
+                                <h3>{tr!("landing.step3_title")}</h3>
+                                <p class="muted">{tr!("landing.step3_body")}</p>
                             </div>
                         </div>
                     </section>
 
                     <section class="landing-section" id="intelligence">
                         <div class="landing-section-head">
-                            <p class="landing-kicker">"Intelligence"</p>
-                            <h2>"Two brains. Zero lock-in."</h2>
+                            <p class="landing-kicker">{tr!("landing.nav_intelligence")}</p>
+                            <h2>{tr!("landing.intel_title")}</h2>
                             <p class="muted landing-section-lead">
-                                "Bring your own API keys. You control the models, the routing quota, and the data."
+                                {tr!("landing.intel_lead")}
                             </p>
                         </div>
                         <div class="landing-intel-grid">
                             <article class="landing-intel-card landing-intel-ai">
-                                <div class="landing-intel-badge">"Optional · OpenRouter"</div>
+                                <div class="landing-intel-badge">{tr!("landing.intel_ai_badge")}</div>
                                 <h3>
                                     <Icon name="sparkle" size=IconSize::Md color=IconColor::Accent />
-                                    " AI route analysis"
+                                    {tr!("landing.intel_ai_title")}
                                 </h3>
                                 <p class="muted">
-                                    "Owner-only Analyze / Re-analyze. A Rig agent with mechanic + financial prompts, tools, and safe math — "
-                                    "structured findings plus a downloadable markdown report."
+                                    {tr!("landing.intel_ai_body")}
                                 </p>
                                 <ul class="landing-intel-list">
-                                    <li>"Background jobs — no frozen UI"</li>
-                                    <li>"Keys encrypted at rest"</li>
-                                    <li>"Shared viewers can read finished reports"</li>
+                                    <li>{tr!("landing.intel_ai_1")}</li>
+                                    <li>{tr!("landing.intel_ai_2")}</li>
+                                    <li>{tr!("landing.intel_ai_3")}</li>
                                 </ul>
                             </article>
                             <article class="landing-intel-card landing-intel-routes">
-                                <div class="landing-intel-badge">"No LLM · OpenRouteService"</div>
+                                <div class="landing-intel-badge">{tr!("landing.intel_routes_badge")}</div>
                                 <h3>
                                     <Icon name="path" size=IconSize::Md color=IconColor::Success />
-                                    " Routes Optimization"
+                                    {tr!("landing.intel_routes_title")}
                                 </h3>
                                 <p class="muted">
-                                    "Cluster similar origin→destination corridors, compare your path variants by time of day, "
-                                    "and pull free router alternatives with elevation — including smart handling of garage loops."
+                                    {tr!("landing.intel_routes_body")}
                                 </p>
                                 <ul class="landing-intel-list">
-                                    <li>"Updates when a trip finishes"</li>
-                                    <li>"Your ORS key, your quota"</li>
-                                    <li>"Actionable “take the other path” insights"</li>
+                                    <li>{tr!("landing.intel_routes_1")}</li>
+                                    <li>{tr!("landing.intel_routes_2")}</li>
+                                    <li>{tr!("landing.intel_routes_3")}</li>
                                 </ul>
                             </article>
                         </div>
@@ -296,39 +292,39 @@ pub fn LandingPage() -> impl IntoView {
 
                     <section class="landing-section landing-telemetry" id="telemetry">
                         <div class="landing-section-head">
-                            <p class="landing-kicker">"Telemetry"</p>
-                            <h2>"Built for people who stare at gauges"</h2>
+                            <p class="landing-kicker">{tr!("landing.nav_telemetry")}</p>
+                            <h2>{tr!("landing.telemetry_title")}</h2>
                         </div>
                         <div class="landing-telemetry-grid">
                             <div class="landing-telemetry-item">
-                                <strong>"Speed-colored routes"</strong>
-                                <span class="muted">"Trip-relative blue→red gradients, not a fixed global scale."</span>
+                                <strong>{tr!("landing.tel_speed_title")}</strong>
+                                <span class="muted">{tr!("landing.tel_speed_body")}</span>
                             </div>
                             <div class="landing-telemetry-item">
-                                <strong>"Synced charts"</strong>
-                                <span class="muted">"Zoom and crosshair linked across panels; click the map to pin a moment."</span>
+                                <strong>{tr!("landing.tel_sync_title")}</strong>
+                                <span class="muted">{tr!("landing.tel_sync_body")}</span>
                             </div>
                             <div class="landing-telemetry-item">
-                                <strong>"Sparse OBD friendly"</strong>
-                                <span class="muted">"Empty sections hide. GPS-only trips still look great."</span>
+                                <strong>{tr!("landing.tel_sparse_title")}</strong>
+                                <span class="muted">{tr!("landing.tel_sparse_body")}</span>
                             </div>
                             <div class="landing-telemetry-item">
-                                <strong>"Per-car home"</strong>
-                                <span class="muted">"Dashboard cards: latest odometer, tank %, tracked distance."</span>
+                                <strong>{tr!("landing.tel_home_title")}</strong>
+                                <span class="muted">{tr!("landing.tel_home_body")}</span>
                             </div>
                         </div>
                     </section>
 
                     <section class="landing-cta-band" id="get-started">
                         <div class="landing-cta-inner">
-                            <h2>"Ready to put your fleet on a real dashboard?"</h2>
+                            <h2>{tr!("landing.cta_title")}</h2>
                             <p class="muted">
-                                "Self-host with Docker or cargo. Sign in with Google. Provision the phone. Drive."
+                                {tr!("landing.cta_body")}
                             </p>
                             <div class="landing-hero-ctas">
                                 <a class="btn primary landing-btn-lg" href="/auth/google" rel="external">
                                     <Icon name="google-logo" color=IconColor::Default />
-                                    "Continue with Google"
+                                    {tr!("login.google")}
                                 </a>
                             </div>
                         </div>
@@ -338,16 +334,16 @@ pub fn LandingPage() -> impl IntoView {
                 <footer class="landing-footer">
                     <div class="landing-footer-brand">
                         <Icon name="gauge" size=IconSize::Sm color=IconColor::Accent />
-                        <span>"Car Tracking Platform"</span>
+                        <span>{tr!("login.title")}</span>
                     </div>
                     <p class="muted landing-footer-copy">
-                        "AGPL-3.0-only · Built with Rust, PostGIS & Leptos · Your data stays on your server."
+                        {tr!("landing.footer_copy")}
                     </p>
                     <div class="landing-footer-links">
                         <a href="https://github.com/lfdominguez/my-car-tracking-platform" rel="noopener noreferrer" target="_blank">
                             "GitHub"
                         </a>
-                                                <a href="/health" rel="external">"Health"</a>
+                                                <a href="/health" rel="external">{tr!("landing.health")}</a>
                     </div>
                 </footer>
             </div>

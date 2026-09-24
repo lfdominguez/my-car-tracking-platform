@@ -14,6 +14,7 @@ use crate::api::{
 use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{self, num, tf, tp};
 use crate::pages::driving::TripDrivingCard;
 use crate::pages::trip_export::TripExportMenu;
 use crate::pages::trip_replay::TripReplay;
@@ -85,7 +86,7 @@ fn first_last(points: &[TripPoint], f: impl Fn(&TripPoint) -> Option<f64>) -> Op
 }
 
 fn fmt_odo_value(v: f64, unit: &str) -> String {
-    format!("{v:.1} {unit}")
+    format!("{} {unit}", num(v, 1))
 }
 
 fn fmt_engine_on_seconds(secs: f64) -> String {
@@ -115,35 +116,28 @@ fn fmt_signed_duration(delta_secs: f64) -> String {
 
 /// Format an API RFC3339 timestamp in the **browser local** timezone.
 /// (Raw UTC strings made morning trips look like afternoon and hard to spot.)
-fn pretty_started(s: &str) -> String {
+pub(crate) fn pretty_started(s: &str) -> String {
     use chrono::{DateTime, Local};
     if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
-        return dt
-            .with_timezone(&Local)
-            .format("%Y-%m-%d %H:%M")
-            .to_string();
+        return crate::i18n::datetime(
+            &dt.with_timezone(&Local).naive_local(),
+            crate::i18n::datetime_pattern(),
+        );
     }
     // Fallback: strip Z and show clock without claiming local.
     let s = s.trim().trim_end_matches('Z');
     if let Some((d, t)) = s.split_once('T') {
         let t = t.split('.').next().unwrap_or(t);
         let t = if t.len() >= 5 { &t[..5] } else { t };
-        format!("{d} {t} UTC")
+        format!("{} {t} UTC", crate::i18n::iso_date(d))
     } else {
         s.to_string()
     }
 }
 
-/// Local `YYYY-MM-DD HH:MM:SS` for an RFC3339 instant.
+/// Local date and `HH:MM:SS` for an RFC3339 instant, in the locale's date order.
 fn pretty_time_secs(s: &str) -> String {
-    use chrono::{DateTime, Local};
-    DateTime::parse_from_rfc3339(s.trim())
-        .map(|dt| {
-            dt.with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        })
-        .unwrap_or_else(|_| s.to_string())
+    crate::i18n::local_datetime(s, Some(crate::i18n::datetime_seconds_pattern()))
 }
 
 /// Local `HH:MM:SS` for an RFC3339 instant.
@@ -154,22 +148,22 @@ fn pretty_clock(s: &str) -> String {
         .unwrap_or_else(|_| s.to_string())
 }
 
-/// Human status for open trips: live vs no GPS for a while.
-fn open_trip_status_label(last_point_at: Option<&str>, started_at: &str) -> String {
+/// Local `HH:MM` of the last activity when an open trip has had no GPS for 15
+/// minutes or more; `None` while it is live.
+fn open_trip_stale_since(last_point_at: Option<&str>, started_at: &str) -> Option<String> {
     use chrono::{DateTime, Local, Utc};
     let activity = last_point_at
         .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
-        .or_else(|| DateTime::parse_from_rfc3339(started_at.trim()).ok());
-    let Some(activity) = activity else {
-        return "In progress".into();
-    };
-    let activity_utc = activity.with_timezone(&Utc);
-    let age = Utc::now().signed_duration_since(activity_utc);
-    if age.num_minutes() >= 15 {
-        let local = activity.with_timezone(&Local).format("%H:%M");
-        format!("No GPS since {local} · finish if the drive ended")
-    } else {
-        "In progress".into()
+        .or_else(|| DateTime::parse_from_rfc3339(started_at.trim()).ok())?;
+    let age = Utc::now().signed_duration_since(activity.with_timezone(&Utc));
+    (age.num_minutes() >= 15).then(|| activity.with_timezone(&Local).format("%H:%M").to_string())
+}
+
+/// Human status for open trips: live vs no GPS for a while.
+fn open_trip_status_label(last_point_at: Option<&str>, started_at: &str) -> String {
+    match open_trip_stale_since(last_point_at, started_at) {
+        Some(time) => tf("trips.no_gps_since", &[("time", &time)]),
+        None => i18n::t("trips.in_progress").into(),
     }
 }
 
@@ -209,11 +203,11 @@ impl TripListFilter {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Week => "This week",
-            Self::Month => "This month",
-            Self::Older => "Older",
-            Self::All => "All",
-            Self::Custom => "Custom range",
+            Self::Week => i18n::t("trips.this_week"),
+            Self::Month => i18n::t("trips.this_month"),
+            Self::Older => i18n::t("trips.older"),
+            Self::All => i18n::t("common.all"),
+            Self::Custom => i18n::t("trips.custom_range"),
         }
     }
 
@@ -374,8 +368,8 @@ enum TripsView {
 /// Display label for a stored purpose.
 pub(crate) fn purpose_label(purpose: &str) -> Option<&'static str> {
     match purpose {
-        "business" => Some("Business"),
-        "personal" => Some("Personal"),
+        "business" => Some(i18n::t("trips.business")),
+        "personal" => Some(i18n::t("trips.personal")),
         _ => None,
     }
 }
@@ -383,20 +377,20 @@ pub(crate) fn purpose_label(purpose: &str) -> Option<&'static str> {
 /// Why the selected trips cannot be merged, or `None` when they can.
 fn merge_blocker(selected: &[Trip]) -> Option<&'static str> {
     if selected.len() < 2 {
-        return Some("Select at least two trips to merge");
+        return Some(i18n::t("trips.merge_need_two"));
     }
     if selected.len() > 20 {
-        return Some("Merge at most 20 trips at a time");
+        return Some(i18n::t("trips.merge_max"));
     }
     let car = &selected[0].car_id;
-    if selected.iter().any(|t| &t.car_id != car) {
-        return Some("Merged trips must belong to the same car");
+    if selected.iter().any(|trip| &trip.car_id != car) {
+        return Some(i18n::t("trips.merge_same_car"));
     }
-    if selected.iter().any(|t| !t.finished) {
-        return Some("Only finished trips can be merged");
+    if selected.iter().any(|trip| !trip.finished) {
+        return Some(i18n::t("trips.merge_finished"));
     }
-    if selected.iter().any(|t| t.vault_sealed) {
-        return Some("Vault trips cannot be merged on the server");
+    if selected.iter().any(|trip| trip.vault_sealed) {
+        return Some(i18n::t("trips.merge_vault"));
     }
     None
 }
@@ -489,9 +483,9 @@ pub fn TripsPage() -> impl IntoView {
                     for trip in page.iter_mut() {
                         if trip.vault_sealed && trip.car_name.is_empty() {
                             trip.car_name = if unlocked {
-                                "🔒 Vault trip".into()
+                                i18n::t("trips.vault_trip").into()
                             } else {
-                                "🔒 Locked".into()
+                                i18n::t("trips.locked").into()
                             };
                         }
                     }
@@ -559,10 +553,7 @@ pub fn TripsPage() -> impl IntoView {
         if merge_blocker(&picked).is_some() || merging.get_untracked() {
             return;
         }
-        if !confirm(&format!(
-            "Merge {} trips into one? Their samples join the earliest trip; the others are removed.",
-            picked.len()
-        )) {
+        if !confirm(&tf("trips.confirm_merge", &[("n", &picked.len())])) {
             return;
         }
         let ids: Vec<String> = picked.iter().map(|t| t.id.clone()).collect();
@@ -571,10 +562,12 @@ pub fn TripsPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             match merge_trips(&ids).await {
                 Ok(merged) => {
-                    notice.set(Some(format!(
-                        "Merged {} trips into the one starting {}.",
-                        ids.len(),
-                        pretty_started(&merged.started_at)
+                    notice.set(Some(tf(
+                        "trips.merged",
+                        &[
+                            ("n", &ids.len()),
+                            ("start", &pretty_started(&merged.started_at)),
+                        ],
                     )));
                     error.set(None);
                     refresh.update(|n| *n = n.wrapping_add(1));
@@ -590,12 +583,12 @@ pub fn TripsPage() -> impl IntoView {
             <div>
                 <h1 class="section-title">
                     <Icon name="map-trifold" color=IconColor::Accent />
-                    "Trips"
+                    {tr!("nav.trips")}
                 </h1>
-                <p class="muted">"History across accessible cars — filter by time, purpose or tag, open a trip for full telemetry"</p>
+                <p class="muted">{tr!("trips.lead")}</p>
             </div>
-            <div class="seg-control" role="group" aria-label="Trips view">
-                {[(TripsView::List, "List", "list-bullets"), (TripsView::Map, "Map", "map-trifold"), (TripsView::Calendar, "Calendar", "calendar-dots")]
+            <div class="seg-control" role="group" aria-label=tr!("trips.view")>
+                {[(TripsView::List, "trips.view_list", "list-bullets"), (TripsView::Map, "trips.view_map", "map-trifold"), (TripsView::Calendar, "trips.view_calendar", "calendar-dots")]
                     .into_iter()
                     .map(|(v, label, icon)| view! {
                         <button
@@ -606,7 +599,7 @@ pub fn TripsPage() -> impl IntoView {
                         >
                             <span class="icon-label">
                                 <Icon name=icon size=IconSize::Sm />
-                                {label}
+                                {move || i18n::t(label)}
                             </span>
                         </button>
                     })
@@ -617,7 +610,7 @@ pub fn TripsPage() -> impl IntoView {
         <div class="trips-filter-bar">
             // A filter, not tabs: there is no tabpanel and no arrow-key model, so these
             // are toggle buttons in a labelled group with aria-pressed.
-            <div class="trips-filter-chips" role="group" aria-label="Trip time filter">
+            <div class="trips-filter-chips" role="group" aria-label=tr!("trips.time_filter")>
                 {TripListFilter::all().into_iter().map(|chip| {
                     view! {
                         <button
@@ -632,15 +625,15 @@ pub fn TripsPage() -> impl IntoView {
                             aria-pressed=move || (filter.get() == chip).to_string()
                             on:click=move |_| filter.set(chip)
                         >
-                            {chip.label()}
+                            {move || chip.label()}
                         </button>
                     }
                 }).collect_view()}
             </div>
             <Show when=move || filter.get() == TripListFilter::Custom>
-                <div class="trips-range" role="group" aria-label="Custom date range">
+                <div class="trips-range" role="group" aria-label=tr!("trips.custom_dates")>
                     <label class="trips-range-field">
-                        <span>"From"</span>
+                        <span>{tr!("common.from")}</span>
                         <input
                             type="date"
                             prop:value=move || custom_from.get()
@@ -648,7 +641,7 @@ pub fn TripsPage() -> impl IntoView {
                         />
                     </label>
                     <label class="trips-range-field">
-                        <span>"To"</span>
+                        <span>{tr!("common.to")}</span>
                         <input
                             type="date"
                             prop:value=move || custom_to.get()
@@ -660,7 +653,7 @@ pub fn TripsPage() -> impl IntoView {
             <div class="trips-filter-tools">
                 <select
                     class="trips-car-select"
-                    aria-label="Car"
+                    aria-label=tr!("common.car")
                     prop:value=move || {
                         // Re-run once `cars_list` populates so the DOM re-applies the
                         // selection: setting `value` before the matching `<option>`
@@ -673,7 +666,7 @@ pub fn TripsPage() -> impl IntoView {
                         car_filter_id.set(if val.is_empty() { None } else { Some(val) });
                     }
                 >
-                    <option value="">"All cars"</option>
+                    <option value="">{tr!("common.all_cars")}</option>
                     <For
                         each=move || cars_list.get()
                         key=|c| c.id.clone()
@@ -686,20 +679,20 @@ pub fn TripsPage() -> impl IntoView {
                 </select>
                 <select
                     class="trips-car-select"
-                    aria-label="Purpose"
+                    aria-label=tr!("trips.purpose")
                     prop:value=move || purpose_filter.get()
                     on:change=move |ev| purpose_filter.set(event_target_value(&ev))
                 >
-                    <option value="">"Any purpose"</option>
-                    <option value="business">"Business"</option>
-                    <option value="personal">"Personal"</option>
+                    <option value="">{tr!("trips.any_purpose")}</option>
+                    <option value="business">{tr!("trips.business")}</option>
+                    <option value="personal">{tr!("trips.personal")}</option>
                 </select>
                 <label class="trips-search trips-tag-filter">
-                    <span class="sr-only">"Filter by tag"</span>
+                    <span class="sr-only">{tr!("trips.filter_by_tag")}</span>
                     <input
                         type="search"
                         class="trips-search-input"
-                        placeholder="Tag…"
+                        placeholder=tr!("trips.tag_placeholder")
                         prop:value=move || tag_filter.get()
                         on:change=move |ev| {
                             tag_filter.set(event_target_value(&ev).trim().trim_start_matches('#').to_string())
@@ -707,11 +700,11 @@ pub fn TripsPage() -> impl IntoView {
                     />
                 </label>
                 <label class="trips-search">
-                    <span class="sr-only">"Search trips"</span>
+                    <span class="sr-only">{tr!("trips.search")}</span>
                     <input
                         type="search"
                         class="trips-search-input"
-                        placeholder="Search car, date, tag, or trip id…"
+                        placeholder=tr!("trips.search_placeholder")
                         prop:value=move || search.get()
                         on:input=move |ev| search.set(event_target_value(&ev))
                     />
@@ -719,16 +712,22 @@ pub fn TripsPage() -> impl IntoView {
                 <div class="trips-filter-meta muted">
                     {move || {
                         if loading.get() {
-                            "Loading…".to_string()
+                            i18n::t("common.loading").to_string()
                         } else {
                             let total = trips.get().len();
                             let shown = visible_trips().len();
                             let label = filter.get().label();
                             let more = if has_more.get() { "+" } else { "" };
+                            let total_s = format!("{}{more}", crate::i18n::int(total as i64));
                             if search.get().trim().is_empty() {
-                                format!("{total}{more} trip{} · {label}", if total == 1 { "" } else { "s" })
+                                let key = if total == 1 && more.is_empty() {
+                                    "trips.count_label.one"
+                                } else {
+                                    "trips.count_label.other"
+                                };
+                                tf(key, &[("n", &total_s), ("label", &label)])
                             } else {
-                                format!("{shown} of {total}{more} · {label}")
+                                tf("trips.shown_of", &[("shown", &shown), ("total", &total_s), ("label", &label)])
                             }
                         }
                     }}
@@ -737,15 +736,12 @@ pub fn TripsPage() -> impl IntoView {
         </div>
 
         <Show when=move || !selected.get().is_empty()>
-            <div class="trips-select-bar" role="region" aria-label="Selected trips">
+            <div class="trips-select-bar" role="region" aria-label=tr!("trips.selected_trips")>
                 <span class="trips-select-count">
-                    {move || {
-                        let n = selected.get().len();
-                        format!("{n} trip{} selected", if n == 1 { "" } else { "s" })
-                    }}
+                    {move || tp("trips.selected", selected.get().len() as i64)}
                 </span>
                 <span class="muted trips-select-hint">
-                    {move || merge_blocker(&selected_trips()).unwrap_or("Consecutive trips of one car can be merged")}
+                    {move || merge_blocker(&selected_trips()).unwrap_or_else(|| i18n::t("trips.merge_hint"))}
                 </span>
                 <div class="trips-select-actions">
                     <button
@@ -755,13 +751,13 @@ pub fn TripsPage() -> impl IntoView {
                         on:click=on_merge
                     >
                         <Icon name="arrows-merge" size=IconSize::Sm />
-                        {move || if merging.get() { "Merging…" } else { "Merge" }}
+                        {move || if merging.get() { i18n::t("trips.merging") } else { i18n::t("trips.merge") }}
                     </button>
                     <Show when=move || selected.get().len() == 2>
                         <A href=move || format!("/app/trips/compare?ids={}", selected.get().join(","))>
                             <span class="btn secondary btn-sm">
                                 <Icon name="git-diff" size=IconSize::Sm />
-                                "Compare"
+                                {tr!("trips.compare")}
                             </span>
                         </A>
                     </Show>
@@ -770,7 +766,7 @@ pub fn TripsPage() -> impl IntoView {
                         class="btn ghost btn-sm"
                         on:click=move |_| selected.set(Vec::new())
                     >
-                        "Clear"
+                        {tr!("common.clear")}
                     </button>
                 </div>
             </div>
@@ -817,7 +813,7 @@ pub fn TripsPage() -> impl IntoView {
             <div class="card">
                 <div class="empty-state compact">
                     <Icon name="spinner-gap" size=IconSize::Lg color=IconColor::Accent />
-                    <div>"Loading trips…"</div>
+                    <div>{tr!("trips.loading")}</div>
                 </div>
             </div>
         </Show>
@@ -828,16 +824,9 @@ pub fn TripsPage() -> impl IntoView {
                     <div>{move || {
                         let narrowed = !purpose_filter.get().is_empty() || !tag_filter.get().is_empty();
                         match filter.get() {
-                            TripListFilter::All if !narrowed => {
-                                "No trips yet. Upload a track from the phone to see it here.".to_string()
-                            }
-                            _ if narrowed => {
-                                "No trips match these filters — clear the purpose or tag filter.".to_string()
-                            }
-                            other => format!(
-                                "No trips in this period ({}) — try another filter (All / This month).",
-                                other.label()
-                            ),
+                            TripListFilter::All if !narrowed => i18n::t("trips.none_yet").to_string(),
+                            _ if narrowed => i18n::t("trips.none_match_filters").to_string(),
+                            other => tf("trips.none_in_period", &[("label", &other.label())]),
                         }
                     }}</div>
                 </div>
@@ -852,7 +841,7 @@ pub fn TripsPage() -> impl IntoView {
             <div class="card">
                 <div class="empty-state">
                     <Icon name="magnifying-glass" size=IconSize::Xl color=IconColor::Accent />
-                    <div>"No trips match this search — clear the box or switch filter."</div>
+                    <div>{tr!("trips.none_match_search")}</div>
                 </div>
             </div>
         </Show>
@@ -868,16 +857,24 @@ pub fn TripsPage() -> impl IntoView {
                     let id_sel_toggle = t.id.clone();
                     let href = format!("/app/trips/{id}");
                     let finished = t.finished;
-                    let status_label = if finished {
-                        "Finished".to_string()
-                    } else {
-                        open_trip_status_label(t.last_point_at.as_deref(), &t.started_at)
+                    let (last_point_at, started_at) = (t.last_point_at.clone(), t.started_at.clone());
+                    let status_label = move || {
+                        if finished {
+                            i18n::t("trips.finished").to_string()
+                        } else {
+                            open_trip_status_label(last_point_at.as_deref(), &started_at)
+                        }
                     };
-                    let status_stale = !finished && status_label.starts_with("No GPS");
+                    let status_stale = !finished
+                        && open_trip_stale_since(t.last_point_at.as_deref(), &t.started_at).is_some();
                     let car = t.car_name.clone();
-                    let started = pretty_started(&t.started_at);
+                    let started_raw = t.started_at.clone();
+                    let started = move || pretty_started(&started_raw);
                     let places = t.places_label();
-                    let purpose = t.purpose.as_deref().and_then(purpose_label);
+                    let purpose_raw = t.purpose.clone();
+                    let purpose = t.purpose.as_deref().and_then(purpose_label).is_some().then(move || {
+                        move || purpose_raw.as_deref().and_then(purpose_label).unwrap_or_default()
+                    });
                     let purpose_class = format!(
                         "pill pill-purpose is-{}",
                         t.purpose.clone().unwrap_or_default()
@@ -892,6 +889,7 @@ pub fn TripsPage() -> impl IntoView {
                         (t.fuel_used_moving_l, t.economy_distance_m.or(t.distance_m));
                     let distance = move || fmt_distance(distance_m, &prefs.get());
                     let duration = fmt_duration(t.duration_s);
+                    let (analyzed, analysis_status) = (t.analyzed, t.analysis_status.clone());
                     let avg = move || fmt_speed(avg_kph, &prefs.get());
                     let max = move || fmt_speed(max_kph, &prefs.get());
                     let fuel = move || fmt_fuel(fuel_l, &prefs.get());
@@ -909,7 +907,7 @@ pub fn TripsPage() -> impl IntoView {
                         if deleting_sig.get_untracked().is_some() {
                             return;
                         }
-                        if !confirm("Delete this trip permanently? This cannot be undone.") {
+                        if !confirm(i18n::t("trips.confirm_delete")) {
                             return;
                         }
                         let id = id_del.clone();
@@ -933,7 +931,7 @@ pub fn TripsPage() -> impl IntoView {
                                 <div class="trip-card-top">
                                     <div>
                                         <div class="trip-card-title">{car}</div>
-                                        <div class="trip-card-sub muted">{format!("{started} · {id_short}")}</div>
+                                        <div class="trip-card-sub muted">{move || format!("{} · {id_short}", started())}</div>
                                         {places.map(|p| view! {
                                             <div class="trip-card-places">
                                                 <Icon name="map-pin" size=IconSize::Sm />
@@ -952,12 +950,12 @@ pub fn TripsPage() -> impl IntoView {
                                         }>
                                             {status_label}
                                         </span>
-                                        {if t.analyzed {
-                                            view! { <span class="pill pill-ai">"AI analyzed"</span> }.into_any()
-                                        } else if t.analysis_status == "pending" || t.analysis_status == "running" {
-                                            view! { <span class="pill pill-ai is-running">"AI analyzing"</span> }.into_any()
-                                        } else if t.analysis_status == "failed" {
-                                            view! { <span class="pill pill-ai is-failed">"AI failed"</span> }.into_any()
+                                        {if analyzed {
+                                            view! { <span class="pill pill-ai">{tr!("trips.ai_analyzed")}</span> }.into_any()
+                                        } else if analysis_status == "pending" || analysis_status == "running" {
+                                            view! { <span class="pill pill-ai is-running">{tr!("trips.ai_analyzing")}</span> }.into_any()
+                                        } else if analysis_status == "failed" {
+                                            view! { <span class="pill pill-ai is-failed">{tr!("trips.ai_failed")}</span> }.into_any()
                                         } else {
                                             ().into_any()
                                         }}
@@ -965,44 +963,44 @@ pub fn TripsPage() -> impl IntoView {
                                 </div>
                                 <div class="trip-card-metrics">
                                     <div class="metric-chip">
-                                        <span class="metric-chip-label">"Distance"</span>
+                                        <span class="metric-chip-label">{tr!("common.distance")}</span>
                                         <span class="metric-chip-value">{distance}</span>
                                     </div>
                                     <div class="metric-chip">
-                                        <span class="metric-chip-label">"Duration"</span>
+                                        <span class="metric-chip-label">{tr!("common.duration")}</span>
                                         <span class="metric-chip-value">{duration}</span>
                                     </div>
                                     <div class="metric-chip">
-                                        <span class="metric-chip-label">"Avg"</span>
+                                        <span class="metric-chip-label">{tr!("trips.avg")}</span>
                                         <span class="metric-chip-value">{avg}</span>
                                     </div>
                                     <div class="metric-chip">
-                                        <span class="metric-chip-label">"Max"</span>
+                                        <span class="metric-chip-label">{tr!("trips.max")}</span>
                                         <span class="metric-chip-value">{max}</span>
                                     </div>
                                     <div class="metric-chip">
-                                        <span class="metric-chip-label">"Fuel"</span>
+                                        <span class="metric-chip-label">{tr!("common.fuel")}</span>
                                         <span class="metric-chip-value">{fuel}</span>
                                     </div>
                                     <div class="metric-chip">
-                                        <span class="metric-chip-label">"Moving"</span>
+                                        <span class="metric-chip-label">{tr!("dash.moving")}</span>
                                         <span class="metric-chip-value">{moving_econ}</span>
                                     </div>
                                     <div class="metric-chip">
-                                        <span class="metric-chip-label">"Points"</span>
-                                        <span class="metric-chip-value">{points}</span>
+                                        <span class="metric-chip-label">{tr!("trips.points")}</span>
+                                        <span class="metric-chip-value">{move || crate::i18n::int(points)}</span>
                                     </div>
                                 </div>
                             </A>
                             {(!tags.is_empty()).then(|| view! {
-                                <div class="trip-tags" aria-label="Tags">
+                                <div class="trip-tags" aria-label=tr!("trips.tags")>
                                     {tags.into_iter().map(|tag| {
                                         let tag_click = tag.clone();
                                         view! {
                                             <button
                                                 type="button"
                                                 class="tag-chip"
-                                                title="Filter by this tag"
+                                                title=tr!("trips.filter_this_tag")
                                                 on:click=move |_| tag_filter.set(tag_click.clone())
                                             >
                                                 {format!("#{tag}")}
@@ -1027,11 +1025,11 @@ pub fn TripsPage() -> impl IntoView {
                                             });
                                         }
                                     />
-                                    <span>"Select"</span>
+                                    <span>{tr!("trips.select")}</span>
                                 </label>
                                 <A href=href>
                                     <span class="icon-label muted">
-                                        "Open analytics"
+                                        {tr!("trips.open_analytics")}
                                         <Icon name="caret-right" size=IconSize::Sm />
                                     </span>
                                 </A>
@@ -1043,7 +1041,7 @@ pub fn TripsPage() -> impl IntoView {
                                 >
                                     <span class="icon-label">
                                         <Icon name="trash" size=IconSize::Sm />
-                                        "Delete"
+                                        {tr!("common.delete")}
                                     </span>
                                 </button>
                             </div>
@@ -1061,7 +1059,7 @@ pub fn TripsPage() -> impl IntoView {
                     on:click=load_more
                 >
                     <Icon name="arrow-down" size=IconSize::Sm />
-                    {move || if loading_more.get() { "Loading…" } else { "Load more" }}
+                    {move || if loading_more.get() { i18n::t("common.loading") } else { i18n::t("common.load_more") }}
                 </button>
             </div>
         </Show>
@@ -1080,6 +1078,7 @@ pub fn TripsPage() -> impl IntoView {
 /// screen reader announces the explanation with the number it qualifies.
 #[component]
 fn StatRow(
+    /// i18n key of the label.
     label: &'static str,
     value: String,
     #[prop(optional_no_strip)] hint: Option<String>,
@@ -1093,7 +1092,7 @@ fn StatRow(
     view! {
         <div class="stat-row">
             <dt class="stat-row-label">
-                {label}
+                {move || i18n::t(label)}
                 {hint
                     .zip(hint_id)
                     .map(|(h, id)| {
@@ -1101,7 +1100,7 @@ fn StatRow(
                         view! {
                             <span class="stat-row-info" tabindex="0" aria-describedby=id>
                                 <Icon name="info" size=IconSize::Sm />
-                                <span class="sr-only">"More about this value"</span>
+                                <span class="sr-only">{tr!("trips.more_about")}</span>
                                 <span class="stat-row-tip" role="tooltip" id=tip_id>{h}</span>
                             </span>
                         }
@@ -1317,7 +1316,7 @@ pub fn TripDetailPage() -> impl IntoView {
                                 }
                             }
                         }
-                        Err(e) => err = Some(format!("vault decrypt: {e}")),
+                        Err(e) => err = Some(tf("trip.vault_decrypt_failed", &[("error", &e)])),
                     }
                     match decrypt_ai_report(&sess, &car_id, &id_fetch).await {
                         Ok(Some(report)) => {
@@ -1353,7 +1352,7 @@ pub fn TripDetailPage() -> impl IntoView {
                         }
                     }
                 } else if alive_fetch.load(Ordering::SeqCst) {
-                    err = Some("Unlock the vault to decrypt this trip.".into());
+                    err = Some(i18n::t("trip.unlock_to_decrypt").into());
                 }
             } else {
                 // Fetched together and applied in one synchronous block, so the map
@@ -1454,7 +1453,7 @@ pub fn TripDetailPage() -> impl IntoView {
                         {move || {
                             trip.get()
                                 .map(|t| format!("{} · {}", t.car_name, pretty_started(&t.started_at)))
-                                .unwrap_or_else(|| "Trip".into())
+                                .unwrap_or_else(|| i18n::t("trip.title").into())
                         }}
                     </h1>
                     <p class="muted">
@@ -1464,7 +1463,7 @@ pub fn TripDetailPage() -> impl IntoView {
                                     // Sample count is diagnostics, not a headline metric — it
                                     // rides the meta line instead of taking a stat row.
                                     let status = if t.finished {
-                                        "Finished".to_string()
+                                        i18n::t("trips.finished").to_string()
                                     } else {
                                         open_trip_status_label(
                                             t.last_point_at.as_deref(),
@@ -1475,12 +1474,17 @@ pub fn TripDetailPage() -> impl IntoView {
                                         .places_label()
                                         .map(|p| format!("{p} · "))
                                         .unwrap_or_default();
-                                    format!(
-                                        "{places}{status} · fuel {} · {} samples",
-                                        t.fuel_type_snapshot, t.point_count,
+                                    tf(
+                                        "trip.meta_line",
+                                        &[
+                                            ("places", &places),
+                                            ("status", &status),
+                                            ("fuel", &t.fuel_type_snapshot),
+                                            ("n", &crate::i18n::int(t.point_count)),
+                                        ],
                                     )
                                 })
-                                .unwrap_or_else(|| "Loading trip analytics…".into())
+                                .unwrap_or_else(|| i18n::t("trip.loading_analytics").into())
                         }}
                     </p>
                 </div>
@@ -1497,9 +1501,7 @@ pub fn TripDetailPage() -> impl IntoView {
                                 if finishing.get_untracked() || t.finished {
                                     return;
                                 }
-                                if !confirm(
-                                    "Mark this trip as finished? Use this if the phone never sent stop. Late GPS samples can still upload for a while.",
-                                ) {
+                                if !confirm(i18n::t("trip.confirm_finish")) {
                                     return;
                                 }
                                 let id = t.id.clone();
@@ -1518,7 +1520,7 @@ pub fn TripDetailPage() -> impl IntoView {
                         >
                             <span class="icon-label">
                                 <Icon name="flag-checkered" size=IconSize::Sm />
-                                {move || if finishing.get() { "Finishing…" } else { "Finish trip" }}
+                                {move || if finishing.get() { i18n::t("trip.finishing") } else { i18n::t("trip.finish") }}
                             </span>
                         </button>
                     </Show>
@@ -1541,7 +1543,7 @@ pub fn TripDetailPage() -> impl IntoView {
                             if deleting.get_untracked() {
                                 return;
                             }
-                            if !confirm("Delete this trip permanently? This cannot be undone.") {
+                            if !confirm(i18n::t("trips.confirm_delete")) {
                                 return;
                             }
                             let id = t.id.clone();
@@ -1562,14 +1564,14 @@ pub fn TripDetailPage() -> impl IntoView {
                     >
                         <span class="icon-label">
                             <Icon name="trash" size=IconSize::Sm />
-                            {move || if deleting.get() { "Deleting…" } else { "Delete" }}
+                            {move || if deleting.get() { i18n::t("common.deleting") } else { i18n::t("common.delete") }}
                         </span>
                     </button>
                     <A href="/app/trips">
                         <span class="btn">
                             <span class="icon-label">
                                 <Icon name="arrow-left" size=IconSize::Sm />
-                                "All trips"
+                                {tr!("trip.all_trips")}
                             </span>
                         </span>
                     </A>
@@ -1581,9 +1583,10 @@ pub fn TripDetailPage() -> impl IntoView {
             </Show>
             <Show when=move || split_result.get().is_some()>
                 <div class="success" role="status">
-                    "Trip split. This page now shows the earlier part. "
+                    {tr!("trip.split_done")}
+                    " "
                     <A href=move || format!("/app/trips/{}", split_result.get().unwrap_or_default())>
-                        "Open the later part"
+                        {tr!("trip.open_later")}
                     </A>
                 </div>
             </Show>
@@ -1592,7 +1595,7 @@ pub fn TripDetailPage() -> impl IntoView {
                 <div class="card">
                     <div class="empty-state compact">
                         <Icon name="spinner-gap" size=IconSize::Lg color=IconColor::Accent />
-                        <div>"Loading trip…"</div>
+                        <div>{tr!("trip.loading")}</div>
                     </div>
                 </div>
             </Show>
@@ -1615,43 +1618,42 @@ pub fn TripDetailPage() -> impl IntoView {
                             && t.distance_m.is_some()
                             && t.economy_distance_m != t.distance_m
                         {
-                            Some("full fuel (incl. idle) ÷ odometer distance".to_string())
+                            Some(i18n::t("trip.hint_econ_odo").to_string())
                         } else {
-                            Some("full fuel (incl. idle) ÷ GPS distance".to_string())
+                            Some(i18n::t("trip.hint_econ_gps").to_string())
                         };
-                        let econ_moving_hint =
-                            Some("fuel while speed ≥ 1 km/h ÷ same distance".to_string());
+                        let econ_moving_hint = Some(i18n::t("trip.hint_econ_moving").to_string());
                         let econ_label: &'static str = match p.system {
-                            crate::units::UnitSystem::Metric => "Avg L/100km",
-                            crate::units::UnitSystem::Us => "Avg mpg",
+                            crate::units::UnitSystem::Metric => "trip.avg_l100",
+                            crate::units::UnitSystem::Us => "trip.avg_mpg",
                         };
                         let fuel_hint = t
                             .fuel_from_level_l
-                            .map(|lvl| format!("Tank gauge reads ~{}", fmt_fuel(Some(lvl), &p)));
+                            .map(|lvl| tf("trip.tank_gauge", &[("v", &fmt_fuel(Some(lvl), &p))]));
                         view! {
                             <div class="stat-panel-grid">
                                 <section class="stat-panel">
                                     <h2 class="stat-panel-title">
                                         <Icon name="speedometer" size=IconSize::Sm color=IconColor::Accent />
-                                        "Motion"
+                                        {tr!("trip.motion")}
                                     </h2>
                                     <dl class="stat-rows">
-                                        <StatRow label="Distance" value=fmt_distance(t.distance_m, &p) />
-                                        <StatRow label="Duration" value=fmt_duration(t.duration_s) />
-                                        <StatRow label="Avg speed" value=fmt_speed(t.avg_speed_kph, &p) />
-                                        <StatRow label="Max speed" value=fmt_speed(t.max_speed_kph, &p) />
+                                        <StatRow label="common.distance" value=fmt_distance(t.distance_m, &p) />
+                                        <StatRow label="common.duration" value=fmt_duration(t.duration_s) />
+                                        <StatRow label="trip.avg_speed" value=fmt_speed(t.avg_speed_kph, &p) />
+                                        <StatRow label="trip.max_speed" value=fmt_speed(t.max_speed_kph, &p) />
                                     </dl>
                                 </section>
                                 <section class="stat-panel">
                                     <h2 class="stat-panel-title">
                                         <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Accent />
-                                        "Fuel"
+                                        {tr!("common.fuel")}
                                     </h2>
                                     <dl class="stat-rows">
-                                        <StatRow label="Used" value=fmt_fuel(t.fuel_used_l, &p) hint=fuel_hint />
-                                        <StatRow label="Type" value=t.fuel_type_snapshot.clone() />
+                                        <StatRow label="trip.used" value=fmt_fuel(t.fuel_used_l, &p) hint=fuel_hint />
+                                        <StatRow label="garage.type" value=t.fuel_type_snapshot.clone() />
                                         <StatRow label=econ_label value=l100 hint=econ_hint />
-                                        <StatRow label="While moving" value=l100_moving hint=econ_moving_hint />
+                                        <StatRow label="trip.while_moving" value=l100_moving hint=econ_moving_hint />
                                     </dl>
                                 </section>
                             </div>
@@ -1669,7 +1671,7 @@ pub fn TripDetailPage() -> impl IntoView {
                 first_last(&pts, |pt| pt.odometer_value_km).is_some()
                     || first_last(&pts, |pt| pt.engine_on_time).is_some()
             }>
-                <div class="context-chip-row" aria-label="Trip context counters">
+                <div class="context-chip-row" aria-label=tr!("trip.context_counters")>
                     <Show when=move || first_last(&points.get(), |pt| pt.odometer_value_km).is_some()>
                         {
                             move || {
@@ -1682,14 +1684,14 @@ pub fn TripDetailPage() -> impl IntoView {
                                     <div class="context-chip">
                                         <span class="context-chip-label">
                                             <Icon name="gauge" color=IconColor::Accent />
-                                            "Odometer"
+                                            {tr!("common.odometer")}
                                         </span>
                                         <span class="context-chip-range">
                                             <span class="context-chip-num">{fmt_odo_value(start, unit)}</span>
                                             <span class="context-chip-arrow" aria-hidden="true">"→"</span>
                                             <span class="context-chip-num">{fmt_odo_value(end, unit)}</span>
                                         </span>
-                                        <span class="context-chip-delta">{format!("{delta:+.1} {unit}")}</span>
+                                        <span class="context-chip-delta">{format!("{}{} {unit}", if delta >= 0.0 { "+" } else { "" }, num(delta, 1))}</span>
                                     </div>
                                 }
                             }
@@ -1705,7 +1707,7 @@ pub fn TripDetailPage() -> impl IntoView {
                                     <div class="context-chip">
                                         <span class="context-chip-label">
                                             <Icon name="timer" color=IconColor::Accent />
-                                            "Engine run"
+                                            {tr!("trip.engine_run")}
                                         </span>
                                         <span class="context-chip-range">
                                             <span class="context-chip-num">{fmt_engine_on_seconds(start)}</span>
@@ -1723,7 +1725,7 @@ pub fn TripDetailPage() -> impl IntoView {
 
 
             <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !vault_unlocked.get()>
-                <VaultUnlockGate message="Unlock the vault to decrypt trip points and AI reports.".to_string()/>
+                <VaultUnlockGate message=i18n::t("trip.unlock_points").to_string()/>
             </Show>
 
             <TripAiPanel
@@ -1740,14 +1742,14 @@ pub fn TripDetailPage() -> impl IntoView {
                 <div class="telemetry-section-head">
                     <h2 class="section-title">
                         <Icon name="map-pin" color=IconColor::Accent />
-                        "Route"
+                        {tr!("trip.route")}
                     </h2>
                     <span class="muted">
                         {move || {
                             if traffic_frames.get().is_empty() {
-                                "Speed-colored route · Liberty".to_string()
+                                i18n::t("trip.speed_colored")
                             } else {
-                                "Traffic-colored route · Liberty".to_string()
+                                i18n::t("trip.traffic_colored")
                             }
                         }}
                     </span>
@@ -1765,27 +1767,22 @@ pub fn TripDetailPage() -> impl IntoView {
                     traffic_frames=Signal::derive(move || traffic_frames.get())
                 />
                 <div class="map-legend">
-                    <div class="map-speed-legend" title="Free flow → jam (or trip speed scale)">
+                    <div class="map-speed-legend" title=tr!("trip.legend_title")>
                         <span class="map-speed-label" id="trip-speed-min">"—"</span>
                         <div class="map-speed-bar" id="trip-speed-bar" aria-hidden="true"></div>
                         <span class="map-speed-label" id="trip-speed-max">"—"</span>
                     </div>
                     // Filled by the map script when the route is traffic-coloured, so
                     // every congestion colour has a text label.
-                    <ul class="map-traffic-legend" id="trip-traffic-legend" aria-label="Congestion levels" hidden></ul>
+                    <ul class="map-traffic-legend" id="trip-traffic-legend" aria-label=tr!("trip.congestion_levels") hidden></ul>
                     <div class="map-legend-actions">
                         <p class="muted map-legend-note">
                             {move || {
+                                let unit = prefs.get().labels.speed;
                                 if traffic_frames.get().is_empty() {
-                                    format!(
-                                        "Circles = stops ≥1 min · chevrons show speed ({}) · hover route for RPM · click to pin charts",
-                                        prefs.get().labels.speed
-                                    )
+                                    tf("trip.legend_speed", &[("unit", &unit)])
                                 } else {
-                                    format!(
-                                        "Route colors = congestion · grey = signal stop · chevrons show speed ({})",
-                                        prefs.get().labels.speed
-                                    )
+                                    tf("trip.legend_traffic", &[("unit", &unit)])
                                 }
                             }}
                         </p>
@@ -1797,7 +1794,7 @@ pub fn TripDetailPage() -> impl IntoView {
                             <button
                                 type="button"
                                 class="btn secondary btn-sm"
-                                title="Cut the trip at the pinned time; samples from then on become a new trip"
+                                title=tr!("trip.split_title")
                                 prop:disabled=move || splitting.get()
                                 on:click=move |_| {
                                     let Some(iso) = selected_iso.get_untracked() else {
@@ -1806,10 +1803,7 @@ pub fn TripDetailPage() -> impl IntoView {
                                     let Some(t) = trip.get_untracked() else {
                                         return;
                                     };
-                                    if !confirm(&format!(
-                                        "Split this trip at {}? Samples from that moment on become a separate trip.",
-                                        pretty_time_secs(&iso)
-                                    )) {
+                                    if !confirm(&tf("trip.confirm_split", &[("time", &pretty_time_secs(&iso))])) {
                                         return;
                                     }
                                     splitting.set(true);
@@ -1831,11 +1825,11 @@ pub fn TripDetailPage() -> impl IntoView {
                                 <Icon name="scissors" size=IconSize::Sm />
                                 {move || {
                                     if splitting.get() {
-                                        "Splitting…".to_string()
+                                        i18n::t("trip.splitting").to_string()
                                     } else {
-                                        format!(
-                                            "Split at {}",
-                                            selected_iso.get().map(|s| pretty_clock(&s)).unwrap_or_default()
+                                        tf(
+                                            "trip.split_at",
+                                            &[("time", &selected_iso.get().map(|s| pretty_clock(&s)).unwrap_or_default())],
                                         )
                                     }
                                 }}
@@ -1847,7 +1841,7 @@ pub fn TripDetailPage() -> impl IntoView {
                             id="trip-selection-clear"
                             hidden
                         >
-                            "Clear selection"
+                            {tr!("trip.clear_selection")}
                         </button>
                     </div>
                 </div>
@@ -1859,9 +1853,9 @@ pub fn TripDetailPage() -> impl IntoView {
                 <div class="telemetry-block-head">
                     <h2 class="section-title">
                         <Icon name="pulse" color=IconColor::Accent />
-                        "Telemetry"
+                        {tr!("trip.telemetry")}
                     </h2>
-                    <p class="muted">"Summary badges, overview charts by default, category filters, and smooth trends — expand ⓘ on any chart for what it means."</p>
+                    <p class="muted">{tr!("trip.telemetry_lead")}</p>
                 </div>
                 <TripTelemetryDashboard
                     points=clean_points.into()
@@ -1944,7 +1938,7 @@ fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl 
                             cur.tags = updated.tags.clone();
                         }
                     });
-                    let _ = msg.try_set(Some("Saved.".into()));
+                    let _ = msg.try_set(Some(i18n::t("trip.saved").into()));
                 }
                 Err(e) => {
                     let _ = err.try_set(Some(e.to_string()));
@@ -1962,10 +1956,10 @@ fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl 
                 <div class="telemetry-section-head">
                     <h2 class="section-title">
                         <Icon name="tag" color=IconColor::Accent />
-                        "Purpose, notes & tags"
+                        {tr!("trip.meta_title")}
                     </h2>
                     <Show when=move || !can_edit.get()>
-                        <span class="muted">"Read-only"</span>
+                        <span class="muted">{tr!("trip.read_only")}</span>
                     </Show>
                 </div>
                 <Show
@@ -1979,11 +1973,14 @@ fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl 
                         view! {
                             <div class="trip-meta-readonly">
                                 <div class="trip-tags">
-                                    {purpose_label(&p).map(|l| view! { <span class=purpose_class.clone()>{l}</span> })}
+                                    {purpose_label(&p).map(|_| {
+                                        let p = p.clone();
+                                        view! { <span class=purpose_class.clone()>{move || purpose_label(&p)}</span> }
+                                    })}
                                     {tg.into_iter().map(|t| view! { <span class="tag-chip">{format!("#{t}")}</span> }).collect_view()}
                                 </div>
                                 {if n.is_empty() {
-                                    view! { <p class="muted">"No notes."</p> }.into_any()
+                                    view! { <p class="muted">{tr!("trip.no_notes")}</p> }.into_any()
                                 } else {
                                     view! { <p class="trip-meta-notes">{n}</p> }.into_any()
                                 }}
@@ -1993,9 +1990,9 @@ fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl 
                 >
                     <div class="trip-meta-form">
                         <div class="form-row">
-                            <label id="trip-purpose-label">"Purpose"</label>
+                            <label id="trip-purpose-label">{tr!("trips.purpose")}</label>
                             <div class="seg-control" role="group" aria-labelledby="trip-purpose-label">
-                                {[("", "Unset"), ("business", "Business"), ("personal", "Personal")]
+                                {[("", "trip.unset"), ("business", "trips.business"), ("personal", "trips.personal")]
                                     .into_iter()
                                     .map(|(value, label)| view! {
                                         <button
@@ -2004,29 +2001,29 @@ fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl 
                                             aria-pressed=move || (purpose.get() == value).to_string()
                                             on:click=move |_| purpose.set(value.to_string())
                                         >
-                                            {label}
+                                            {move || i18n::t(label)}
                                         </button>
                                     })
                                     .collect_view()}
                             </div>
                         </div>
                         <div class="form-row">
-                            <label for="trip-tags-input">"Tags"</label>
+                            <label for="trip-tags-input">{tr!("trips.tags")}</label>
                             <input
                                 id="trip-tags-input"
                                 type="text"
-                                placeholder="commute, client-x"
+                                placeholder=tr!("trip.tags_placeholder")
                                 prop:value=move || tags.get()
                                 on:input=move |ev| tags.set(event_target_value(&ev))
                             />
-                            <div class="field-hint">"Comma or space separated · up to 20"</div>
+                            <div class="field-hint">{tr!("trip.tags_hint")}</div>
                         </div>
                         <div class="form-row">
-                            <label for="trip-notes-input">"Notes"</label>
+                            <label for="trip-notes-input">{tr!("common.notes")}</label>
                             <textarea
                                 id="trip-notes-input"
                                 maxlength="2000"
-                                placeholder="Who, why, anything worth remembering about this drive"
+                                placeholder=tr!("trip.notes_placeholder")
                                 prop:value=move || notes.get()
                                 on:input=move |ev| notes.set(event_target_value(&ev))
                             ></textarea>
@@ -2039,7 +2036,7 @@ fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl 
                                 on:click=save
                             >
                                 <Icon name="floppy-disk" size=IconSize::Sm />
-                                {move || if saving.get() { "Saving…" } else { "Save" }}
+                                {move || if saving.get() { i18n::t("common.saving") } else { i18n::t("common.save") }}
                             </button>
                             <Show when=move || msg.get().is_some()>
                                 <span class="muted" role="status">{move || msg.get().unwrap_or_default()}</span>
@@ -2194,7 +2191,7 @@ fn traffic_route_toolbar(
                         }}
                     </span>
                     <span class="ai-status-meta muted">
-                        "Congestion from speed vs free-flow (OSM)"
+                        {tr!("trip.traffic_source")}
                     </span>
                 </div>
                 <div class="ai-toolbar-actions">
@@ -2209,7 +2206,7 @@ fn traffic_route_toolbar(
                     }>
                         <span class="ai-running-hint muted">
                             <Icon name="spinner-gap" size=IconSize::Sm color=IconColor::Accent />
-                            " Working in background"
+                            {tr!("trip.working_background")}
                         </span>
                     </Show>
                     <Show when=move || {
@@ -2230,7 +2227,7 @@ fn traffic_route_toolbar(
                             prop:disabled=move || traffic_busy.get()
                             on:click=start_analyze
                         >
-                            "Analyze traffic"
+                            {tr!("trip.analyze_traffic")}
                         </button>
                     </Show>
                 </div>
@@ -2274,19 +2271,19 @@ fn traffic_route_toolbar(
                         .map(|s| s.signal_stop)
                         .unwrap_or(0.0);
                     view! {
-                        <div class="context-chip-row traffic-chip-row" aria-label="Traffic estimate">
+                        <div class="context-chip-row traffic-chip-row" aria-label=tr!("trip.traffic_estimate")>
                             <div class="context-chip">
-                                <span class="context-chip-label">"Traffic index"</span>
-                                <span class="context-chip-num">{format!("{idx:.2}")}</span>
-                                <span class="context-chip-delta muted">"0 = free flow"</span>
+                                <span class="context-chip-label">{tr!("trip.traffic_index")}</span>
+                                <span class="context-chip-num">{num(idx, 2)}</span>
+                                <span class="context-chip-delta muted">{tr!("trip.free_flow")}</span>
                             </div>
                             <div class="context-chip">
-                                <span class="context-chip-label">"Heavy + jam"</span>
-                                <span class="context-chip-num">{format!("{:.0}% time", heavy * 100.0)}</span>
+                                <span class="context-chip-label">{tr!("trip.heavy_jam")}</span>
+                                <span class="context-chip-num">{tf("trip.pct_time", &[("pct", &num(heavy * 100.0, 0))])}</span>
                             </div>
                             <div class="context-chip">
-                                <span class="context-chip-label">"Signal stops"</span>
-                                <span class="context-chip-num">{format!("{:.0}% time", signal * 100.0)}</span>
+                                <span class="context-chip-label">{tr!("trip.signal_stops")}</span>
+                                <span class="context-chip-num">{tf("trip.pct_time", &[("pct", &num(signal * 100.0, 0))])}</span>
                             </div>
                         </div>
                     }
@@ -2303,26 +2300,38 @@ fn friendly_traffic_status(
     busy: bool,
 ) -> (&'static str, &'static str) {
     if busy || status == "pending" {
-        return ("Estimating…", "ai-status-badge is-running");
+        return (i18n::t("status.estimating"), "ai-status-badge is-running");
     }
     match status {
-        "ready" => ("Ready", "ai-status-badge is-done"),
-        "failed" => ("Failed", "ai-status-badge is-failed"),
-        "skipped" | "skipped_vault" => ("Skipped", "ai-status-badge is-idle"),
-        _ if analyzed => ("Ready", "ai-status-badge is-done"),
-        _ => ("Not analyzed", "ai-status-badge is-idle"),
+        "ready" => (i18n::t("status.ready"), "ai-status-badge is-done"),
+        "failed" => (i18n::t("status.failed"), "ai-status-badge is-failed"),
+        "skipped" | "skipped_vault" => (i18n::t("status.skipped"), "ai-status-badge is-idle"),
+        _ if analyzed => (i18n::t("status.ready"), "ai-status-badge is-done"),
+        _ => (i18n::t("status.not_analyzed"), "ai-status-badge is-idle"),
     }
 }
 
 fn friendly_analysis_status(status: &str, analyzed: bool) -> (&'static str, &'static str) {
     match status {
-        "pending" | "running" => ("Analyzing…", "ai-status-badge is-running"),
-        "completed" => ("Analyzed", "ai-status-badge is-done"),
-        "failed" => ("Failed", "ai-status-badge is-failed"),
-        _ if analyzed => ("Analyzed", "ai-status-badge is-done"),
-        "none" | "" => ("Not analyzed", "ai-status-badge is-idle"),
-        _ => ("Not analyzed", "ai-status-badge is-idle"),
+        "pending" | "running" => (i18n::t("status.analyzing"), "ai-status-badge is-running"),
+        "completed" => (i18n::t("status.analyzed"), "ai-status-badge is-done"),
+        "failed" => (i18n::t("status.failed"), "ai-status-badge is-failed"),
+        _ if analyzed => (i18n::t("status.analyzed"), "ai-status-badge is-done"),
+        _ => (i18n::t("status.not_analyzed"), "ai-status-badge is-idle"),
     }
+}
+
+/// Severity reported by the AI (`low`, `medium`, …) as a label; unknown values
+/// are shown as sent.
+fn severity_label(raw: &str) -> String {
+    let key = match raw.trim().to_ascii_lowercase().as_str() {
+        "low" => "severity.low",
+        "medium" => "severity.medium",
+        "high" => "severity.high",
+        "critical" => "severity.critical",
+        _ => return raw.to_string(),
+    };
+    i18n::t(key).to_string()
 }
 
 /// Analysis errors as the user sees them. The API layer already turns 5xx bodies
@@ -2338,7 +2347,7 @@ fn sanitize_analysis_ui_error(raw: &str) -> String {
         s = rest.trim();
     }
     if s.is_empty() {
-        return "The analysis failed.".into();
+        return i18n::t("trip.analysis_failed").into();
     }
     if s.chars().count() > 300 {
         let cut: String = s.chars().take(300).collect();
@@ -2441,24 +2450,21 @@ fn TripAiPanel(
                 if sealed {
                     let Some(t) = trip_snap else {
                         if alive_job() {
-                            analysis_err.set(Some("Trip not loaded".into()));
+                            analysis_err.set(Some(i18n::t("trip.not_loaded").into()));
                             analysis_busy.set(false);
                         }
                         return;
                     };
                     if !sess.is_unlocked() {
                         if alive_job() {
-                            analysis_err.set(Some(
-                                "Unlock vault and consent to send a temporary analysis bundle."
-                                    .into(),
-                            ));
+                            analysis_err.set(Some(i18n::t("trip.unlock_consent").into()));
                             analysis_busy.set(false);
                         }
                         return;
                     }
                     if pts.is_empty() {
                         if alive_job() {
-                            analysis_err.set(Some("No decrypted points to analyze".into()));
+                            analysis_err.set(Some(i18n::t("trip.no_decrypted_points").into()));
                             analysis_busy.set(false);
                         }
                         return;
@@ -2482,14 +2488,14 @@ fn TripAiPanel(
                                 return;
                             }
                             if job.status != "done" {
-                                analysis_err.set(Some(
-                                    job.error.unwrap_or_else(|| "Vault analysis failed".into()),
-                                ));
+                                analysis_err.set(Some(job.error.unwrap_or_else(|| {
+                                    i18n::t("trip.vault_analysis_failed").into()
+                                })));
                             } else if let Some(report) = job.result {
                                 if let Err(e) = seal_ai_report(&sess, &t.car_id, &id, &report).await
                                 {
                                     analysis_err
-                                        .set(Some(format!("Analysis ok but seal failed: {e}")));
+                                        .set(Some(tf("trip.seal_failed", &[("error", &e)])));
                                 }
                                 analysis.set(Some(TripAnalysis {
                                     analyzed: true,
@@ -2569,9 +2575,9 @@ fn TripAiPanel(
                     <div class="ai-analysis-head-main">
                         <h2 class="section-title">
                             <Icon name="robot" color=IconColor::Accent />
-                            "AI route analysis"
+                            {tr!("trip.ai_title")}
                         </h2>
-                        <span class="muted">"Mechanic + efficiency coach · tap to expand"</span>
+                        <span class="muted">{tr!("trip.ai_subtitle")}</span>
                     </div>
                     <div class="ai-analysis-head-meta">
                         <span class=move || {
@@ -2601,7 +2607,7 @@ fn TripAiPanel(
                                     || status == "pending"
                                     || status == "running";
                                 if busy {
-                                    "Analyzing…".to_string()
+                                    i18n::t("status.analyzing").to_string()
                                 } else {
                                     friendly_analysis_status(status, analyzed).0.to_string()
                                 }
@@ -2615,7 +2621,7 @@ fn TripAiPanel(
             <div class="ai-analysis-body">
                 {move || trip.get().map(|tr| tr.vault_sealed).unwrap_or(false).then(|| view! {
                     <p class="muted" style="margin:0">
-                        "Vault mode: analysis sends a temporary decrypted bundle to the server. Results are sealed client-side; nothing durable is stored in plaintext."
+                        {tr!("trip.vault_mode")}
                     </p>
                 })}
 
@@ -2648,7 +2654,7 @@ fn TripAiPanel(
                                     || status == "pending"
                                     || status == "running";
                                 if busy {
-                                    "Analyzing…".to_string()
+                                    i18n::t("status.analyzing").to_string()
                                 } else {
                                     friendly_analysis_status(status, analyzed).0.to_string()
                                 }
@@ -2665,7 +2671,7 @@ fn TripAiPanel(
                                     analysis
                                         .get()
                                         .and_then(|a| a.analysis_model)
-                                        .map(|m| format!("Model · {m}"))
+                                        .map(|m| tf("trip.model", &[("model", &m)]))
                                         .unwrap_or_default()
                                 }}
                             </span>
@@ -2680,7 +2686,7 @@ fn TripAiPanel(
                         }>
                             <span class="ai-running-hint muted">
                                 <Icon name="spinner-gap" size=IconSize::Sm color=IconColor::Accent />
-                                " Working in background"
+                                {tr!("trip.working_background")}
                             </span>
                             <Show when=move || {
                                 analysis.get().is_some_and(|a| a.can_analyze)
@@ -2705,7 +2711,7 @@ fn TripAiPanel(
                                     }
                                 >
                                     <Icon name="stop-circle" size=IconSize::Sm />
-                                    {move || if cancelling.get() { "Cancelling…" } else { "Cancel" }}
+                                    {move || if cancelling.get() { i18n::t("trip.cancelling") } else { i18n::t("common.cancel") }}
                                 </button>
                             </Show>
                         </Show>
@@ -2721,9 +2727,9 @@ fn TripAiPanel(
                             <button type="button" class="btn primary ai-run-btn" on:click=move |_| run.run(())>
                                 {move || {
                                     if analysis.get().map(|a| a.analyzed || a.analysis_status == "completed").unwrap_or(false) {
-                                        "Re-analyze"
+                                        i18n::t("trip.reanalyze")
                                     } else {
-                                        "Analyze route"
+                                        i18n::t("trip.analyze_route")
                                     }
                                 }}
                             </button>
@@ -2753,7 +2759,7 @@ fn TripAiPanel(
                                 .and_then(|a| a.analysis_error)
                                 .filter(|e| !e.trim().is_empty())
                                 .map(|e| sanitize_analysis_ui_error(&e))
-                                .unwrap_or_else(|| "The analysis failed. Try again in a moment.".into())
+                                .unwrap_or_else(|| i18n::t("trip.analysis_failed_retry").into())
                         }}
                     </div>
                 </Show>
@@ -2839,7 +2845,7 @@ fn TripAiPanel(
                                         download_markdown_report(&name, &md);
                                     }
                                 >
-                                    "Download markdown report"
+                                    {tr!("trip.download_md")}
                                 </button>
                             }
                             .into_any()
@@ -2851,18 +2857,18 @@ fn TripAiPanel(
                             <div class="ai-report">
                                 <div class="ai-summary">
                                     <div class="ai-summary-head">
-                                        <strong>"Summary"</strong>
+                                        <strong>{tr!("trip.summary")}</strong>
                                         {download_btn}
                                     </div>
                                     <p>{summary}</p>
-                                    <span class="muted">{format!("Confidence: {confidence}")}</span>
+                                    <span class="muted">{tf("trip.confidence", &[("value", &confidence)])}</span>
                                 </div>
                                 <div class="ai-columns">
                                     <div class="ai-block">
-                                        <h3>"Mechanical findings"</h3>
+                                        <h3>{tr!("trip.mechanical")}</h3>
                                         <ul class="ai-findings">
                                             {findings.into_iter().map(|f| {
-                                                let title = f.get("title").and_then(|v| v.as_str()).unwrap_or("Finding").to_string();
+                                                let title = f.get("title").and_then(|v| v.as_str()).unwrap_or(i18n::t("trip.finding")).to_string();
                                                 let evidence = f.get("evidence").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                                 let severity = f.get("severity").and_then(|v| v.as_str()).unwrap_or("low").to_string();
                                                 let rec = f.get("recommendation").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -2871,7 +2877,7 @@ fn TripAiPanel(
                                                     <li>
                                                         <div class="ai-finding-head">
                                                             <strong>{title}</strong>
-                                                            <span class=sev_class>{severity}</span>
+                                                            <span class=sev_class>{severity_label(&severity)}</span>
                                                         </div>
                                                         <p class="muted">{evidence}</p>
                                                         <p>{rec}</p>
@@ -2881,16 +2887,16 @@ fn TripAiPanel(
                                         </ul>
                                     </div>
                                     <div class="ai-block">
-                                        <h3>"Driving style"</h3>
+                                        <h3>{tr!("trip.driving_style")}</h3>
                                         <p>{assessment}</p>
-                                        <p class="muted">"Positives"</p>
+                                        <p class="muted">{tr!("trip.positives")}</p>
                                         <ul>
                                             {positives.into_iter().map(|x| {
                                                 let s = x.as_str().unwrap_or("").to_string();
                                                 view! { <li>{s}</li> }
                                             }).collect_view()}
                                         </ul>
-                                        <p class="muted">"Improvements"</p>
+                                        <p class="muted">{tr!("trip.improvements")}</p>
                                         <ul>
                                             {improvements.into_iter().map(|x| {
                                                 let s = x.as_str().unwrap_or("").to_string();
@@ -2899,7 +2905,7 @@ fn TripAiPanel(
                                         </ul>
                                     </div>
                                     <div class="ai-block">
-                                        <h3>"Financial / efficiency"</h3>
+                                        <h3>{tr!("trip.financial")}</h3>
                                         <p>{fuel_note}</p>
                                         <p>{efficiency}</p>
                                         <p class="muted">{savings}</p>
@@ -2924,9 +2930,9 @@ fn TripAiPanel(
                     <p class="muted">
                         {move || {
                             if analysis.get().map(|a| a.can_analyze).unwrap_or(false) {
-                                "No analysis yet. Configure OpenRouter in Settings, then click Analyze route."
+                                i18n::t("trip.no_analysis")
                             } else {
-                                "Only the car owner can run analysis. Shared users can read completed reports."
+                                i18n::t("trip.owner_only")
                             }
                         }}
                     </p>
@@ -2961,6 +2967,10 @@ mod tests {
             "Configure your OpenRouter key"
         );
         assert_eq!(sanitize_analysis_ui_error("  "), "The analysis failed.");
+        assert_eq!(
+            crate::i18n::with_locale(crate::i18n::Locale::Es, || sanitize_analysis_ui_error("")),
+            "El análisis falló."
+        );
         assert!(sanitize_analysis_ui_error(&"x".repeat(500)).ends_with('…'));
     }
 

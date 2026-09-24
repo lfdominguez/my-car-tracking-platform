@@ -12,43 +12,43 @@ pub fn NotFoundPage() -> impl IntoView {
                     <span class="not-found-code" aria-hidden="true">"404"</span>
                 </div>
 
-                <h1 class="not-found-title">"Wrong turn at Albuquerque… and the GPS gave up."</h1>
+                <h1 class="not-found-title">{tr!("notfound.title")}</h1>
 
                 <p class="muted not-found-lead">
-                    "This route isn’t in your trip history. No OBD data, no polyline — just existential asphalt."
+                    {tr!("notfound.lead")}
                 </p>
                 <p class="muted not-found-tag">
                     <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Success />
-                    "Even the fuel gauge is confused."
+                    {tr!("notfound.tag")}
                 </p>
 
                 <div class="not-found-actions">
                     <a class="btn primary" href="/">
                         <Icon name="gauge" color=IconColor::Default />
-                        "Back to home"
+                        {tr!("notfound.home")}
                     </a>
                     <div class="not-found-secondary">
                         <a class="btn" href="/app">
                             <Icon name="chart-line-up" color=IconColor::Accent />
-                            "Dashboard"
+                            {tr!("nav.dashboard")}
                         </a>
                         <a class="btn" href="/app/cars">
                             <Icon name="car" color=IconColor::Accent />
-                            "Cars"
+                            {tr!("nav.cars")}
                         </a>
                         <a class="btn" href="/app/trips">
                             <Icon name="path" color=IconColor::Accent />
-                            "Trips"
+                            {tr!("nav.trips")}
                         </a>
                         <a class="btn" href="/auth/google" rel="external">
                             <Icon name="google-logo" color=IconColor::Default />
-                            "Continue with Google"
+                            {tr!("login.google")}
                         </a>
                     </div>
                 </div>
 
                 <p class="muted not-found-hint">
-                    "Tip: if you were looking for a track sample, try the phone — this page only accepts good vibes and valid URLs."
+                    {tr!("notfound.hint")}
                 </p>
             </div>
         </div>

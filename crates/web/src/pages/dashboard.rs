@@ -6,6 +6,7 @@ use crate::api::{
     list_trips, maintenance_due,
 };
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{num, t, tf, tp};
 use crate::pages::live::LiveCard;
 use crate::pages::sharing::PendingInvites;
 use crate::units::{
@@ -14,14 +15,7 @@ use crate::units::{
 };
 
 fn pretty_started_local(s: &str) -> String {
-    use chrono::{DateTime, Local};
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
-        return dt
-            .with_timezone(&Local)
-            .format("%Y-%m-%d %H:%M")
-            .to_string();
-    }
-    s.to_string()
+    crate::i18n::local_datetime(s, None)
 }
 
 #[component]
@@ -54,9 +48,9 @@ pub fn DashboardPage() -> impl IntoView {
             <div>
                 <h1 class="section-title">
                     <Icon name="chart-line-up" color=IconColor::Accent />
-                    "Dashboard"
+                    {tr!("nav.dashboard")}
                 </h1>
-                <p class="muted">"Overview by car — odometer, tank level, and tracked distance"</p>
+                <p class="muted">{tr!("dash.lead")}</p>
             </div>
         </div>
 
@@ -69,7 +63,7 @@ pub fn DashboardPage() -> impl IntoView {
         <section class="dash-cars-section">
             <h2 class="section-title dash-section-heading">
                 <Icon name="car" color=IconColor::Device />
-                "Your cars"
+                {tr!("dash.your_cars")}
             </h2>
             <Show
                 when=move || summary.get().is_some() || error.get().is_some()
@@ -95,10 +89,10 @@ pub fn DashboardPage() -> impl IntoView {
                     fallback=move || view! {
                         <div class="card empty-state">
                             <Icon name="car" size=IconSize::Xl color=IconColor::Device />
-                            <div>"No cars yet — add one under Cars, then track from the phone."</div>
+                            <div>{tr!("dash.no_cars")}</div>
                             // A link styled as a button, not a <button> inside <a>
                             // (nested interactive content, two tab stops).
-                            <A href="/app/cars"><span class="btn primary">"Manage cars"</span></A>
+                            <A href="/app/cars"><span class="btn primary">{tr!("dash.manage_cars")}</span></A>
                         </div>
                     }
                 >
@@ -142,35 +136,35 @@ pub fn DashboardPage() -> impl IntoView {
             <div class="kpi-hairline-row">
                 <div class="kpi-hairline-item">
                     <div class="kpi-hairline-head">
-                        <div class="stat-label">"Trips"</div>
+                        <div class="stat-label">{tr!("nav.trips")}</div>
                         <Icon name="road-horizon" size=IconSize::Sm color=IconColor::Accent />
                     </div>
-                    <div class="stat-value">{move || summary.get().map(|s| s.trip_count.to_string()).unwrap_or_else(|| "—".into())}</div>
+                    <div class="stat-value">{move || summary.get().map(|s| crate::i18n::int(s.trip_count)).unwrap_or_else(|| "—".into())}</div>
                 </div>
                 <div class="kpi-hairline-item">
                     <div class="kpi-hairline-head">
-                        <div class="stat-label">{move || format!("Distance ({})", prefs.get().labels.distance)}</div>
+                        <div class="stat-label">{move || tf("dash.distance_unit", &[("unit", &prefs.get().labels.distance)])}</div>
                         <Icon name="ruler" size=IconSize::Sm color=IconColor::Accent />
                     </div>
                     <div class="stat-value">{move || summary.get().map(|s| fmt_distance_value(s.total_distance_m, &prefs.get())).unwrap_or_else(|| "—".into())}</div>
                 </div>
                 <div class="kpi-hairline-item">
                     <div class="kpi-hairline-head">
-                        <div class="stat-label">"Duration (h)"</div>
+                        <div class="stat-label">{tr!("dash.duration_h")}</div>
                         <Icon name="timer" size=IconSize::Sm color=IconColor::Warn />
                     </div>
-                    <div class="stat-value">{move || summary.get().map(|s| format!("{:.1}", s.total_duration_s / 3600.0)).unwrap_or_else(|| "—".into())}</div>
+                    <div class="stat-value">{move || summary.get().map(|s| num(s.total_duration_s / 3600.0, 1)).unwrap_or_else(|| "—".into())}</div>
                 </div>
                 <div class="kpi-hairline-item">
                     <div class="kpi-hairline-head">
-                        <div class="stat-label">{move || format!("Fuel ({})", prefs.get().labels.fuel_volume)}</div>
+                        <div class="stat-label">{move || tf("dash.fuel_unit", &[("unit", &prefs.get().labels.fuel_volume)])}</div>
                         <Icon name="gas-pump" size=IconSize::Sm color=IconColor::Success />
                     </div>
-                    <div class="stat-value">{move || summary.get().map(|s| format!("{:.2}", s.total_fuel_l)).unwrap_or_else(|| "—".into())}</div>
+                    <div class="stat-value">{move || summary.get().map(|s| num(s.total_fuel_l, 2)).unwrap_or_else(|| "—".into())}</div>
                 </div>
                 <div class="kpi-hairline-item">
                     <div class="kpi-hairline-head">
-                        <div class="stat-label">"Cars"</div>
+                        <div class="stat-label">{tr!("nav.cars")}</div>
                         <Icon name="car" size=IconSize::Sm color=IconColor::Device />
                     </div>
                     <div class="stat-value">{move || summary.get().map(|s| s.car_count.to_string()).unwrap_or_else(|| "—".into())}</div>
@@ -181,26 +175,26 @@ pub fn DashboardPage() -> impl IntoView {
         <div class="card">
             <h2 class="section-title">
                 <Icon name="path" color=IconColor::Accent />
-                "Recent trips"
+                {tr!("dash.recent_trips")}
             </h2>
             <Show
                 when=move || !trips.get().is_empty()
                 fallback=move || view! {
                     <div class="empty-state">
                         <Icon name="map-trifold" size=IconSize::Xl color=IconColor::Accent />
-                        <div>"No trips yet — start tracking from the Android app."</div>
+                        <div>{tr!("dash.no_trips")}</div>
                     </div>
                 }
             >
                 <table class="table dash-trips-table">
                     <thead>
                         <tr>
-                            <th>"Car"</th>
-                            <th>"Started"</th>
-                            <th>"Distance"</th>
-                            <th>"Duration"</th>
-                            <th>"Fuel"</th>
-                            <th>"Moving"</th>
+                            <th>{tr!("common.car")}</th>
+                            <th>{tr!("dash.started")}</th>
+                            <th>{tr!("common.distance")}</th>
+                            <th>{tr!("common.duration")}</th>
+                            <th>{tr!("common.fuel")}</th>
+                            <th>{tr!("dash.moving")}</th>
                             <th></th>
                         </tr>
                     </thead>
@@ -210,6 +204,8 @@ pub fn DashboardPage() -> impl IntoView {
                             key=|t| t.id.clone()
                             children=move |t| {
                                 let id = t.id.clone();
+                                let started = t.started_at.clone();
+                                let duration_s = t.duration_s.unwrap_or(0.0);
                                 // `For` children run once per row, so every unit-dependent
                                 // cell reads `prefs` inside its own closure: rows rendered
                                 // before `/api/me` resolves must re-format when it does.
@@ -224,16 +220,16 @@ pub fn DashboardPage() -> impl IntoView {
                                 };
                                 view! {
                                     <tr>
-                                        <td data-label="Car">{t.car_name.clone()}</td>
-                                        <td class="num" data-label="Started">{pretty_started_local(&t.started_at)}</td>
-                                        <td class="num" data-label="Distance">{dist}</td>
-                                        <td class="num" data-label="Duration">{format!("{:.0} min", t.duration_s.unwrap_or(0.0) / 60.0)}</td>
-                                        <td class="num" data-label="Fuel">{fuel}</td>
-                                        <td class="num" data-label="Moving">{moving}</td>
+                                        <td data-label=tr!("common.car")>{t.car_name.clone()}</td>
+                                        <td class="num" data-label=tr!("dash.started")>{move || pretty_started_local(&started)}</td>
+                                        <td class="num" data-label=tr!("common.distance")>{dist}</td>
+                                        <td class="num" data-label=tr!("common.duration")>{move || tf("common.minutes_short", &[("n", &num(duration_s / 60.0, 0))])}</td>
+                                        <td class="num" data-label=tr!("common.fuel")>{fuel}</td>
+                                        <td class="num" data-label=tr!("dash.moving")>{moving}</td>
                                         <td data-label="">
                                             <A href=format!("/app/trips/{id}")>
                                                 <span class="icon-label">
-                                                    "Open"
+                                                    {tr!("common.open")}
                                                     <Icon name="caret-right" size=IconSize::Sm />
                                                 </span>
                                             </A>
@@ -253,7 +249,12 @@ pub fn DashboardPage() -> impl IntoView {
 /// Color-coded by level (success ≥50%, warning ≥20%, danger below) so the
 /// whole fleet's status reads at a glance without opening a card.
 #[component]
-fn RadialGauge(pct: Option<f64>, label: &'static str, icon: &'static str) -> impl IntoView {
+fn RadialGauge(
+    pct: Option<f64>,
+    /// i18n key of the caption.
+    label: &'static str,
+    icon: &'static str,
+) -> impl IntoView {
     const R: f64 = 30.0;
     let circumference = 2.0 * std::f64::consts::PI * R;
     let clamped = pct.map(|v| v.clamp(0.0, 100.0));
@@ -265,7 +266,7 @@ fn RadialGauge(pct: Option<f64>, label: &'static str, icon: &'static str) -> imp
         None => "unknown",
     };
     let value_text = clamped
-        .map(|v| format!("{v:.0}%"))
+        .map(|v| format!("{}%", num(v, 0)))
         .unwrap_or_else(|| "—".into());
 
     view! {
@@ -288,7 +289,7 @@ fn RadialGauge(pct: Option<f64>, label: &'static str, icon: &'static str) -> imp
             </div>
             <div class="dash-gauge-label">
                 <Icon name=icon size=IconSize::Sm />
-                {label}
+                {move || t(label)}
             </div>
         </div>
     }
@@ -311,7 +312,11 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoVie
     } else {
         car.fuel_level_pct
     };
-    let gauge_label = if is_electric { "Battery" } else { "Fuel" };
+    let gauge_label = if is_electric {
+        "dash.battery"
+    } else {
+        "common.fuel"
+    };
     let gauge_icon = if is_electric {
         "battery-full"
     } else {
@@ -320,11 +325,7 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoVie
 
     let tracked_m = car.tracked_distance_m;
     let tracked = move || fmt_distance(Some(tracked_m), &prefs.get());
-    let trips_label = if car.trip_count == 1 {
-        "1 trip".into()
-    } else {
-        format!("{} trips", car.trip_count)
-    };
+    let trip_count = car.trip_count;
     let make = car.make_model.clone();
     let name = car.name.clone();
 
@@ -363,25 +364,22 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoVie
                     </div>
                     <div class="dash-car-titles">
                         <div class="dash-car-name">{name}</div>
-                        <div class="dash-car-sub muted">{format!("{make} · {trips_label}")}</div>
+                        <div class="dash-car-sub muted">{move || format!("{make} · {}", tp("common.trips_count", trip_count))}</div>
                         <Show when=move || { due_counts.get() != (0, 0) || active_dtcs.get() > 0 }>
-                            <div class="dash-car-due" aria-label="Maintenance and faults">
+                            <div class="dash-car-due" aria-label=tr!("dash.maintenance_faults")>
                                 <Show when=move || { active_dtcs.get() > 0 }>
                                     <span class="pill pill-danger">
-                                        {move || {
-                                            let n = active_dtcs.get();
-                                            format!("{n} fault code{}", if n == 1 { "" } else { "s" })
-                                        }}
+                                        {move || tp("dash.fault_codes", active_dtcs.get() as i64)}
                                     </span>
                                 </Show>
                                 <Show when=move || { due_counts.get().0 > 0 }>
                                     <span class="pill pill-danger">
-                                        {move || format!("{} overdue", due_counts.get().0)}
+                                        {move || tf("dash.overdue", &[("n", &due_counts.get().0)])}
                                     </span>
                                 </Show>
                                 <Show when=move || { due_counts.get().1 > 0 }>
                                     <span class="pill pill-warn">
-                                        {move || format!("{} due soon", due_counts.get().1)}
+                                        {move || tf("dash.due_soon", &[("n", &due_counts.get().1)])}
                                     </span>
                                 </Show>
                             </div>
@@ -394,14 +392,14 @@ fn DashCarCard(car: DashboardCarSummary, prefs: UnitPrefsSignal) -> impl IntoVie
                         <div class="dash-car-stat">
                             <div class="dash-car-metric-label">
                                 <Icon name="gauge" size=IconSize::Sm color=IconColor::Accent />
-                                "Odometer"
+                                {tr!("common.odometer")}
                             </div>
                             <div class="dash-car-metric-value">{odo}</div>
                         </div>
                         <div class="dash-car-stat">
                             <div class="dash-car-metric-label">
                                 <Icon name="path" size=IconSize::Sm color=IconColor::Accent />
-                                "Tracked"
+                                {tr!("dash.tracked")}
                             </div>
                             <div class="dash-car-metric-value">{tracked}</div>
                         </div>

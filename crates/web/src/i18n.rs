@@ -147,7 +147,18 @@ pub fn provide_locale() {
         if let Ok(Some(storage)) = win.local_storage() {
             let _ = storage.set_item(STORAGE_KEY, loc.as_str());
         }
+        publish_js_table(&win, loc);
     });
+}
+
+/// Expose the `js.*` entries as `window.__ctpI18n` for the inline map, chart
+/// and QR scripts, which look text up with `tt(key, englishFallback)`.
+fn publish_js_table(win: &web_sys::Window, loc: Locale) {
+    let obj = js_sys::Object::new();
+    for (key, text) in loc.table().iter().filter(|(k, _)| k.starts_with("js.")) {
+        let _ = js_sys::Reflect::set(&obj, &(*key).into(), &(*text).into());
+    }
+    let _ = js_sys::Reflect::set(win, &"__ctpI18n".into(), &obj);
 }
 
 /// Switch the UI language; every `t()` caller re-renders.
@@ -561,6 +572,20 @@ mod tests {
         }
     }
 
+    /// Text is often glued to a neighbour (`" · full"`), so both locales must
+    /// agree on leading and trailing spaces.
+    #[test]
+    fn edge_whitespace_matches_across_locales() {
+        for (key, en_text) in en::TABLE {
+            let es_text = lookup(Locale::Es, key).unwrap_or_default();
+            assert_eq!(
+                (en_text.starts_with(' '), en_text.ends_with(' ')),
+                (es_text.starts_with(' '), es_text.ends_with(' ')),
+                "edge whitespace differs for {key:?}"
+            );
+        }
+    }
+
     /// Every `t("…")`, `tr!("…")`, `tf("…"` and `tp("…"` literal in the
     /// source must exist in the English table (plurals as `.one` + `.other`).
     #[test]
@@ -593,7 +618,10 @@ mod tests {
                 ("tr!(\"", false),
                 ("tf(\"", false),
                 ("tp(\"", true),
+                // Inline scripts: `tt('js.…', 'fallback')`.
+                ("tt('", false),
             ] {
+                let quote = if call.ends_with('\'') { '\'' } else { '"' };
                 let mut from = 0;
                 while let Some(pos) = src[from..].find(call) {
                     let start = from + pos;
@@ -602,11 +630,18 @@ mod tests {
                     if prev.is_some_and(|c| c.is_alphanumeric() || c == '_') {
                         continue;
                     }
-                    let Some(end) = src[from..].find('"') else {
+                    let Some(end) = src[from..].find(quote) else {
                         continue;
                     };
                     let key = &src[from..from + end];
                     used += 1;
+                    // `tt('js.traffic.' + level, …)`: a prefix needs at least one entry.
+                    if key.ends_with('.') {
+                        if !en.iter().any(|k| k.starts_with(key)) {
+                            missing.push(format!("{}: {key}*", file.display()));
+                        }
+                        continue;
+                    }
                     let wanted: Vec<String> = if plural {
                         vec![format!("{key}.one"), format!("{key}.other")]
                     } else {

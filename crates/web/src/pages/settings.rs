@@ -409,7 +409,7 @@ pub fn SettingsPage() -> impl IntoView {
             </div>
             <Show when=move || key_set.get()>
                 <p class="muted" style="margin-top:0.5rem">
-                    {tr!("settings.key_on_file")} {move || key_hint.get().unwrap_or_else(|| "…".into())}
+                    {tr!("settings.key_on_file")} " " {move || key_hint.get().unwrap_or_else(|| "…".into())}
                 </p>
             </Show>
         </div>
@@ -499,7 +499,7 @@ pub fn SettingsPage() -> impl IntoView {
             </div>
             <Show when=move || ors_key_set.get()>
                 <p class="muted" style="margin-top:0.5rem">
-                    {tr!("settings.key_on_file")} {move || ors_key_hint.get().unwrap_or_else(|| "…".into())}
+                    {tr!("settings.key_on_file")} " " {move || ors_key_hint.get().unwrap_or_else(|| "…".into())}
                 </p>
             </Show>
         </div>
@@ -514,6 +514,7 @@ pub fn SettingsPage() -> impl IntoView {
             </p>
             <p class="muted">
                 {tr!("settings.endpoint")}
+                " "
                 <code>{move || {
                     let u = mcp_url.get();
                     if u.is_empty() { "/mcp".into() } else { u }
@@ -521,7 +522,7 @@ pub fn SettingsPage() -> impl IntoView {
             </p>
             <Show when=move || mcp_token_set.get()>
                 <p class="muted">
-                    {tr!("settings.token_on_file")} {move || mcp_token_hint.get().unwrap_or_else(|| "…".into())}
+                    {tr!("settings.token_on_file")} " " {move || mcp_token_hint.get().unwrap_or_else(|| "…".into())}
                 </p>
             </Show>
             <Show when=move || mcp_plaintext.get().is_some()>

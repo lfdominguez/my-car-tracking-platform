@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::api::TripPoint;
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{num, t, tf};
 use crate::units::{
     ECONOMY_WINDOW_S, EconomySample, KM_PER_MILE, UnitSystem, headline_economy, integrated_economy,
     use_unit_prefs, windowed_economy_series,
@@ -10,6 +11,12 @@ use crate::units::{
 use shared::telemetry_sanitize::{SpeedRpmPoint, sanitize_speed_rpm};
 
 #[wasm_bindgen(inline_js = r#"
+/** UI text published by the app (src/i18n.rs) for the current language. */
+function tt(key, fallback) {
+  const table = window.__ctpI18n;
+  return (table && table[key]) || fallback;
+}
+
 /**
  * Load a self-hosted vendor script on first use instead of blocking <head>.
  * Same-origin /vendor URLs keep CSP `script-src 'self'` satisfied. The promise is
@@ -143,7 +150,7 @@ function selectionMarkLine(dataIndex, label, showLabel) {
     label: showLabel
       ? {
           show: true,
-          formatter: label || 'Selected',
+          formatter: label || tt('js.chart.selected', 'Selected'),
           color: '#fdf2f8',
           backgroundColor: 'rgba(190, 24, 93, 0.92)',
           padding: [3, 6],
@@ -196,7 +203,7 @@ function applySelectionToChart(elId, chart, iso) {
       const part = t.split('T')[1] || t;
       return part.replace(/Z$/, '').split('.')[0];
     }
-    return 'Selected';
+    return tt('js.chart.selected', 'Selected');
   })();
 
   // Mark line on first series only — cheaper than updating every series + no showTip fan-out.
@@ -604,14 +611,15 @@ const LINE_SMOOTH_VISUAL: f64 = 0.62;
 
 const CATEGORY_STORAGE_KEY: &str = "trip-tel-category";
 
-/// Filter tabs for progressive disclosure (analytics-style, not accordion walls).
+/// Filter tabs for progressive disclosure (analytics-style, not accordion walls):
+/// `(category, i18n key of its label)`.
 const CATEGORY_TABS: &[(&str, &str)] = &[
-    ("overview", "Overview"),
-    ("drive", "Drive"),
-    ("engine", "Engine"),
-    ("fuel", "Fuel"),
-    ("thermal", "Thermal"),
-    ("all", "All"),
+    ("overview", "chart.cat_overview"),
+    ("drive", "chart.cat_drive"),
+    ("engine", "chart.cat_engine"),
+    ("fuel", "chart.cat_fuel"),
+    ("thermal", "chart.cat_thermal"),
+    ("all", "common.all"),
 ];
 
 fn series_has_data(data: &[Option<f64>]) -> bool {
@@ -1296,7 +1304,7 @@ fn build_mixture_option(
     let y_axis = {
         let mut axes = vec![serde_json::json!({
             "type": "value",
-            "name": "% trim",
+            "name": t("chart.trim_axis"),
             "nameLocation": "middle",
             "nameGap": 46,
             "nameRotate": 90,
@@ -1341,7 +1349,7 @@ fn build_mixture_option(
         "symbol": "none",
         "label": {
             "show": true,
-            "formatter": "healthy ±10%",
+            "formatter": t("chart.healthy_band"),
             "color": "#86efac",
             "fontSize": 10,
             "position": "insideEndTop"
@@ -1414,7 +1422,7 @@ fn build_mixture_option(
             })
             .collect();
         series_json.push(serde_json::json!({
-            "name": "Lambda cmd",
+            "name": t("chart.lambda_cmd"),
             "type": "line",
             "yAxisIndex": if use_right { 1 } else { 0 },
             "smooth": line_smooth,
@@ -1574,27 +1582,34 @@ fn build_signal_chips(
         max_finite(speeds.iter().copied()),
     ) {
         chips.push(SignalChip {
-            label: "Speed".into(),
-            value: format!("avg {:.0} · max {:.0} {}", avg, max, prefs.labels.speed),
+            label: t("chart.chip_speed").into(),
+            value: tf(
+                "chart.chip_speed_value",
+                &[
+                    ("avg", &num(avg, 0)),
+                    ("max", &num(max, 0)),
+                    ("unit", &prefs.labels.speed),
+                ],
+            ),
         });
     }
     if let Some(peak) = max_finite(raw.iter().filter_map(coalesce_rpm)) {
         chips.push(SignalChip {
             label: "RPM".into(),
-            value: format!("peak {:.0}", peak),
+            value: tf("chart.chip_rpm_value", &[("v", &num(peak, 0))]),
         });
     }
     if let Some(avg_rate) = mean_finite(raw.iter().filter_map(|p| p.fuel_consumption_rate)) {
         chips.push(SignalChip {
-            label: "Fuel rate".into(),
-            value: format!("{avg_rate:.2} {}", prefs.labels.fuel_rate),
+            label: t("chart.chip_fuel_rate").into(),
+            value: format!("{} {}", num(avg_rate, 2), prefs.labels.fuel_rate),
         });
     }
     let trip_integral = integrated_economy(&economy_samples(raw), prefs.system);
     if let Some(avg_eco) = headline_economy(trip_economy, trip_integral) {
         chips.push(SignalChip {
-            label: "Economy".into(),
-            value: format!("{avg_eco:.1} {}", prefs.labels.fuel_economy),
+            label: t("common.economy").into(),
+            value: format!("{} {}", num(avg_eco, 1), prefs.labels.fuel_economy),
         });
     }
     let coolants: Vec<f64> = raw.iter().filter_map(|p| p.engine_coolant_temp_c).collect();
@@ -1603,8 +1618,11 @@ fn build_signal_chips(
         max_finite(coolants.iter().copied()),
     ) {
         chips.push(SignalChip {
-            label: "Coolant".into(),
-            value: format!("last {:.0}° · max {:.0}°C", last, max),
+            label: t("chart.chip_coolant").into(),
+            value: tf(
+                "chart.chip_coolant_value",
+                &[("last", &num(last, 0)), ("max", &num(max, 0))],
+            ),
         });
     }
     let volts: Vec<f64> = raw
@@ -1616,8 +1634,8 @@ fn build_signal_chips(
         max_finite(volts.iter().copied()),
     ) {
         chips.push(SignalChip {
-            label: "Voltage".into(),
-            value: format!("{min_v:.1}–{max_v:.1} V"),
+            label: t("chart.chip_voltage").into(),
+            value: format!("{}–{} V", num(min_v, 1), num(max_v, 1)),
         });
     }
     chips
@@ -1651,6 +1669,9 @@ pub fn TripTelemetryDashboard(
     });
 
     let model = Memo::new(move |_| {
+        // Series names, titles and blurbs are translated here; a language change
+        // rebuilds the model (and, through the keys below, the charts).
+        let locale = crate::i18n::locale();
         let unit_prefs = prefs.get();
         let system = unit_prefs.system;
         let ul = &unit_prefs.labels;
@@ -1709,21 +1730,21 @@ pub fn TripTelemetryDashboard(
         let mut drive = filter_panels(vec![
             PanelDef {
                 id: "drive-speed",
-                title: "Speed & pedal",
-                blurb: "Road speed versus how hard you pressed the accelerator — demand and pace without opening the hood.",
+                title: t("chart.speed_pedal"),
+                blurb: t("chart.speed_pedal_blurb"),
                 primary: true,
                 y_left: ul.speed.to_string(),
                 y_right: Some("%".to_string()),
                 kind: PanelKind::Lines,
                 series: vec![
                     ChartSeriesSpec {
-                        name: format!("Speed ({})", ul.speed),
+                        name: tf("chart.speed_unit", &[("unit", &ul.speed)]),
                         data: speed.clone(),
                         y_axis_index: 0,
                         area: true,
                     },
                     ChartSeriesSpec {
-                        name: "Accelerator (%)".to_string(),
+                        name: t("chart.accelerator").to_string(),
                         data: pedal,
                         y_axis_index: 1,
                         area: false,
@@ -1732,14 +1753,14 @@ pub fn TripTelemetryDashboard(
             },
             PanelDef {
                 id: "drive-gps",
-                title: "GPS accuracy",
-                blurb: "Position uncertainty in meters. Spikes explain map wiggles or unreliable GPS-derived speed.",
+                title: t("chart.gps_accuracy"),
+                blurb: t("chart.gps_accuracy_blurb"),
                 primary: false,
                 y_left: "m".to_string(),
                 y_right: None,
                 kind: PanelKind::Lines,
                 series: vec![ChartSeriesSpec {
-                    name: "GPS accuracy (m)".to_string(),
+                    name: t("chart.gps_accuracy_m").to_string(),
                     data: gps_acc,
                     y_axis_index: 0,
                     area: true,
@@ -1749,10 +1770,10 @@ pub fn TripTelemetryDashboard(
         apply_smooth_to_panels(&mut drive, want_smooth);
         if !drive.is_empty() {
             sections.push((
-                "Drive dynamics",
+                t("chart.drive_dynamics"),
                 "path",
                 "drive",
-                "Pace, pedal, and positioning quality.",
+                t("chart.drive_blurb"),
                 drive,
             ));
         }
@@ -1760,8 +1781,8 @@ pub fn TripTelemetryDashboard(
         let mut engine = filter_panels(vec![
             PanelDef {
                 id: "engine-rpm-load",
-                title: "RPM & load",
-                blurb: "Engine speed plus calculated and absolute load — how hard the engine worked and in which gear-ish range.",
+                title: t("chart.rpm_load"),
+                blurb: t("chart.rpm_load_blurb"),
                 primary: true,
                 y_left: "RPM".to_string(),
                 y_right: Some("%".to_string()),
@@ -1774,13 +1795,13 @@ pub fn TripTelemetryDashboard(
                         area: true,
                     },
                     ChartSeriesSpec {
-                        name: "Engine load (%)".to_string(),
+                        name: t("chart.engine_load").to_string(),
                         data: load,
                         y_axis_index: 1,
                         area: false,
                     },
                     ChartSeriesSpec {
-                        name: "Absolute load (%)".to_string(),
+                        name: t("chart.abs_load").to_string(),
                         data: abs_load,
                         y_axis_index: 1,
                         area: false,
@@ -1789,8 +1810,8 @@ pub fn TripTelemetryDashboard(
             },
             PanelDef {
                 id: "engine-air",
-                title: "Airflow & MAP",
-                blurb: "Mass air flow and manifold absolute pressure — how the engine was breathing (vacuum, load, or boost).",
+                title: t("chart.airflow"),
+                blurb: t("chart.airflow_blurb"),
                 primary: false,
                 y_left: "g/s".to_string(),
                 y_right: Some("kPa".to_string()),
@@ -1814,10 +1835,10 @@ pub fn TripTelemetryDashboard(
         apply_smooth_to_panels(&mut engine, want_smooth);
         if !engine.is_empty() {
             sections.push((
-                "Engine",
+                t("chart.cat_engine"),
                 "cpu",
                 "engine",
-                "Rotation, load, and air intake.",
+                t("chart.engine_blurb"),
                 engine,
             ));
         }
@@ -1825,21 +1846,21 @@ pub fn TripTelemetryDashboard(
         let mut fuel = filter_panels(vec![
             PanelDef {
                 id: "fuel-rate",
-                title: "Fuel rate & economy",
-                blurb: "Instant burn rate, and economy integrated over a 60 s trailing window (what a dash trip computer shows). Economy drops out only when the car has covered under 20 m in that window.",
+                title: t("chart.fuel_rate_economy"),
+                blurb: t("chart.fuel_rate_blurb"),
                 primary: true,
                 y_left: ul.fuel_rate.to_string(),
                 y_right: Some(ul.fuel_economy.to_string()),
                 kind: PanelKind::Lines,
                 series: vec![
                     ChartSeriesSpec {
-                        name: format!("Fuel rate ({})", ul.fuel_rate),
+                        name: tf("chart.fuel_rate_unit", &[("unit", &ul.fuel_rate)]),
                         data: fuel_rate,
                         y_axis_index: 0,
                         area: true,
                     },
                     ChartSeriesSpec {
-                        name: format!("Economy ({})", ul.fuel_economy),
+                        name: tf("chart.economy_unit", &[("unit", &ul.fuel_economy)]),
                         data: economy,
                         y_axis_index: 1,
                         area: false,
@@ -1848,8 +1869,8 @@ pub fn TripTelemetryDashboard(
             },
             PanelDef {
                 id: "fuel-mixture",
-                title: "Mixture & trims",
-                blurb: "Short- and long-term fuel trims plus commanded lambda. Green band marks a healthy closed-loop ±10% window.",
+                title: t("chart.mixture"),
+                blurb: t("chart.mixture_blurb"),
                 primary: true,
                 y_left: "%".to_string(),
                 y_right: Some("λ".to_string()),
@@ -1868,7 +1889,9 @@ pub fn TripTelemetryDashboard(
                         area: false,
                     },
                     ChartSeriesSpec {
-                        name: "Lambda cmd".to_string(),
+                        // Spanish keeps "lambda" in the name: the mixture chart
+                        // finds this series by it.
+                        name: t("chart.lambda_cmd").to_string(),
                         data: lambda,
                         y_axis_index: 1,
                         area: true,
@@ -1877,14 +1900,14 @@ pub fn TripTelemetryDashboard(
             },
             PanelDef {
                 id: "fuel-level",
-                title: "Fuel level",
-                blurb: "Tank percentage over the trip. Expect slow drift plus step noise from the sender.",
+                title: t("chart.fuel_level"),
+                blurb: t("chart.fuel_level_blurb"),
                 primary: false,
                 y_left: "%".to_string(),
                 y_right: None,
                 kind: PanelKind::Lines,
                 series: vec![ChartSeriesSpec {
-                    name: "Fuel level (%)".to_string(),
+                    name: t("chart.fuel_level_pct").to_string(),
                     data: fuel_level,
                     y_axis_index: 0,
                     area: true,
@@ -1894,10 +1917,10 @@ pub fn TripTelemetryDashboard(
         apply_smooth_to_panels(&mut fuel, want_smooth);
         if !fuel.is_empty() {
             sections.push((
-                "Fuel & mixture",
+                t("chart.fuel_mixture"),
                 "drop",
                 "fuel",
-                "Burn rate, tank level, and closed-loop mixture.",
+                t("chart.fuel_blurb"),
                 fuel,
             ));
         }
@@ -1905,27 +1928,27 @@ pub fn TripTelemetryDashboard(
         let mut thermal = filter_panels(vec![
             PanelDef {
                 id: "thermal-temps",
-                title: "Temperatures",
-                blurb: "Coolant warm-up and overheat risk; intake and ambient air for density and heat soak context.",
+                title: t("chart.temperatures"),
+                blurb: t("chart.temperatures_blurb"),
                 primary: false,
                 y_left: "°C".to_string(),
                 y_right: None,
                 kind: PanelKind::Lines,
                 series: vec![
                     ChartSeriesSpec {
-                        name: "Coolant (°C)".to_string(),
+                        name: t("chart.coolant_c").to_string(),
                         data: coolant,
                         y_axis_index: 0,
                         area: true,
                     },
                     ChartSeriesSpec {
-                        name: "Intake air (°C)".to_string(),
+                        name: t("chart.intake_c").to_string(),
                         data: iat,
                         y_axis_index: 0,
                         area: false,
                     },
                     ChartSeriesSpec {
-                        name: "Ambient (°C)".to_string(),
+                        name: t("chart.ambient_c").to_string(),
                         data: ambient,
                         y_axis_index: 0,
                         area: false,
@@ -1934,15 +1957,15 @@ pub fn TripTelemetryDashboard(
             },
             PanelDef {
                 id: "thermal-elec",
-                title: "Electrical & pressure",
-                blurb: "Control-module voltage (charging health) with manifold and atmospheric pressure for altitude/load context.",
+                title: t("chart.electrical"),
+                blurb: t("chart.electrical_blurb"),
                 primary: false,
                 y_left: "V".to_string(),
                 y_right: Some("kPa".to_string()),
                 kind: PanelKind::Lines,
                 series: vec![
                     ChartSeriesSpec {
-                        name: "Module voltage (V)".to_string(),
+                        name: t("chart.module_voltage").to_string(),
                         data: voltage,
                         y_axis_index: 0,
                         area: true,
@@ -1954,7 +1977,7 @@ pub fn TripTelemetryDashboard(
                         area: false,
                     },
                     ChartSeriesSpec {
-                        name: "Atmospheric (kPa)".to_string(),
+                        name: t("chart.atmospheric").to_string(),
                         data: atm,
                         y_axis_index: 1,
                         area: false,
@@ -1965,10 +1988,10 @@ pub fn TripTelemetryDashboard(
         apply_smooth_to_panels(&mut thermal, want_smooth);
         if !thermal.is_empty() {
             sections.push((
-                "Thermal & electrical",
+                t("chart.thermal_electrical"),
                 "lightning",
                 "thermal",
-                "Heat and electrical health.",
+                t("chart.thermal_blurb"),
                 thermal,
             ));
         }
@@ -2002,7 +2025,15 @@ pub fn TripTelemetryDashboard(
             raw.last().map(|p| p.recorded_at.as_str()).unwrap_or(""),
             raw.len()
         );
-        Some((labels, times, sections, has_obd, line_smooth, trip_key))
+        Some((
+            labels,
+            times,
+            sections,
+            has_obd,
+            line_smooth,
+            trip_key,
+            locale,
+        ))
     });
 
     view! {
@@ -2012,19 +2043,25 @@ pub fn TripTelemetryDashboard(
                     None => view! {
                         <div class="empty-state compact">
                             <Icon name="chart-line" size=IconSize::Lg color=IconColor::Accent />
-                            <div>"No samples for this trip yet."</div>
+                            <div>{tr!("chart.no_samples")}</div>
                         </div>
                     }.into_any(),
-                    Some((_, _, sections, _, _, _)) if sections.is_empty() => view! {
+                    Some((_, _, sections, _, _, _, _)) if sections.is_empty() => view! {
                         <div class="empty-state compact">
                             <Icon name="chart-line" size=IconSize::Lg color=IconColor::Accent />
-                            <div>"No chartable telemetry in these samples."</div>
+                            <div>{tr!("chart.no_chartable")}</div>
                         </div>
                     }.into_any(),
-                    Some((labels, times, sections, has_obd, line_smooth, trip_key)) => {
+                    Some((labels, times, sections, has_obd, line_smooth, trip_key, locale)) => {
                         let labels = labels.clone();
                         let times = times.clone();
-                        let smooth_tag = if line_smooth > 0.0 { "s" } else { "r" };
+                        // The locale is part of the chart key and element id so a
+                        // language change mounts fresh charts with translated names.
+                        let smooth_tag = format!(
+                            "{}{}",
+                            if line_smooth > 0.0 { "s" } else { "r" },
+                            locale.as_str()
+                        );
                         let chip_list = chips.get();
                         let show_chips = !chip_list.is_empty();
                         // Flatten panels with section key for category filtering.
@@ -2060,27 +2097,27 @@ pub fn TripTelemetryDashboard(
                             })
                             .collect();
                         let filter_empty = filtered.is_empty();
-                        let cat_note = match cat_now.as_str() {
-                            "overview" => "Key trends for this trip",
-                            "all" => "Every available metric",
-                            "drive" => "Pace, pedal, and GPS quality",
-                            "engine" => "RPM, load, and airflow",
-                            "fuel" => "Burn rate, tank, and mixture",
-                            "thermal" => "Temps, voltage, and pressure",
-                            _ => "Trip charts",
-                        };
+                        let cat_note = t(match cat_now.as_str() {
+                            "overview" => "chart.note_overview",
+                            "all" => "chart.note_all",
+                            "drive" => "chart.note_drive",
+                            "engine" => "chart.note_engine",
+                            "fuel" => "chart.note_fuel",
+                            "thermal" => "chart.note_thermal",
+                            _ => "chart.note_default",
+                        });
 
                         view! {
                             <Show when=move || !has_obd>
                                 <div class="info-banner">
                                     <Icon name="info" size=IconSize::Sm color=IconColor::Accent />
-                                    <span>"GPS track only — no OBD telemetry was recorded for this trip."</span>
+                                    <span>{tr!("chart.gps_only")}</span>
                                 </div>
                             </Show>
 
                             {if show_chips {
                                 view! {
-                                    <div class="telemetry-signal-strip" role="group" aria-label="Trip signal summary">
+                                    <div class="telemetry-signal-strip" role="group" aria-label=tr!("chart.signal_summary")>
                                         <For
                                             each=move || chip_list.clone()
                                             key=|c| c.label.clone()
@@ -2102,7 +2139,7 @@ pub fn TripTelemetryDashboard(
                             <div class="telemetry-toolbar">
                                 // Category filter as toggle buttons: the charts below are
                                 // one list filtered in place, not tab panels.
-                                <div class="telemetry-cat-scroll" role="group" aria-label="Telemetry category">
+                                <div class="telemetry-cat-scroll" role="group" aria-label=tr!("chart.category")>
                                     {CATEGORY_TABS
                                         .iter()
                                         .filter(|(key, _)| {
@@ -2114,7 +2151,7 @@ pub fn TripTelemetryDashboard(
                                             let key_s = (*key).to_string();
                                             let key_active = key_s.clone();
                                             let key_click = key_s.clone();
-                                            let label_s = (*label).to_string();
+                                            let label_key: &'static str = label;
                                             view! {
                                                 <button
                                                     type="button"
@@ -2131,14 +2168,14 @@ pub fn TripTelemetryDashboard(
                                                         save_category_filter(&key_click);
                                                     }
                                                 >
-                                                    {label_s}
+                                                    {move || t(label_key)}
                                                 </button>
                                             }
                                         })
                                         .collect_view()}
                                 </div>
                                 <div class="telemetry-toolbar-right">
-                                    <div class="seg-control" role="group" aria-label="Chart smoothing">
+                                    <div class="seg-control" role="group" aria-label=tr!("chart.smoothing")>
                                         <button
                                             type="button"
                                             class=move || {
@@ -2151,7 +2188,7 @@ pub fn TripTelemetryDashboard(
                                             prop:aria-pressed=move || smooth.get()
                                             on:click=move |_| smooth.set(true)
                                         >
-                                            "Smooth"
+                                            {tr!("chart.smooth")}
                                         </button>
                                         <button
                                             type="button"
@@ -2165,19 +2202,19 @@ pub fn TripTelemetryDashboard(
                                             prop:aria-pressed=move || !smooth.get()
                                             on:click=move |_| smooth.set(false)
                                         >
-                                            "Raw"
+                                            {tr!("chart.raw")}
                                         </button>
                                     </div>
                                 </div>
                             </div>
                             <p class="muted telemetry-toolbar-note">
-                                {format!("{cat_note} · zoom slider · click map or chart to pin time")}
+                                {tf("chart.toolbar_note", &[("note", &cat_note)])}
                             </p>
 
                             {if filter_empty {
                                 view! {
                                     <div class="empty-state compact">
-                                        <div>"No charts in this category for this trip."</div>
+                                        <div>{tr!("chart.no_charts_category")}</div>
                                     </div>
                                 }.into_any()
                             } else {
@@ -2185,7 +2222,10 @@ pub fn TripTelemetryDashboard(
                                     <div class="telemetry-panels">
                                         <For
                                             each=move || filtered.clone()
-                                            key=move |p| format!("{}-{}-{smooth_tag}", p.0, category.get_untracked())
+                                            key={
+                                                let smooth_tag = smooth_tag.clone();
+                                                move |p| format!("{}-{}-{smooth_tag}", p.0, category.get_untracked())
+                                            }
                                             children=move |(id, panel_title, blurb, primary, y_left, y_right, series, kind, _sec)| {
                                                 let labels = labels.clone();
                                                 let times = times.clone();
@@ -2201,7 +2241,7 @@ pub fn TripTelemetryDashboard(
                                                         <div class="telemetry-panel-head">
                                                             <h3 class="telemetry-panel-title">{panel_title}</h3>
                                                             <details class="telemetry-help">
-                                                                <summary title="About this metric" aria-label="About this metric">"ⓘ"</summary>
+                                                                <summary title=tr!("chart.about_metric") aria-label=tr!("chart.about_metric")>"ⓘ"</summary>
                                                                 <p>{blurb}</p>
                                                             </details>
                                                         </div>
