@@ -260,6 +260,7 @@ struct CarFuelRow {
     density_gl: f64,
     displacement_l: f64,
     ve: f64,
+    tank_capacity_l: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,7 +315,8 @@ async fn provisioning(
 
     let car = sqlx::query_as::<_, CarFuelRow>(
         r#"
-        SELECT id, name, fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve
+        SELECT id, name, fuel_type, fuel_class, battery_capacity_kwh, stoich_afr, density_gl, displacement_l, ve,
+               tank_capacity_l
         FROM cars WHERE id = $1
         "#,
     )
@@ -329,6 +331,7 @@ async fn provisioning(
         stop_url: format!("{base}/api/track/stop"),
         sample_url: format!("{base}/api/track/sample"),
         samples_url: format!("{base}/api/track/samples"),
+        ping_url: format!("{base}/api/track/ping"),
         fuel_type: car.fuel_type,
         fuel_class: car.fuel_class,
         fuel_stoich_afr: car.stoich_afr,
@@ -336,6 +339,7 @@ async fn provisioning(
         engine_displacement_l: car.displacement_l,
         engine_ve: car.ve,
         battery_capacity_kwh: car.battery_capacity_kwh,
+        tank_capacity_l: car.tank_capacity_l.filter(|l| *l > 0.0),
         car_id: car.id.to_string(),
         car_name: car.name,
     }))
