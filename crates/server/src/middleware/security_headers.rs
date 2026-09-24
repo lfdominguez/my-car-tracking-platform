@@ -97,6 +97,15 @@ pub const CLOUDFLARE_INSIGHTS_SCRIPT_HOST: &str = "https://static.cloudflareinsi
 /// Residual beacon `eval` console noise is expected; the external script can load.
 /// Hosts the basemap style (OpenFreeMap Liberty) loads tiles, glyphs and sprites from.
 pub const MAP_TILE_HOSTS: &[&str] = &["https://tiles.openfreemap.org"];
+/// Where Google sign-in profile pictures (`users.avatar_url`) are served from. Named
+/// hosts, not `*.googleusercontent.com`: the wildcard also covers user-hosted content
+/// such as Apps Script output, which would reopen the exfiltration path.
+pub const AVATAR_HOSTS: &[&str] = &[
+    "https://lh3.googleusercontent.com",
+    "https://lh4.googleusercontent.com",
+    "https://lh5.googleusercontent.com",
+    "https://lh6.googleusercontent.com",
+];
 /// Where the Cloudflare Web Analytics beacon reports to.
 pub const CLOUDFLARE_INSIGHTS_REPORT_HOST: &str = "https://cloudflareinsights.com";
 
@@ -157,11 +166,13 @@ pub fn build_csp(
     }
     remote.extend(extra_hosts.iter().map(String::as_str));
     let remote = remote.join(" ");
+    // Avatars are only ever images, so they widen img-src, never connect-src.
+    let avatars = AVATAR_HOSTS.join(" ");
     format!(
         "default-src 'self'; \
 {script_src}; \
 style-src 'self' 'unsafe-inline'; \
-img-src 'self' data: blob: {remote}; \
+img-src 'self' data: blob: {remote} {avatars}; \
 font-src 'self' data:; \
 connect-src 'self' {remote}; \
 worker-src 'self' blob:; \
@@ -354,5 +365,24 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             assert!(d.contains("https://tiles.example.com"), "{d}");
             assert!(!d.contains("http://x"), "{d}");
         }
+    }
+
+    #[test]
+    fn csp_allows_google_avatars_as_images_only() {
+        let csp = build_csp(&[], false, &[]);
+        let directive = |name: &str| {
+            csp.split(';')
+                .map(str::trim)
+                .find(|d| d.starts_with(name))
+                .unwrap()
+                .to_string()
+        };
+        let img = directive("img-src");
+        let connect = directive("connect-src");
+        for host in AVATAR_HOSTS {
+            assert!(img.split_whitespace().any(|t| t == *host), "{img}");
+            assert!(!connect.contains(host), "{connect}");
+        }
+        assert!(!csp.contains("*.googleusercontent.com"), "{csp}");
     }
 }
