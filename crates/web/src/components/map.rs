@@ -945,14 +945,17 @@ function bindTripInteractions(entry) {
     window.addEventListener('keydown', entry.onKey);
   }
 
-  // Legend clear button.
+  // Legend clear button. Kept on the entry so teardown can remove it: the button
+  // outlives a map rebuild (style change, WebGL loss), and a stale listener would
+  // keep clearing a destroyed map.
   const btn = document.getElementById('trip-selection-clear');
-  if (btn && !btn.__tripBound) {
-    btn.__tripBound = true;
-    btn.addEventListener('click', (ev) => {
+  if (btn && !entry.onClearClick) {
+    entry.onClearClick = (ev) => {
       ev.preventDefault();
       entry.clearSelection();
-    });
+    };
+    entry.clearBtn = btn;
+    btn.addEventListener('click', entry.onClearClick);
   }
 
   // Chart click → move the map pin to the nearest sample in time. Charts fire this
@@ -1023,8 +1026,9 @@ function destroyTripMapEntry(elId, entry) {
   try { entry.stopPopup && entry.stopPopup.remove(); } catch (_) {}
   try { entry.map && entry.map.remove(); } catch (_) {}
   try {
-    const btn = document.getElementById('trip-selection-clear');
-    if (btn) btn.__tripBound = false;
+    if (entry.clearBtn && entry.onClearClick) {
+      entry.clearBtn.removeEventListener('click', entry.onClearClick);
+    }
   } catch (_) {}
   __tripMaps.delete(elId);
 }
