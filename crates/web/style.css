@@ -1328,15 +1328,40 @@ label {
   height: 0.55rem;
   border-radius: 999px;
   border: 1px solid var(--border);
+  /* Viridis, matching the route ramp in components/map.rs (colour-blind safe). */
   background: linear-gradient(
     90deg,
-    #1d4ed8 0%,
-    #0891b2 20%,
-    #16a34a 40%,
-    #ca8a04 60%,
-    #ea580c 80%,
-    #dc2626 100%
+    #440154 0%,
+    #3b528b 25%,
+    #21918c 50%,
+    #5ec962 75%,
+    #fde725 100%
   );
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+.map-traffic-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+}
+.map-traffic-legend[hidden] {
+  display: none;
+}
+.map-traffic-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.map-traffic-swatch {
+  width: 1rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  flex-shrink: 0;
   box-shadow: inset 0 0 0 1px var(--color-border-strong);
 }
 .map-speed-bar.is-empty {

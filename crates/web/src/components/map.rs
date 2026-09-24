@@ -482,14 +482,33 @@ function sampleNearLngLat(points, props, lngLat) {
   return best == null ? null : { index: best, point: points[best] };
 }
 
-const TRAFFIC_LEVEL_COLORS = {
-  free: '#2ecc71',
-  light: '#a8e063',
-  moderate: '#f1c40f',
-  heavy: '#e67e22',
-  jam: '#e74c3c',
-  signal_stop: '#95a5a6'
-};
+/**
+ * Speed ramp: viridis. Perceptually uniform and still ordered under the common
+ * colour-vision deficiencies and in greyscale, because lightness rises steadily
+ * with speed (the old blue→green→red ramp relied on red/green hue alone).
+ */
+const SPEED_RAMP = [
+  [0.0, '#440154'],
+  [0.25, '#3b528b'],
+  [0.5, '#21918c'],
+  [0.75, '#5ec962'],
+  [1.0, '#fde725']
+];
+
+/**
+ * Congestion: one warm hue family whose lightness falls from free flow to jam, so
+ * the order reads without telling red from green. Signal stops are a neutral grey
+ * (no chroma), set apart from the ramp rather than placed on it.
+ */
+const TRAFFIC_LEVELS = [
+  ['free', 'Free flow', '#fcd34d'],
+  ['light', 'Light', '#f59e0b'],
+  ['moderate', 'Moderate', '#d9480f'],
+  ['heavy', 'Heavy', '#9f1239'],
+  ['jam', 'Jam', '#4a0d2a'],
+  ['signal_stop', 'Signal stop', '#9ca3af']
+];
+const TRAFFIC_LEVEL_COLORS = Object.fromEntries(TRAFFIC_LEVELS.map(([k, , c]) => [k, c]));
 
 function speedLinePaintColor() {
   // Prefer discrete congestion color when present; else speed gradient.
@@ -497,16 +516,40 @@ function speedLinePaintColor() {
     'case',
     ['has', 'congestion_color'],
     ['to-color', ['get', 'congestion_color']],
-    [
-      'interpolate', ['linear'], ['coalesce', ['get', 'speed_t'], 0.45],
-      0.0, '#1d4ed8',
-      0.2, '#0891b2',
-      0.4, '#16a34a',
-      0.6, '#ca8a04',
-      0.8, '#ea580c',
-      1.0, '#dc2626'
-    ]
+    ['interpolate', ['linear'], ['coalesce', ['get', 'speed_t'], 0.45], ...SPEED_RAMP.flat()]
   ];
+}
+
+function speedRampCss() {
+  return `linear-gradient(90deg,${SPEED_RAMP.map(([t, c]) => `${c} ${t * 100}%`).join(',')})`;
+}
+
+/** Hard-stop gradient of the five congestion steps (signal stop is listed separately). */
+function trafficRampCss() {
+  const steps = TRAFFIC_LEVELS.filter(([k]) => k !== 'signal_stop');
+  const w = 100 / steps.length;
+  return `linear-gradient(90deg,${steps
+    .map(([, , c], i) => `${c} ${i * w}%,${c} ${(i + 1) * w}%`)
+    .join(',')})`;
+}
+
+/** Fill the labelled congestion key under the map (text labels, not colour alone). */
+function renderTrafficLegend(visible) {
+  const list = document.getElementById('trip-traffic-legend');
+  if (!list) return;
+  list.hidden = !visible;
+  if (!visible || list.childElementCount) return;
+  for (const [, label, color] of TRAFFIC_LEVELS) {
+    const li = document.createElement('li');
+    li.className = 'map-traffic-legend-item';
+    const sw = document.createElement('span');
+    sw.className = 'map-traffic-swatch';
+    sw.setAttribute('aria-hidden', 'true');
+    sw.style.background = color;
+    li.appendChild(sw);
+    li.appendChild(document.createTextNode(label));
+    list.appendChild(li);
+  }
 }
 
 /** Prefer {width,height,data} over ImageData to avoid WebGL texImage y-flip deprecation noise. */
@@ -633,7 +676,11 @@ function updateSpeedLegend(minSpeed, maxSpeed, hasSpeed) {
   const bar = document.getElementById('trip-speed-bar');
   if (minEl) minEl.textContent = hasSpeed ? formatSpeedKph(minSpeed) : '—';
   if (maxEl) maxEl.textContent = hasSpeed ? formatSpeedKph(maxSpeed) : '—';
-  if (bar) bar.classList.toggle('is-empty', !hasSpeed);
+  if (bar) {
+    bar.classList.toggle('is-empty', !hasSpeed);
+    bar.style.background = speedRampCss();
+  }
+  renderTrafficLegend(false);
 }
 
 function setSelectionClearVisible(visible) {
@@ -1235,8 +1282,9 @@ export function renderTripMap(elId, geojson, pointsJson, trafficJson) {
     if (maxEl) maxEl.textContent = 'Jam';
     if (bar) {
       bar.classList.remove('is-empty');
-      bar.style.background = 'linear-gradient(90deg,#2ecc71,#a8e063,#f1c40f,#e67e22,#e74c3c)';
+      bar.style.background = trafficRampCss();
     }
+    renderTrafficLegend(true);
   } else {
     updateSpeedLegend(speedBuilt.minSpeed, speedBuilt.maxSpeed, speedBuilt.hasSpeed);
   }

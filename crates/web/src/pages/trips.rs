@@ -1301,6 +1301,9 @@ pub fn TripDetailPage() -> impl IntoView {
                         <div class="map-speed-bar" id="trip-speed-bar" aria-hidden="true"></div>
                         <span class="map-speed-label" id="trip-speed-max">"—"</span>
                     </div>
+                    // Filled by the map script when the route is traffic-coloured, so
+                    // every congestion colour has a text label.
+                    <ul class="map-traffic-legend" id="trip-traffic-legend" aria-label="Congestion levels" hidden></ul>
                     <div class="map-legend-actions">
                         <p class="muted map-legend-note">
                             {move || {
