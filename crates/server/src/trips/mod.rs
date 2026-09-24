@@ -224,7 +224,9 @@ async fn sweep_track_stats(state: &AppState, limit: i64) -> AppResult<usize> {
     Ok(written)
 }
 
-async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<()> {
+/// Finish open trips whose newest point (or start, when empty) is older than
+/// `stale_secs`: the phone died or lost the /stop. Returns how many it finished.
+pub async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<usize> {
     let ids: Vec<Uuid> = sqlx::query_scalar(
         r#"
         SELECT t.id
@@ -247,7 +249,7 @@ async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<
     .await?;
 
     if ids.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     tracing::info!(
@@ -255,16 +257,18 @@ async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<
         stale_secs,
         "auto-finishing stale open trips"
     );
+    let mut finished = 0;
     for id in ids {
         match finish_track(&state.pool, &state.keyring, &state.config.overpass_url, id).await {
             Ok(r) if r.newly_finished => {
                 tracing::info!(%id, "stale trip auto-finished");
+                finished += 1;
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(%id, error = %e, "stale trip finish failed"),
         }
     }
-    Ok(())
+    Ok(finished)
 }
 
 /// Delete vault ciphertext for this track and the track row (cascades points/assignments).
