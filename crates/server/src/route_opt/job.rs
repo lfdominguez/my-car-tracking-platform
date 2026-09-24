@@ -159,6 +159,34 @@ pub async fn process_finished_track(
     keyring: &KeyRing,
     track_id: Uuid,
 ) -> Result<(), JobError> {
+    let car_id: Uuid = sqlx::query_scalar("SELECT car_id FROM tracks WHERE id = $1")
+        .bind(track_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(JobError::NotFound)?;
+
+    // One run per car at a time. Corridor matching is check-then-insert, so two
+    // concurrent runs (the job worker and an inline recompute, or two trips of the
+    // same car finishing together) could each create a corridor for the same
+    // origin/destination and split its statistics. The lock is transaction-scoped
+    // on a connection of its own, so it is released even if this task is dropped.
+    // A run interrupted between clearing and re-writing a track's assignments is
+    // repaired by the job queue retrying it.
+    let mut lock = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('route_opt:' || $1::text))")
+        .bind(car_id)
+        .execute(&mut *lock)
+        .await?;
+    let result = process_finished_track_locked(pool, keyring, track_id).await;
+    lock.commit().await?;
+    result
+}
+
+async fn process_finished_track_locked(
+    pool: &PgPool,
+    keyring: &KeyRing,
+    track_id: Uuid,
+) -> Result<(), JobError> {
     let track = sqlx::query(
         r#"
         SELECT id, car_id, finished, started_at, finished_at

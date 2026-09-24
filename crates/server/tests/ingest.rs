@@ -912,3 +912,46 @@ async fn batch_accepts_samples_without_gps() {
     assert_eq!(body["accepted"], 0);
     assert_eq!(body["rejected"][0]["reason"], "invalid_coords");
 }
+
+/// The batch insert reports duplicates per sample: a timestamp repeated inside one
+/// batch, and a whole batch resent after a lost response.
+#[tokio::test]
+async fn batch_reports_in_batch_and_resent_duplicates() {
+    let Some((base, client, token, _car_id, _pool)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let start = Utc::now();
+    let tracking_id = start.to_rfc3339();
+    assert!(
+        client
+            .post(format!("{base}/api/track/start"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&json!({ "timestamp_start": start }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+
+    let at = |i: i64| start.timestamp_millis() + i * 1000;
+    let sample = |ms: i64| json!({ "tracking_id": tracking_id, "recorded_at": ms, "vehicle_speed_kph": 30.0 });
+    let batch = json!({ "samples": [sample(at(0)), sample(at(1)), sample(at(1)), sample(at(2))] });
+    let post = || {
+        client
+            .post(format!("{base}/api/track/samples"))
+            .header("Authorization", format!("Basic {token}"))
+            .json(&batch)
+            .send()
+    };
+
+    let body: serde_json::Value = post().await.unwrap().json().await.unwrap();
+    assert_eq!(body["accepted"], 3, "{body}");
+    assert_eq!(body["rejected"][0]["reason"], "duplicate");
+    assert_eq!(body["rejected"][0]["recorded_at"], at(1));
+
+    let body: serde_json::Value = post().await.unwrap().json().await.unwrap();
+    assert_eq!(body["accepted"], 0, "{body}");
+    assert_eq!(body["rejected"].as_array().unwrap().len(), 4);
+}

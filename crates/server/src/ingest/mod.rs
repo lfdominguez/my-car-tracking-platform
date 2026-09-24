@@ -291,32 +291,52 @@ async fn track_samples(
     // errors are deliberately not cached so a later sample can still succeed.
     let mut tracks: HashMap<String, Option<TrackRef>> = HashMap::new();
 
-    for sample in &body.samples {
-        let outcome = match tracks.get(&sample.tracking_id) {
-            Some(Some(track)) => insert_sample_for_track(&state, track, sample).await,
-            Some(None) => Err(SampleError::UnknownTrack),
-            None => match resolve_track(&state, device.car_id, &sample.tracking_id).await {
+    // Pass 1: resolve and validate every sample; nothing is written yet.
+    let mut outcomes: Vec<Option<Result<(), SampleError>>> = Vec::with_capacity(body.samples.len());
+    // Valid samples, with their index into `body.samples`.
+    let mut indices: Vec<usize> = Vec::new();
+    let mut points: Vec<PreparedPoint<'_>> = Vec::new();
+    for (i, sample) in body.samples.iter().enumerate() {
+        if !tracks.contains_key(&sample.tracking_id) {
+            match resolve_track(&state, device.car_id, &sample.tracking_id).await {
                 Ok(track) => {
-                    let inserted = insert_sample_for_track(&state, &track, sample).await;
                     tracks.insert(sample.tracking_id.clone(), Some(track));
-                    inserted
                 }
                 Err(SampleError::UnknownTrack) => {
                     tracks.insert(sample.tracking_id.clone(), None);
-                    Err(SampleError::UnknownTrack)
                 }
-                Err(e) => Err(e),
-            },
-        };
-        match outcome {
-            Ok(()) => {
-                accepted += 1;
-                // The entry is present by now: the resolving arm inserts before it
-                // returns, so this is a lookup rather than a second resolve.
-                if let Some(Some(track)) = tracks.get(&sample.tracking_id) {
-                    touched.insert(track.track_id);
+                Err(e) => {
+                    outcomes.push(Some(Err(e)));
+                    continue;
                 }
             }
+        }
+        match tracks.get(&sample.tracking_id) {
+            Some(Some(track)) => match prepare_sample(track, sample) {
+                Ok(point) => {
+                    indices.push(i);
+                    points.push(point);
+                    outcomes.push(None);
+                }
+                Err(e) => outcomes.push(Some(Err(e))),
+            },
+            _ => outcomes.push(Some(Err(SampleError::UnknownTrack))),
+        }
+    }
+
+    // Pass 2: one write for every valid sample.
+    let results = insert_points(&state, &points).await;
+    for ((i, point), result) in indices.into_iter().zip(&points).zip(results) {
+        if result.is_ok() {
+            touched.insert(point.track_id);
+        }
+        outcomes[i] = Some(result);
+    }
+
+    for (sample, outcome) in body.samples.iter().zip(outcomes) {
+        let outcome = outcome.unwrap_or(Ok(()));
+        match outcome {
+            Ok(()) => accepted += 1,
             Err(SampleError::Duplicate) => rejected.push(RejectedSample {
                 recorded_at: sample.recorded_at,
                 reason: "duplicate".into(),
@@ -478,13 +498,20 @@ async fn after_points_landed(state: &AppState, track_ids: &[Uuid]) {
     }
 }
 
-async fn insert_sample_for_track(
-    state: &AppState,
-    track: &TrackRef,
-    sample: &TrackSampleRequest,
-) -> Result<(), SampleError> {
-    let coords = sample_coords(sample)?;
+/// A validated sample, ready to be written.
+struct PreparedPoint<'a> {
+    track_id: Uuid,
+    recorded_at: DateTime<Utc>,
+    coords: Option<(f64, f64)>,
+    sample: &'a TrackSampleRequest,
+}
 
+/// Validate one sample against the track it targets.
+fn prepare_sample<'a>(
+    track: &TrackRef,
+    sample: &'a TrackSampleRequest,
+) -> Result<PreparedPoint<'a>, SampleError> {
+    let coords = sample_coords(sample)?;
     let recorded_at = millis_to_datetime(sample.recorded_at).ok_or(SampleError::BadTimestamp)?;
     if track.finished {
         if !finished_track_accepts_sample(recorded_at, track.started_at, track.finished_at) {
@@ -493,10 +520,93 @@ async fn insert_sample_for_track(
     } else if !open_track_accepts_sample(recorded_at, track.started_at, Utc::now()) {
         return Err(SampleError::BadTimestamp);
     }
-    let engine_rpm = sample.vehicle_engine_rpm;
-    let engine_vel = sample.vehicle_speed_kph;
+    Ok(PreparedPoint {
+        track_id: track.track_id,
+        recorded_at,
+        coords,
+        sample,
+    })
+}
 
-    let result = sqlx::query(
+async fn insert_sample_for_track(
+    state: &AppState,
+    track: &TrackRef,
+    sample: &TrackSampleRequest,
+) -> Result<(), SampleError> {
+    let point = prepare_sample(track, sample)?;
+    let mut outcomes = insert_points(state, std::slice::from_ref(&point)).await;
+    outcomes.pop().unwrap_or(Ok(()))
+}
+
+/// Write `points` and return one outcome per point, in order.
+///
+/// One multi-row `INSERT … SELECT FROM UNNEST` for the whole batch instead of a
+/// round trip per sample. `ON CONFLICT DO NOTHING RETURNING` reports which keys were
+/// new, so duplicates (including two samples with the same timestamp in one batch)
+/// are identified without failing the statement. Any other error — a trip deleted
+/// mid-batch trips its foreign key and fails the whole statement — falls back to
+/// row-by-row so only the affected samples are rejected.
+async fn insert_points(
+    state: &AppState,
+    points: &[PreparedPoint<'_>],
+) -> Vec<Result<(), SampleError>> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    match insert_points_batch(state, points).await {
+        Ok(mut inserted) => points
+            .iter()
+            .map(|p| {
+                // Each inserted key is claimed once; a second sample with the same
+                // key in this batch is the duplicate.
+                if inserted.remove(&(p.track_id, p.recorded_at)) {
+                    Ok(())
+                } else {
+                    Err(SampleError::Duplicate)
+                }
+            })
+            .collect(),
+        Err(e) if points.len() == 1 => vec![Err(classify_insert_error(e))],
+        Err(_) => {
+            let mut out = Vec::with_capacity(points.len());
+            for p in points {
+                out.push(
+                    match insert_points_batch(state, std::slice::from_ref(p)).await {
+                        Ok(inserted) if inserted.is_empty() => Err(SampleError::Duplicate),
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(classify_insert_error(e)),
+                    },
+                );
+            }
+            out
+        }
+    }
+}
+
+fn classify_insert_error(e: sqlx::Error) -> SampleError {
+    match e {
+        // Only the (track_id, recorded_at) key means "already stored". A foreign-key
+        // failure means the trip vanished under us, which the client must not be told
+        // is a harmless duplicate.
+        sqlx::Error::Database(db) if db.is_unique_violation() => SampleError::Duplicate,
+        sqlx::Error::Database(db) if db.is_foreign_key_violation() => SampleError::UnknownTrack,
+        e => SampleError::Db(e),
+    }
+}
+
+async fn insert_points_batch(
+    state: &AppState,
+    points: &[PreparedPoint<'_>],
+) -> Result<HashSet<(Uuid, DateTime<Utc>)>, sqlx::Error> {
+    macro_rules! col {
+        ($f:ident) => {
+            points
+                .iter()
+                .map(|p| p.sample.$f)
+                .collect::<Vec<Option<f64>>>()
+        };
+    }
+    let rows: Vec<(Uuid, DateTime<Utc>)> = sqlx::query_as(
         r#"
         INSERT INTO track_points (
             track_id, recorded_at, gps, gps_acc_m,
@@ -510,71 +620,90 @@ async fn insert_sample_for_track(
             vehicle_speed_kph, vehicle_engine_rpm, mass_air_flow,
             battery_soc_pct, battery_power_kw,
             accel_peak_mps2, accel_rms_mps2, device_tilt_delta_deg
-        ) VALUES (
-            $1, $2,
-            CASE
-                WHEN $3::float8 IS NULL OR $4::float8 IS NULL THEN NULL
-                ELSE ST_SetSRID(ST_MakePoint($3::float8, $4::float8), 4326)::geography
-            END,
-            $5,
-            $6, $7, $8,
-            $9, $10,
-            $11, $12, $13,
-            $14, $15,
-            $16, $17,
-            $18, $19,
-            $20, $21, $22, $23,
-            $24, $25, $26,
-            $27, $28,
-            $29, $30, $31
         )
+        SELECT
+            track_id, recorded_at,
+            CASE
+                WHEN lon IS NULL OR lat IS NULL THEN NULL
+                ELSE ST_SetSRID(ST_MakePoint(lon, lat), 4326)::geography
+            END,
+            acc,
+            rpm, vel, fuel_rate,
+            load, abs_load,
+            stft, ltft, fuel_level,
+            pedal, ambient,
+            odometer, coolant,
+            map, voltage,
+            on_time, lambda, atmo, iat,
+            vel, rpm, maf,
+            soc, batt_kw,
+            accel_peak, accel_rms, tilt
+        FROM UNNEST(
+            $1::uuid[], $2::timestamptz[], $3::float8[], $4::float8[], $5::float8[],
+            $6::float8[], $7::float8[], $8::float8[], $9::float8[], $10::float8[],
+            $11::float8[], $12::float8[], $13::float8[], $14::float8[], $15::float8[],
+            $16::float8[], $17::float8[], $18::float8[], $19::float8[], $20::float8[],
+            $21::float8[], $22::float8[], $23::float8[], $24::float8[], $25::float8[],
+            $26::float8[], $27::float8[], $28::float8[], $29::float8[]
+        ) AS u(
+            track_id, recorded_at, lon, lat, acc,
+            rpm, vel, fuel_rate, load, abs_load,
+            stft, ltft, fuel_level, pedal, ambient,
+            odometer, coolant, map, voltage, on_time,
+            lambda, atmo, iat, maf, soc,
+            batt_kw, accel_peak, accel_rms, tilt
+        )
+        ON CONFLICT DO NOTHING
+        RETURNING track_id, recorded_at
         "#,
     )
-    .bind(track.track_id)
-    .bind(recorded_at)
-    .bind(coords.map(|(_, lon)| lon))
-    .bind(coords.map(|(lat, _)| lat))
-    .bind(sample.acc.unwrap_or(UNKNOWN_GPS_ACC_M))
-    .bind(engine_rpm)
-    .bind(engine_vel)
-    .bind(sample.fuel_consumption_rate)
-    .bind(sample.engine_load_pct)
-    .bind(sample.absolute_engine_load_pct)
-    .bind(sample.short_term_fuel_trim_pct)
-    .bind(sample.long_term_fuel_trim_pct)
-    .bind(sample.fuel_level_pct)
-    .bind(sample.accelerator_pedal_pct)
-    .bind(sample.ambient_air_temp_c)
-    .bind(sample.odometer_value_km)
-    .bind(sample.engine_coolant_temp_c)
-    .bind(sample.manifold_absolute_pressure_kpa)
-    .bind(sample.control_module_voltage)
-    .bind(sample.engine_on_time)
-    .bind(sample.lambda_cmd)
-    .bind(sample.atmospheric_pressure)
-    .bind(sample.intake_air_temperature)
-    .bind(sample.vehicle_speed_kph)
-    .bind(sample.vehicle_engine_rpm)
-    .bind(sample.mass_air_flow)
-    .bind(sample.battery_soc_pct)
-    .bind(sample.battery_power_kw)
-    .bind(sample.accel_peak_mps2)
-    .bind(sample.accel_rms_mps2)
-    .bind(sample.device_tilt_delta_deg)
-    .execute(&state.pool)
-    .await;
-
-    match result {
-        Ok(_) => Ok(()),
-        // Only the (track_id, recorded_at) key means "already stored". A foreign-key
-        // failure means the trip vanished under us, which the client must not be told
-        // is a harmless duplicate.
-        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Err(SampleError::Duplicate),
-        Err(sqlx::Error::Database(db)) if db.is_foreign_key_violation() => {
-            Err(SampleError::UnknownTrack)
-        }
-        Err(e) => Err(SampleError::Db(e)),
-    }
+    .bind(points.iter().map(|p| p.track_id).collect::<Vec<_>>())
+    .bind(points.iter().map(|p| p.recorded_at).collect::<Vec<_>>())
+    .bind(
+        points
+            .iter()
+            .map(|p| p.coords.map(|(_, lon)| lon))
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        points
+            .iter()
+            .map(|p| p.coords.map(|(lat, _)| lat))
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        points
+            .iter()
+            .map(|p| Some(p.sample.acc.unwrap_or(UNKNOWN_GPS_ACC_M)))
+            .collect::<Vec<Option<f64>>>(),
+    )
+    .bind(col!(vehicle_engine_rpm))
+    .bind(col!(vehicle_speed_kph))
+    .bind(col!(fuel_consumption_rate))
+    .bind(col!(engine_load_pct))
+    .bind(col!(absolute_engine_load_pct))
+    .bind(col!(short_term_fuel_trim_pct))
+    .bind(col!(long_term_fuel_trim_pct))
+    .bind(col!(fuel_level_pct))
+    .bind(col!(accelerator_pedal_pct))
+    .bind(col!(ambient_air_temp_c))
+    .bind(col!(odometer_value_km))
+    .bind(col!(engine_coolant_temp_c))
+    .bind(col!(manifold_absolute_pressure_kpa))
+    .bind(col!(control_module_voltage))
+    .bind(col!(engine_on_time))
+    .bind(col!(lambda_cmd))
+    .bind(col!(atmospheric_pressure))
+    .bind(col!(intake_air_temperature))
+    .bind(col!(mass_air_flow))
+    .bind(col!(battery_soc_pct))
+    .bind(col!(battery_power_kw))
+    .bind(col!(accel_peak_mps2))
+    .bind(col!(accel_rms_mps2))
+    .bind(col!(device_tilt_delta_deg))
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows.into_iter().collect())
 }
 
 /// Epoch millis to a timestamp; `None` for values chrono cannot represent.

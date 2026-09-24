@@ -360,10 +360,16 @@ pub async fn authenticate_device_token(
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query("UPDATE devices SET last_seen_at = NOW() WHERE id = $1")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
+    // At most one write a minute: at 1 Hz ingest an unconditional update doubled
+    // the writes of every /api/track/sample call for no visible difference.
+    sqlx::query(
+        "UPDATE devices SET last_seen_at = NOW()
+         WHERE id = $1
+           AND (last_seen_at IS NULL OR last_seen_at < NOW() - interval '60 seconds')",
+    )
+    .bind(device_id)
+    .execute(pool)
+    .await?;
 
     Ok(DeviceAuth { device_id, car_id })
 }
