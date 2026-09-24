@@ -11,6 +11,7 @@ pub mod devices;
 pub mod error;
 pub mod http_client;
 pub mod ingest;
+pub mod jobs;
 pub mod mcp;
 pub mod middleware;
 pub mod route_opt;

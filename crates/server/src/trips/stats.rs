@@ -269,6 +269,21 @@ pub async fn recompute(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
         .bind(track_id)
         .execute(pool)
         .await?;
+
+    // The upsert above read the points from a snapshot taken when it started, but
+    // wrote `stale = false` onto whatever the row looked like when it finished. A
+    // sample that committed in between (and its `mark_stale`) would be silently
+    // absorbed. `computed_at` is that statement's start time, so any dirty mark at
+    // or after it means the row may be missing points: put the flag back.
+    sqlx::query(
+        "UPDATE track_stats s SET stale = true
+         FROM tracks t
+         WHERE s.track_id = $1 AND t.id = $1
+           AND t.stats_dirty_at >= s.computed_at AND NOT s.stale",
+    )
+    .bind(track_id)
+    .execute(pool)
+    .await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -282,6 +297,12 @@ pub async fn mark_stale(pool: &PgPool, track_ids: &[Uuid]) -> AppResult<()> {
     if track_ids.is_empty() {
         return Ok(());
     }
+    // The dirty timestamp goes on `tracks` so it is recorded even when no stats row
+    // exists yet; see the check at the end of [`recompute`].
+    sqlx::query("UPDATE tracks SET stats_dirty_at = clock_timestamp() WHERE id = ANY($1)")
+        .bind(track_ids)
+        .execute(pool)
+        .await?;
     sqlx::query("UPDATE track_stats SET stale = true WHERE track_id = ANY($1) AND NOT stale")
         .bind(track_ids)
         .execute(pool)

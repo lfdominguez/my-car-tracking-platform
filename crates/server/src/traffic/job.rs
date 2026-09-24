@@ -349,6 +349,22 @@ fn summarize(frames: &[ScoredFrame]) -> (serde_json::Value, serde_json::Value, f
 
 // Arguments mirror the columns of trip_traffic_summaries one-for-one; grouping
 // them into a struct would only move the same list somewhere else.
+/// Record a traffic job that gave up, so the trip shows a retryable failure
+/// instead of sitting at 'pending' forever.
+pub async fn mark_failed(pool: &PgPool, track_id: Uuid, error: &str) -> Result<(), JobError> {
+    upsert_summary(
+        pool,
+        track_id,
+        "failed",
+        None,
+        json!({}),
+        json!({}),
+        0,
+        Some(error),
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn upsert_summary(
     pool: &PgPool,

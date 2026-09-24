@@ -49,7 +49,6 @@ const STATS_BACKFILL_BATCH: i64 = 200;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FinishTrackResult {
     pub newly_finished: bool,
-    pub purged: bool,
 }
 
 /// Pick `finished_at` when closing a trip (prefer last GPS sample).
@@ -76,8 +75,9 @@ pub fn is_stale_open_trip(
     now.signed_duration_since(activity) >= stale_after
 }
 
-/// Mark track finished, set finished_at from last point when possible, then
-/// purge empty noise trips or spawn traffic + route_opt (same as device `/stop`).
+/// Mark track finished, set finished_at from last point when possible, then queue
+/// the `finalize` job, which later purges the trip if it stays empty or runs
+/// traffic + route_opt (same for device `/stop`, web finish and the sweeper).
 pub async fn finish_track(
     pool: &PgPool,
     keyring: &KeyRing,
@@ -95,7 +95,6 @@ pub async fn finish_track(
     if meta.0 {
         return Ok(FinishTrackResult {
             newly_finished: false,
-            purged: false,
         });
     }
 
@@ -120,7 +119,6 @@ pub async fn finish_track(
         // Race: another finisher won.
         return Ok(FinishTrackResult {
             newly_finished: false,
-            purged: false,
         });
     }
 
@@ -131,54 +129,22 @@ pub async fn finish_track(
         tracing::warn!(%track_id, error = %e, "track stats precompute failed");
     }
 
-    match is_empty_trip_for_auto_remove(pool, track_id).await {
-        Ok(true) => {
-            if let Err(e) = purge_track(pool, track_id).await {
-                tracing::warn!(%track_id, error = %e, "empty trip purge failed");
-                return Ok(FinishTrackResult {
-                    newly_finished: true,
-                    purged: false,
-                });
-            }
-            Ok(FinishTrackResult {
-                newly_finished: true,
-                purged: true,
-            })
-        }
-        Ok(false) => {
-            spawn_post_finish_jobs(pool, keyring, overpass_url, track_id);
-            Ok(FinishTrackResult {
-                newly_finished: true,
-                purged: false,
-            })
-        }
-        Err(e) => {
-            tracing::warn!(%track_id, error = %e, "empty trip check failed");
-            spawn_post_finish_jobs(pool, keyring, overpass_url, track_id);
-            Ok(FinishTrackResult {
-                newly_finished: true,
-                purged: false,
-            })
-        }
-    }
-}
+    // Deciding between "purge the empty trip" and "run the post-finish analysis" is
+    // deferred to a durable job. A phone may call /stop before its offline queue has
+    // drained, so a trip that looks empty right now may still fill up.
+    let ctx = crate::jobs::JobCtx::new(pool, keyring, overpass_url);
+    crate::jobs::enqueue(
+        pool,
+        &[track_id],
+        crate::jobs::JobKind::Finalize,
+        chrono::Duration::zero(),
+    )
+    .await?;
+    crate::jobs::kick(&ctx, &[track_id]);
 
-fn spawn_post_finish_jobs(pool: &PgPool, keyring: &KeyRing, overpass_url: &str, track_id: Uuid) {
-    let pool_r = pool.clone();
-    let keyring = keyring.clone();
-    let overpass = overpass_url.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = crate::route_opt::process_finished_track(&pool_r, &keyring, track_id).await
-        {
-            tracing::warn!(%track_id, error = %e, "route optimization job failed");
-        }
-    });
-    let pool_t = pool.clone();
-    tokio::spawn(async move {
-        if let Err(e) = crate::traffic::process_finished_track(&pool_t, &overpass, track_id).await {
-            tracing::warn!(%track_id, error = %e, "traffic job failed");
-        }
-    });
+    Ok(FinishTrackResult {
+        newly_finished: true,
+    })
 }
 
 /// Background loop: finish open tracks with no samples for `stale_after_secs`, and
@@ -290,7 +256,7 @@ async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppResult<
     for id in ids {
         match finish_track(&state.pool, &state.keyring, &state.config.overpass_url, id).await {
             Ok(r) if r.newly_finished => {
-                tracing::info!(%id, purged = r.purged, "stale trip auto-finished");
+                tracing::info!(%id, "stale trip auto-finished");
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(%id, error = %e, "stale trip finish failed"),
@@ -361,10 +327,6 @@ async fn finish_trip(
     can_edit_car(&state.pool, user.id, car_id).await?;
 
     let outcome = finish_track(&state.pool, &state.keyring, &state.config.overpass_url, id).await?;
-
-    if outcome.purged {
-        return Err(AppError::NotFound);
-    }
 
     if outcome.newly_finished {
         let id_str = id.to_string();
@@ -934,8 +896,24 @@ async fn start_traffic_analyze(
         return Ok(Json(serde_json::json!({ "status": "ready" })));
     }
 
+    // A 'pending' summary only means work is in flight while a live job backs it.
+    // One left behind by a crash or an error is retried rather than trusted.
     if summary_status.as_deref() == Some("pending") {
-        return Ok(Json(serde_json::json!({ "status": "pending" })));
+        let in_flight: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM track_jobs
+                WHERE track_id = $1 AND kind = 'traffic'
+                  AND (status = 'queued' OR (status = 'running' AND locked_until > NOW()))
+            )
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?;
+        if in_flight {
+            return Ok(Json(serde_json::json!({ "status": "pending" })));
+        }
     }
 
     sqlx::query(
@@ -959,13 +937,17 @@ async fn start_traffic_analyze(
         .execute(&state.pool)
         .await?;
 
-    let pool = state.pool.clone();
-    let overpass = state.config.overpass_url.clone();
-    tokio::spawn(async move {
-        if let Err(e) = crate::traffic::process_finished_track(&pool, &overpass, id).await {
-            tracing::error!(track_id = %id, error = %e, "traffic analyze job failed");
-        }
-    });
+    crate::jobs::enqueue(
+        &state.pool,
+        &[id],
+        crate::jobs::JobKind::Traffic,
+        chrono::Duration::zero(),
+    )
+    .await?;
+    crate::jobs::kick(
+        &crate::jobs::JobCtx::new(&state.pool, &state.keyring, &state.config.overpass_url),
+        &[id],
+    );
 
     Ok(Json(serde_json::json!({ "status": "pending" })))
 }

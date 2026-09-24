@@ -269,9 +269,7 @@ async fn track_sample(
     let track = insert_sample(&state, device.car_id, &body)
         .await
         .map_err(map_sample_error)?;
-    if track.finished {
-        mark_stats_stale(&state, &[track.track_id]).await;
-    }
+    after_points_landed(&state, &[track.track_id]).await;
     Ok(StatusCode::OK)
 }
 
@@ -293,8 +291,8 @@ async fn track_samples(
     }
     let mut accepted: i64 = 0;
     let mut rejected = Vec::new();
-    // Finished trips that took new points in this batch; see `mark_stats_stale`.
-    let mut stale_stats: HashSet<Uuid> = HashSet::new();
+    // Trips that took new points in this batch; see `after_points_landed`.
+    let mut touched: HashSet<Uuid> = HashSet::new();
     // A 1 Hz batch is ~200 rows that all target the same trip, so resolve the
     // `tracks` row once per distinct tracking_id instead of once per sample.
     // `None` caches a tracking_id already known to be unresolvable; transient DB
@@ -323,10 +321,8 @@ async fn track_samples(
                 accepted += 1;
                 // The entry is present by now: the resolving arm inserts before it
                 // returns, so this is a lookup rather than a second resolve.
-                if let Some(Some(track)) = tracks.get(&sample.tracking_id)
-                    && track.finished
-                {
-                    stale_stats.insert(track.track_id);
+                if let Some(Some(track)) = tracks.get(&sample.tracking_id) {
+                    touched.insert(track.track_id);
                 }
             }
             Err(SampleError::Duplicate) => rejected.push(RejectedSample {
@@ -355,9 +351,9 @@ async fn track_samples(
         }
     }
 
-    if !stale_stats.is_empty() {
-        let ids: Vec<Uuid> = stale_stats.into_iter().collect();
-        mark_stats_stale(&state, &ids).await;
+    if !touched.is_empty() {
+        let ids: Vec<Uuid> = touched.into_iter().collect();
+        after_points_landed(&state, &ids).await;
     }
 
     Ok(Json(TrackSamplesBatchResponse { accepted, rejected }))
@@ -440,15 +436,47 @@ async fn insert_sample(
     Ok(track)
 }
 
-/// A finished trip just took new points, so its stored statistics no longer match.
+/// Points just landed on these trips; invalidate whatever was derived from the
+/// ones that are finished.
 ///
 /// The client may drain a queued batch up to `LATE_SAMPLE_GRACE` after the stop (see
 /// `finished_track_accepts_sample`), and a device that restarts within that window
-/// reuses the same tracking_id. Failure is logged and swallowed: a stale row is only
-/// ever a missed optimisation, since the read paths fall back to aggregating live.
-async fn mark_stats_stale(state: &AppState, track_ids: &[Uuid]) {
-    if let Err(e) = crate::trips::stats::mark_stale(&state.pool, track_ids).await {
+/// reuses the same tracking_id. `finished` is re-read *after* the inserts rather than
+/// taken from the per-batch cache: a `/stop` that lands mid-batch has already
+/// computed stats from a prefix of the batch, and must be told about the rest.
+///
+/// Failure is logged and swallowed: a stale row is only ever a missed optimisation,
+/// since the read paths fall back to aggregating live.
+async fn after_points_landed(state: &AppState, track_ids: &[Uuid]) {
+    let finished: Vec<Uuid> =
+        match sqlx::query_scalar("SELECT id FROM tracks WHERE id = ANY($1) AND finished")
+            .bind(track_ids)
+            .fetch_all(&state.pool)
+            .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(error = %e, "re-reading finished trips after ingest failed");
+                return;
+            }
+        };
+    if finished.is_empty() {
+        return;
+    }
+    if let Err(e) = crate::trips::stats::mark_stale(&state.pool, &finished).await {
         tracing::warn!(error = %e, "marking track stats stale failed");
+    }
+    // Re-run finalize once the drain settles: it keeps a trip that filled up from
+    // being purged as empty, and re-runs traffic + route_opt on the complete trip.
+    if let Err(e) = crate::jobs::enqueue(
+        &state.pool,
+        &finished,
+        crate::jobs::JobKind::Finalize,
+        crate::jobs::LATE_SAMPLE_SETTLE,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "re-queueing finalize after late samples failed");
     }
 }
 
@@ -538,7 +566,13 @@ async fn insert_sample_for_track(
 
     match result {
         Ok(_) => Ok(()),
-        Err(sqlx::Error::Database(db)) if db.constraint().is_some() => Err(SampleError::Duplicate),
+        // Only the (track_id, recorded_at) key means "already stored". A foreign-key
+        // failure means the trip vanished under us, which the client must not be told
+        // is a harmless duplicate.
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Err(SampleError::Duplicate),
+        Err(sqlx::Error::Database(db)) if db.is_foreign_key_violation() => {
+            Err(SampleError::UnknownTrack)
+        }
         Err(e) => Err(SampleError::Db(e)),
     }
 }
@@ -697,7 +731,7 @@ async fn track_vault_chunk(
 }
 
 /// How long after `finished_at` we still accept late samples (offline queue drain).
-const LATE_SAMPLE_GRACE: chrono::Duration = chrono::Duration::hours(48);
+pub const LATE_SAMPLE_GRACE: chrono::Duration = chrono::Duration::hours(48);
 /// Allow small clock skew before `started_at`.
 const START_SKEW: chrono::Duration = chrono::Duration::minutes(5);
 

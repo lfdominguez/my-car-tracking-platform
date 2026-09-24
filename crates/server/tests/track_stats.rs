@@ -385,3 +385,44 @@ async fn stats_row_exists(pool: &sqlx::PgPool, track_id: Uuid) -> bool {
         .unwrap()
         > 0
 }
+
+/// A sample that commits while `recompute` is running must not be absorbed into a
+/// row marked fresh. The race itself is hard to schedule from a test, so this pins
+/// the guard: a dirty mark newer than the recompute's start leaves the row stale.
+#[tokio::test]
+async fn a_dirty_mark_during_recompute_keeps_the_row_stale() {
+    let Some(ctx) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let (track_id, _, _) = record_trip(&ctx, 4).await;
+
+    // Stand-in for "mark_stale ran after the recompute's snapshot was taken".
+    sqlx::query("UPDATE tracks SET stats_dirty_at = NOW() + interval '1 hour' WHERE id = $1")
+        .bind(track_id)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    assert!(stats::recompute(&ctx.pool, track_id).await.unwrap());
+
+    let stale: bool = sqlx::query_scalar("SELECT stale FROM track_stats WHERE track_id = $1")
+        .bind(track_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .unwrap();
+    assert!(stale, "a row that may be missing points must stay stale");
+
+    // A dirty mark from before the recompute is already folded in.
+    sqlx::query("UPDATE tracks SET stats_dirty_at = NOW() - interval '1 hour' WHERE id = $1")
+        .bind(track_id)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    assert!(stats::recompute(&ctx.pool, track_id).await.unwrap());
+    let stale: bool = sqlx::query_scalar("SELECT stale FROM track_stats WHERE track_id = $1")
+        .bind(track_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .unwrap();
+    assert!(!stale);
+}

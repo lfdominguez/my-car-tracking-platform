@@ -879,9 +879,10 @@ mod tests {
 
     #[test]
     fn hard_braking_survives_the_graph_sanitizer() {
-        // ~-36 km/h/s: beyond MAX_SPEED_DELTA_KPH_S, so the hold-last-good pass
-        // flattens it in `points`. The event detector reads the raw series returned
-        // by sanitize_analysis_points and must still see one severe brake.
+        // ~-36 km/h/s: beyond MAX_SPEED_DELTA_KPH_S for one step, so the hold-last-good
+        // pass holds it until the next sample confirms the deceleration and then writes
+        // it back. The event detector reads the raw series returned by
+        // sanitize_analysis_points and must still see one severe brake.
         let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
         let speeds = [100.0, 64.0, 30.0, 30.0, 30.0];
         let mut pts: Vec<PointRow> = speeds
@@ -891,9 +892,9 @@ mod tests {
             .collect();
 
         let raw = sanitize_analysis_points(&mut pts);
-        // The sanitized series really did lose the step ...
-        assert_eq!(pts[1].speed(), Some(100.0));
-        // ... while the raw one kept it.
+        // The sanitized series keeps a real stop once it is confirmed ...
+        assert_eq!(pts[1].speed(), Some(64.0));
+        // ... and the raw one has it too.
         assert_eq!(raw[1].speed_kph, Some(64.0));
 
         let profile = compute_speed_profile(&pts, &raw, Some(10_000.0));

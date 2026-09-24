@@ -124,6 +124,58 @@ async fn track_count(pool: &sqlx::PgPool, car_id: Uuid, started_at: DateTime<Utc
     .unwrap_or(-1)
 }
 
+async fn track_id_for(pool: &sqlx::PgPool, car_id: Uuid, started_at: DateTime<Utc>) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2")
+        .bind(car_id)
+        .bind(started_at)
+        .fetch_one(pool)
+        .await
+        .expect("track row")
+}
+
+fn job_ctx(pool: &sqlx::PgPool) -> server::jobs::JobCtx {
+    let keyring = server::crypto::KeyRing::from_config("test-secrets-key".into(), None, 2);
+    server::jobs::JobCtx::new(pool, &keyring, "http://127.0.0.1:9/overpass")
+}
+
+/// Wait until the `finalize` job kicked by /stop has finished its first pass, so a
+/// test can rewrite the row without racing the background worker.
+async fn wait_finalize_idle(pool: &sqlx::PgPool, track_id: Uuid) -> Option<String> {
+    for _ in 0..100 {
+        let status: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM track_jobs WHERE track_id = $1 AND kind = 'finalize'",
+        )
+        .bind(track_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        if status.as_deref() != Some("running") {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("finalize job never left 'running'");
+}
+
+/// Pretend the late-sample grace window has passed and run the due jobs.
+async fn expire_grace_and_finalize(pool: &sqlx::PgPool, track_id: Uuid) {
+    wait_finalize_idle(pool, track_id).await;
+    sqlx::query("UPDATE tracks SET finished_at = finished_at - interval '49 hours' WHERE id = $1")
+        .bind(track_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE track_jobs SET status = 'queued', run_after = NOW()
+         WHERE track_id = $1 AND kind = 'finalize'",
+    )
+    .bind(track_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    server::jobs::run_due(&job_ctx(pool), 100).await.unwrap();
+}
+
 async fn latest_track_id(pool: &sqlx::PgPool, car_id: Uuid) -> Option<Uuid> {
     sqlx::query_scalar("SELECT id FROM tracks WHERE car_id = $1 ORDER BY started_at DESC LIMIT 1")
         .bind(car_id)
@@ -444,7 +496,7 @@ async fn finished_track_samples_far_outside_window_rejected() {
 }
 
 #[tokio::test]
-async fn stop_with_zero_points_purges_track() {
+async fn empty_trip_is_purged_after_grace_not_on_stop() {
     let Some((base, client, token, car_id, pool)) = setup().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
         return;
@@ -472,10 +524,20 @@ async fn stop_with_zero_points_purges_track() {
         .unwrap();
     assert!(resp.status().is_success());
 
+    // The phone may still be holding queued samples, so /stop alone must not
+    // delete the trip ...
+    assert_eq!(
+        track_count(&pool, car_id, start).await,
+        1,
+        "an empty trip must survive /stop while late samples may still arrive"
+    );
+    // ... but once the grace window passes with nothing arriving, it goes.
+    let track_id = track_id_for(&pool, car_id, start).await;
+    expire_grace_and_finalize(&pool, track_id).await;
     assert_eq!(
         track_count(&pool, car_id, start).await,
         0,
-        "empty trip must be purged on stop"
+        "empty trip must be purged after the grace window"
     );
 }
 
@@ -532,10 +594,84 @@ async fn stop_with_one_point_purges_track() {
             .is_success()
     );
 
+    assert_eq!(track_count(&pool, car_id, start).await, 1);
+    let track_id = track_id_for(&pool, car_id, start).await;
+    expire_grace_and_finalize(&pool, track_id).await;
     assert_eq!(
         track_count(&pool, car_id, start).await,
         0,
-        "single-point trip must be purged on stop"
+        "single-point trip must be purged after the grace window"
+    );
+}
+
+/// Regression for the offline drive: the phone calls /stop before uploading its
+/// queue. The trip must survive, take the late batch, and not be purged later.
+#[tokio::test]
+async fn stop_before_queue_drain_keeps_the_trip() {
+    let Some((base, client, token, car_id, pool)) = setup().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let start = Utc::now();
+    let tracking_id = start.to_rfc3339();
+
+    let ok = |r: reqwest::Response| r.status().is_success();
+    assert!(ok(client
+        .post(format!("{base}/api/track/start"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "timestamp_start": start }))
+        .send()
+        .await
+        .unwrap()));
+    assert!(ok(client
+        .post(format!("{base}/api/track/stop"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "id": tracking_id }))
+        .send()
+        .await
+        .unwrap()));
+
+    let samples: Vec<_> = (0..5)
+        .map(|i| {
+            json!({
+                "tracking_id": tracking_id,
+                "recorded_at": start.timestamp_millis() + i * 1000,
+                "lat": -23.5 + (i as f64) * 0.001,
+                "lon": -46.6,
+                "acc": 5.0,
+                "vehicle_speed_kph": 40.0
+            })
+        })
+        .collect();
+    let resp = client
+        .post(format!("{base}/api/track/samples"))
+        .header("Authorization", format!("Basic {token}"))
+        .json(&json!({ "samples": samples }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["accepted"], 5, "late batch must land: {body}");
+
+    let track_id = track_id_for(&pool, car_id, start).await;
+    expire_grace_and_finalize(&pool, track_id).await;
+    assert_eq!(
+        track_count(&pool, car_id, start).await,
+        1,
+        "a trip that filled up after /stop must never be purged"
+    );
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM track_jobs
+         WHERE track_id = $1 AND kind IN ('route_opt', 'traffic')",
+    )
+    .bind(track_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        queued, 2,
+        "post-finish analysis must be queued for the filled trip"
     );
 }
 
@@ -665,6 +801,7 @@ async fn stop_with_vault_chunk_keeps_track_even_without_plaintext_points() {
             .is_success()
     );
 
+    expire_grace_and_finalize(&pool, track_id).await;
     assert_eq!(
         track_count(&pool, car_id, start).await,
         1,
