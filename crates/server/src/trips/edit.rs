@@ -175,7 +175,7 @@ pub async fn merge_trips(
     if ids.len() < 2 {
         return Err(AppError::BadRequest("merge 2 to 20 trips".into()));
     }
-    let mut metas = Vec::with_capacity(ids.len().min(MAX_MERGE));
+    let mut metas = Vec::new();
     for id in &ids {
         metas.push((*id, editable(&state, &user, *id).await?));
     }
