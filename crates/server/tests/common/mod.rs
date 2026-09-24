@@ -128,3 +128,33 @@ pub async fn pool() -> sqlx::PgPool {
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     db::connect(&url).await.expect("connect")
 }
+
+/// Insert a finished trip with three GPS points straight into the database.
+pub async fn seed_trip(pool: &sqlx::PgPool, car_id: &str) -> Uuid {
+    let track_id = Uuid::new_v4();
+    let t0 = chrono::Utc::now() - chrono::Duration::hours(1);
+    sqlx::query(
+        "INSERT INTO tracks (id, car_id, legacy_key, started_at, finished, finished_at)
+         VALUES ($1, $2::uuid, $3, $3, true, $3 + interval '2 minutes')",
+    )
+    .bind(track_id)
+    .bind(car_id)
+    .bind(t0)
+    .execute(pool)
+    .await
+    .unwrap();
+    for i in 0..3 {
+        sqlx::query(
+            "INSERT INTO track_points (track_id, recorded_at, gps, gps_acc_m, vehicle_speed_kph)
+             VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, 5, 36)",
+        )
+        .bind(track_id)
+        .bind(t0 + chrono::Duration::seconds(i))
+        .bind(-3.7 - i as f64 * 0.001)
+        .bind(40.4)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    track_id
+}
