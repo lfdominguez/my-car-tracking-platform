@@ -494,6 +494,28 @@ pub async fn system_prompt_for(
     ))
 }
 
+/// Run one chat tool exactly as a generation would, for `user_id`.
+///
+/// The toolbox is otherwise only reachable through a model; this lets integration
+/// tests hold the chat path to the same authorization cases as MCP.
+pub async fn call_tool(
+    state: &AppState,
+    user_id: Uuid,
+    unit_system: UnitSystem,
+    car_focus: Option<Uuid>,
+    name: &str,
+    arguments: &str,
+) -> Result<String, String> {
+    use ai::ChatToolbox as _;
+    let user = McpUser {
+        id: user_id,
+        unit_system,
+    };
+    CarDataToolbox::new(state.clone(), user, CarFocus(car_focus))
+        .dispatch(name, arguments)
+        .await
+}
+
 /// Decrypt the user's OpenRouter key, mirroring `analysis::start_analysis`.
 async fn openrouter_credentials(state: &AppState, user_id: Uuid) -> AppResult<Credentials> {
     let row = sqlx::query(

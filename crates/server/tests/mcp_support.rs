@@ -52,9 +52,20 @@ pub async fn state() -> Option<AppState> {
     let database_url = std::env::var("DATABASE_URL").ok()?;
     let config = test_config(database_url);
     let _ = std::fs::create_dir_all(&config.upload_dir);
-    let pool = db::connect(&config.database_url).await.ok()?;
+    let pool = match db::connect(&config.database_url).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            eprintln!("test database unreachable: {e}");
+            return None;
+        }
+    };
     let _ = db::ensure_postgis(&pool).await;
-    db::migrate(&pool).await.ok()?;
+    // Say why when skipping: a database migrated by another branch (unknown
+    // versions) otherwise turns every test here into a silent pass.
+    if let Err(e) = db::migrate(&pool).await {
+        eprintln!("test database not migratable: {e}");
+        return None;
+    }
     Some(AppState::new(pool, config))
 }
 
