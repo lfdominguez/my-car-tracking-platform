@@ -18,8 +18,8 @@ use crate::units::{
     trip_si_to_display, use_unit_prefs,
 };
 use crate::vault::{
-    VaultUnlockGate, build_analysis_context_json, decrypt_ai_report, decrypt_track_meta,
-    decrypt_track_points, seal_ai_report, use_vault_session,
+    VaultUnlockGate, build_analysis_context_json, decrypt_ai_report, decrypt_car_profile,
+    decrypt_track_meta, decrypt_track_points, seal_ai_report, use_vault_session,
 };
 
 /// A decrypted vault trip in SI units: the summary patched from `track_meta`, and
@@ -1723,7 +1723,15 @@ fn TripAiPanel(
                         }
                         return;
                     }
-                    let ctx = build_analysis_context_json(&t, &t.car_name, &pts);
+                    // The profile carries fuel_class and the engine constants; a
+                    // failure here only thins the bundle, it does not block analysis.
+                    let profile = decrypt_car_profile(&sess, &t.car_id).await.ok().flatten();
+                    let car_name = profile
+                        .as_ref()
+                        .map(|p| p.name.clone())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| t.car_name.clone());
+                    let ctx = build_analysis_context_json(&t, &car_name, &pts, profile.as_ref());
                     let bundle = serde_json::json!({
                         "track_id": id,
                         "context": ctx,

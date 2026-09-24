@@ -5,6 +5,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::speed_events::{self, MotionSample, SpeedEventThresholds, SpeedSample};
+use shared::telemetry_sanitize::{SpeedRpmPoint, sanitize_speed_rpm};
 use uuid::Uuid;
 use vault_crypto::{
     Dek, IdentityPublic, WRAP_ALG_V1, WrappedDek, aad_v1, decrypt_object, encrypt_object,
@@ -254,22 +255,80 @@ pub async fn seal_ai_report(
     Ok(())
 }
 
-/// Build a minimal AI analysis context from decrypted points (client-prepared bundle).
+/// Nearest-rank percentile over an ascending slice (same rounding as the server's
+/// `analysis::context::percentile`).
+fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted.get(idx.min(sorted.len() - 1)).copied()
+}
+
+/// Build a minimal AI analysis context from decrypted SI points (client-prepared
+/// bundle), shaped like the server's plaintext context.
+///
+/// `profile` is the decrypted car profile when available: it supplies `fuel_class`
+/// (which the analysis contract requires on every overview) and the engine
+/// constants the server would read from the car row.
 pub fn build_analysis_context_json(
     trip: &Trip,
     car_name: &str,
     points: &[TripPoint],
+    profile: Option<&CarProfileV1>,
 ) -> serde_json::Value {
+    // Sanitized speed/RPM for samples and percentiles (what the server shows the
+    // model); harsh-event detection below keeps reading the raw series, as the
+    // server does, because the sanitizer flattens genuine hard stops.
+    let times: Vec<Option<DateTime<Utc>>> = points
+        .iter()
+        .map(|p| {
+            DateTime::parse_from_rfc3339(&p.recorded_at)
+                .ok()
+                .map(|t| t.with_timezone(&Utc))
+        })
+        .collect();
+    let mut clean: Vec<SpeedRpmPoint> = points
+        .iter()
+        .zip(&times)
+        .filter_map(|(p, t)| {
+            Some(SpeedRpmPoint {
+                t: (*t)?,
+                speed_kph: p.vehicle_speed_kph.or(p.engine_vel),
+                // Same precedence as the charts and the server: the vehicle PID first.
+                rpm: p.vehicle_engine_rpm.or(p.engine_rpm),
+            })
+        })
+        .collect();
+    sanitize_speed_rpm(&mut clean);
+    let mut clean_iter = clean.into_iter();
+    let clean_by_point: Vec<(Option<f64>, Option<f64>)> = points
+        .iter()
+        .zip(&times)
+        .map(|(p, t)| match t {
+            Some(_) => clean_iter
+                .next()
+                .map(|c| (c.speed_kph, c.rpm))
+                .unwrap_or((None, None)),
+            None => (
+                p.vehicle_speed_kph.or(p.engine_vel),
+                p.vehicle_engine_rpm.or(p.engine_rpm),
+            ),
+        })
+        .collect();
+
+    let step = (points.len() / 400).max(1);
     let samples: Vec<serde_json::Value> = points
         .iter()
-        .step_by((points.len() / 400).max(1))
-        .map(|p| {
+        .zip(&clean_by_point)
+        .step_by(step)
+        .map(|(p, (speed, rpm))| {
             serde_json::json!({
                 "recorded_at": p.recorded_at,
                 "lat": p.lat,
                 "lon": p.lon,
-                "speed_kph": p.vehicle_speed_kph.or(p.engine_vel),
-                "rpm": p.engine_rpm.or(p.vehicle_engine_rpm),
+                "speed_kph": speed,
+                "rpm": rpm,
                 "engine_load_pct": p.engine_load_pct,
                 "fuel_rate_lph": p.fuel_consumption_rate,
                 "coolant_c": p.engine_coolant_temp_c,
@@ -283,10 +342,17 @@ pub fn build_analysis_context_json(
         })
         .collect();
 
-    let speeds: Vec<f64> = points
+    let mut speeds: Vec<f64> = clean_by_point
         .iter()
-        .filter_map(|p| p.vehicle_speed_kph.or(p.engine_vel))
+        .filter_map(|(s, _)| *s)
+        .filter(|s| s.is_finite())
         .collect();
+    speeds.sort_by(|a, b| a.total_cmp(b));
+    let moving_share = if speeds.is_empty() {
+        None
+    } else {
+        Some(speeds.iter().filter(|s| **s > 2.0).count() as f64 / speeds.len() as f64)
+    };
 
     // Same detector the server runs, so a vault trip is analysed on real numbers
     // instead of the hardcoded zeros this builder used to emit — which read to the
@@ -313,21 +379,27 @@ pub fn build_analysis_context_json(
         .collect();
     let events = speed_events::compute_speed_events(&speed_series, trip.distance_m);
     let thresholds = SpeedEventThresholds::default();
-    let max_speed = speeds.iter().cloned().fold(None, |acc: Option<f64>, v| {
-        Some(acc.map(|a| a.max(v)).unwrap_or(v))
-    });
+    let max_speed = speeds.last().copied();
     let avg_speed = if speeds.is_empty() {
         None
     } else {
         Some(speeds.iter().sum::<f64>() / speeds.len() as f64)
     };
 
+    // Same fallback as the server's `COALESCE(..., 'GASOLINE')`.
+    let fuel_class = profile
+        .map(|p| p.fuel_class.trim().to_ascii_uppercase())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "GASOLINE".to_string());
+
     serde_json::json!({
         "overview": {
             "trip_id": trip.id,
             "car_name": car_name,
-            "make_model": null,
+            "make_model": profile.map(|p| p.make_model.clone()),
             "fuel_type": trip.fuel_type_snapshot,
+            "fuel_class": fuel_class,
+            "battery_capacity_kwh": profile.and_then(|p| p.battery_capacity_kwh),
             "started_at": trip.started_at,
             "finished_at": trip.finished_at,
             "finished": trip.finished,
@@ -338,10 +410,10 @@ pub fn build_analysis_context_json(
             "max_speed_kph": trip.max_speed_kph.or(max_speed),
             "fuel_used_l": trip.fuel_used_l,
             "fuel_used_moving_l": trip.fuel_used_moving_l,
-            "displacement_l": null,
-            "stoich_afr": null,
-            "density_gl": null,
-            "ve": null,
+            "displacement_l": profile.map(|p| p.displacement_l),
+            "stoich_afr": profile.map(|p| p.stoich_afr),
+            "density_gl": profile.map(|p| p.density_gl),
+            "ve": profile.map(|p| p.ve),
         },
         "units": {
             "distance": "km",
@@ -352,9 +424,9 @@ pub fn build_analysis_context_json(
         },
         "speed": {
             "sample_count": speeds.len(),
-            "min_kph": speeds.iter().cloned().fold(None, |a: Option<f64>, v| Some(a.map(|x| x.min(v)).unwrap_or(v))),
-            "p50_kph": avg_speed,
-            "p95_kph": max_speed,
+            "min_kph": speeds.first().copied(),
+            "p50_kph": percentile(&speeds, 0.50),
+            "p95_kph": percentile(&speeds, 0.95),
             "max_kph": max_speed,
             "hard_accel_events": events.hard_accel_events,
             "hard_brake_events": events.hard_brake_events,
@@ -369,7 +441,7 @@ pub fn build_analysis_context_json(
             "undirected_harsh_events": events.undirected_harsh_events,
             "peak_horizontal_mps2": events.peak_horizontal_mps2,
             "motion_rejected_windows": events.motion_rejected_windows,
-            "moving_share": null,
+            "moving_share": moving_share,
         },
         "engine": {},
         "fuel": {},
