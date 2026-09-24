@@ -111,13 +111,7 @@ async fn get_analysis(
         if raw_err.as_ref().is_some_and(|e| !e.trim().is_empty()) || status == "failed" {
             // Actionable provider failures (bad key, no credits, unknown model) get
             // their own line; anything internal stays behind the generic one.
-            Some(
-                raw_err
-                    .as_deref()
-                    .and_then(ai::user_facing_error)
-                    .unwrap_or("System Error")
-                    .into(),
-            )
+            Some(public_analysis_error(raw_err.as_deref()).into())
         } else {
             None
         };
@@ -251,6 +245,17 @@ async fn start_analysis(
             analysis_status: "pending".into(),
         }),
     ))
+}
+
+/// The caller-safe line for a failed analysis. Internal diagnostics stay in the
+/// database; only failures the owner can act on get their own wording.
+pub(crate) fn public_analysis_error(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some(jobs::CANCELLED_ERROR) => "Analysis was cancelled.",
+        Some("timed out") => "Analysis took too long and was stopped. Try again later.",
+        Some(e) => ai::user_facing_error(e).unwrap_or("System Error"),
+        None => "System Error",
+    }
 }
 
 /// Record a failure, but only over a row that is still in flight: a job that lost a

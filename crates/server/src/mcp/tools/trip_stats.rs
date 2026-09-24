@@ -441,13 +441,7 @@ pub async fn get_trip_ai_report(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<A
         if raw_err.as_ref().is_some_and(|e| !e.trim().is_empty()) || status == "failed" {
             // Actionable provider failures (bad key, no credits, unknown model) get
             // their own line; anything internal stays behind the generic one.
-            Some(
-                raw_err
-                    .as_deref()
-                    .and_then(ai::user_facing_error)
-                    .unwrap_or("System Error")
-                    .into(),
-            )
+            Some(crate::analysis::public_analysis_error(raw_err.as_deref()).into())
         } else {
             None
         };
