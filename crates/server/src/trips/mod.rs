@@ -34,6 +34,7 @@ pub fn router() -> Router<AppState> {
             get(get_trip).delete(delete_trip).patch(edit::update_trip),
         )
         .route("/api/trips/merge", post(edit::merge_trips))
+        .route("/api/trips/geometries", get(trip_geometries))
         .route("/api/trips/{id}/split", post(edit::split_trip))
         .route("/api/trips/{id}/finish", post(finish_trip))
         .route("/api/trips/{id}/points", get(trip_points))
@@ -1049,6 +1050,66 @@ struct TripPointsQuery {
 
 /// Smallest `max_points` honoured; below this the curve stops meaning anything.
 const MIN_DOWNSAMPLE_POINTS: usize = 50;
+
+#[derive(Debug, Deserialize)]
+struct GeometriesQuery {
+    car_id: Option<Uuid>,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct TripGeometry {
+    id: Uuid,
+    car_id: Uuid,
+    started_at: DateTime<Utc>,
+    /// GeoJSON LineString, simplified to roughly 10 m.
+    geometry: serde_json::Value,
+}
+
+/// Simplified route lines of many trips at once, for overlay and heatmap views.
+/// Only fixes are used (fixless samples have no position) and vault cars are
+/// skipped.
+async fn trip_geometries(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<GeometriesQuery>,
+) -> AppResult<Json<Vec<TripGeometry>>> {
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let rows = sqlx::query_as::<_, TripGeometry>(
+        r#"
+        SELECT t.id, t.car_id, t.started_at,
+               ST_AsGeoJSON(ST_Simplify(line.geom, 0.0001), 6)::jsonb AS geometry
+        FROM tracks t
+        JOIN cars c ON c.id = t.car_id
+        JOIN users ou ON ou.id = c.owner_user_id
+        CROSS JOIN LATERAL (
+            SELECT ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at) AS geom,
+                   COUNT(tp.gps) AS n
+            FROM track_points tp
+            WHERE tp.track_id = t.id AND tp.gps IS NOT NULL
+        ) line
+        WHERE line.n >= 2
+          AND ou.vault_status <> 'active'
+          AND (c.owner_user_id = $1
+               OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = c.id AND cs.user_id = $1))
+          AND ($2::uuid IS NULL OR t.car_id = $2)
+          AND ($3::timestamptz IS NULL OR t.started_at >= $3)
+          AND ($4::timestamptz IS NULL OR t.started_at <= $4)
+        ORDER BY t.started_at DESC
+        LIMIT $5
+        "#,
+    )
+    .bind(user.id)
+    .bind(q.car_id)
+    .bind(q.from)
+    .bind(q.to)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(rows))
+}
 
 async fn trip_points(
     State(state): State<AppState>,

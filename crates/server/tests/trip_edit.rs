@@ -122,3 +122,36 @@ async fn split_then_merge_round_trips_the_points() {
         .unwrap();
     assert_eq!(gone, 0);
 }
+
+#[tokio::test]
+async fn geometries_return_simplified_lines_for_readable_trips() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let user = login(&base).await;
+    let car_id = create_car(&base, &user).await;
+    let trip = seed_trip(&common::pool().await, &car_id).await;
+    let rows: Value = user
+        .client
+        .get(format!("{base}/api/trips/geometries?car_id={car_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rows[0]["id"], trip.to_string());
+    assert_eq!(rows[0]["geometry"]["type"], "LineString");
+    let other = login(&base).await;
+    let rows: Value = other
+        .client
+        .get(format!("{base}/api/trips/geometries?car_id={car_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(rows.as_array().unwrap().is_empty());
+}
