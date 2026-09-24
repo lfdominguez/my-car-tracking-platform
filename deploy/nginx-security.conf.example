@@ -30,11 +30,17 @@ server {
     # WAF Pointer:
     # Consider using ModSecurity or AWS WAF for deeper inspection.
 
+    # Client IP: the app (TRUST_FORWARDED_HEADERS=1) reads X-Real-IP, then the
+    # rightmost X-Forwarded-For entry. Both are overwritten with $remote_addr here so
+    # a client cannot choose its own address. Behind Cloudflare, make $remote_addr
+    # the visitor first:
+    #   real_ip_header CF-Connecting-IP;
+    #   set_real_ip_from <each Cloudflare range>;   # https://www.cloudflare.com/ips/
     location / {
         proxy_pass http://ctp-app:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
@@ -44,7 +50,7 @@ server {
         proxy_pass http://ctp-app:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
@@ -54,7 +60,7 @@ server {
         proxy_pass http://ctp-app:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }

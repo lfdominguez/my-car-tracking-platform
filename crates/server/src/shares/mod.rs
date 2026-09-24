@@ -212,6 +212,11 @@ async fn update_share(
     .await?
     .ok_or(AppError::NotFound)?;
 
+    // A viewer cannot create devices, so it must not keep the ones it made as editor.
+    if role == ShareRole::Viewer {
+        crate::devices::revoke_devices_created_by(&state.pool, car_id, target_user_id).await?;
+    }
+
     Ok(Json(row))
 }
 
@@ -231,6 +236,10 @@ async fn delete_share(
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+
+    // Ingest tokens they created would otherwise keep writing into this car.
+    let devices_revoked =
+        crate::devices::revoke_devices_created_by(&state.pool, car_id, target_user_id).await?;
 
     // v1 revoke: drop DEK wrap (does not re-encrypt history / wipe offline copies).
     let wrap_res =
@@ -279,7 +288,10 @@ async fn delete_share(
             resource_id: Some(&car_id_str),
             ip: Some(&ip_str),
             user_agent,
-            meta: serde_json::json!({ "shared_user_id": shared_user_id }),
+            meta: serde_json::json!({
+                "shared_user_id": shared_user_id,
+                "devices_revoked": devices_revoked,
+            }),
         },
     )
     .await;

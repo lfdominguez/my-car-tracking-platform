@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let upload_dir = config.upload_dir.clone();
     let state = AppState::new(pool, config);
     server::trips::spawn_stale_finish_loop(state.clone());
+    server::middleware::spawn_rate_limit_pruner(state.rate_limits.clone());
     server::jobs::spawn_worker(server::jobs::JobCtx::new(
         &state.pool,
         &state.keyring,

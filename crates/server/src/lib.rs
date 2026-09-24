@@ -29,7 +29,8 @@ use axum::middleware as axum_mw;
 use tower_http::trace::TraceLayer;
 
 use crate::middleware::{
-    inline_script_csp_hashes_from_dist, rate_limit_middleware, security_headers_layer,
+    csrf_middleware, inline_script_csp_hashes_from_dist, rate_limit_middleware,
+    security_headers_layer,
 };
 use crate::state::AppState;
 
@@ -70,6 +71,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(vault::router())
         .merge(web::spa_router())
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
+        .layer(axum_mw::from_fn_with_state(state.clone(), csrf_middleware))
         .layer(axum_mw::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,

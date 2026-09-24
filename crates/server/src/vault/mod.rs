@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::audit::{self, AuditEvent};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use crate::shares::access::{can_edit_car, can_read_car, require_owner};
+use crate::shares::access::{CarAccess, can_edit_car, can_read_car, require_owner};
 use crate::state::AppState;
 
 const MAX_OBJECT_TYPE_LEN: usize = 64;
@@ -336,7 +336,7 @@ async fn put_object(
     user: AuthUser,
     Json(body): Json<PutObjectRequest>,
 ) -> AppResult<Json<VaultObjectResponse>> {
-    can_edit_car(&state.pool, user.id, body.car_id).await?;
+    let access = can_edit_car(&state.pool, user.id, body.car_id).await?;
     validate_object_type(&body.object_type)?;
 
     let nonce = decode_b64("nonce", &body.nonce)?;
@@ -373,6 +373,13 @@ async fn put_object(
     .bind(body.chunk_index)
     .fetch_optional(&state.pool)
     .await?;
+
+    // Editors may add objects, but overwriting one replaces ciphertext the server
+    // cannot inspect: a wrong key or a malicious editor would destroy the owner's
+    // encrypted history with no way back. Only the owner may do that.
+    if existing.is_some() && access != CarAccess::Owner {
+        return Err(AppError::Forbidden);
+    }
 
     let row = if let Some(existing_id) = existing {
         sqlx::query_as::<_, ObjectRow>(
