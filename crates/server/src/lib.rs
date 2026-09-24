@@ -18,6 +18,7 @@ pub mod live;
 pub mod maintenance;
 pub mod mcp;
 pub mod middleware;
+pub mod notifications;
 pub mod route_opt;
 pub mod shares;
 pub mod state;
@@ -69,6 +70,7 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(mcp::settings_router())
         .merge(mcp::router(state.clone()))
         .merge(live::router())
+        .merge(notifications::router())
         .merge(cars::router())
         .merge(garage::router())
         .merge(photo_routes)

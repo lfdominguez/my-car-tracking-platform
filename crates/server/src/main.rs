@@ -10,8 +10,13 @@ use server::{build_router, db};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `server healthcheck` is the container HEALTHCHECK, so the runtime image needs
     // no curl.
-    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
-        std::process::exit(if healthcheck() { 0 } else { 1 });
+    match std::env::args().nth(1).as_deref() {
+        Some("healthcheck") => std::process::exit(if healthcheck() { 0 } else { 1 }),
+        Some("vapid-keygen") => {
+            server::notifications::print_vapid_keygen();
+            return Ok(());
+        }
+        _ => {}
     }
 
     tracing_subscriber::fmt()

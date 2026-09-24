@@ -46,6 +46,7 @@ governor = "0.10"
 rmcp = { version = "3.1", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
 schemars = "1"
 http = "1"
+web-push-native = "0.5"
 
 [dev-dependencies]
 http-body-util = "0.1"
