@@ -5,6 +5,7 @@ use wasm_bindgen::JsCast;
 
 use crate::api::{Me, get_me, logout};
 use crate::components::{Icon, IconColor, ThemeToggle};
+use crate::i18n::t;
 use crate::pages::notifications::NotificationBell;
 use crate::units::{UnitPrefs, UnitPrefsSignal};
 
@@ -53,6 +54,7 @@ pub fn AppLayout() -> impl IntoView {
                 Ok(user) => {
                     avatar_failed.set(false);
                     unit_prefs.set(UnitPrefs::from_me(&user));
+                    crate::i18n::set_locale(crate::i18n::resolve(user.locale.as_deref()));
                     // Accounts start on UTC; adopt the browser's zone once so
                     // statistics and rush hours bucket in local time (#60). Only
                     // the default is overwritten: a zone the user picked stays.
@@ -97,12 +99,12 @@ pub fn AppLayout() -> impl IntoView {
                 aria-hidden="true"
                 on:click=close_nav
             ></div>
-            <a class="skip-link" href="#main-content">"Skip to content"</a>
+            <a class="skip-link" href="#main-content">{tr!("nav.skip")}</a>
             <header class="mobile-topbar">
                 <button
                     type="button"
                     class="btn icon-btn nav-toggle"
-                    aria-label=move || if nav_open.get() { "Close menu" } else { "Open menu" }
+                    aria-label=move || if nav_open.get() { t("nav.close_menu") } else { t("nav.open_menu") }
                     aria-expanded=move || nav_open.get().to_string()
                     aria-controls="app-sidebar"
                     on:click=toggle_nav
@@ -128,41 +130,41 @@ pub fn AppLayout() -> impl IntoView {
                     <span class="brand-spacer" aria-hidden="true"></span>
                     <NotificationBell/>
                 </div>
-                <nav class="nav" aria-label="Primary">
-                    <span class="nav-group-label">"Overview"</span>
+                <nav class="nav" aria-label=tr!("nav.primary")>
+                    <span class="nav-group-label">{tr!("nav.overview")}</span>
                     <A href="/app" on:click=move |_| nav_open.set(false)>
                         <Icon name="chart-line-up" color=IconColor::Accent />
-                        "Dashboard"
+                        {tr!("nav.dashboard")}
                     </A>
                     <A href="/app/chat" on:click=move |_| nav_open.set(false)>
                         <Icon name="chat-circle-dots" color=IconColor::Accent />
-                        "Ask your data"
+                        {tr!("nav.chat")}
                     </A>
-                    <span class="nav-group-label">"Fleet"</span>
+                    <span class="nav-group-label">{tr!("nav.fleet")}</span>
                     <A href="/app/cars" on:click=move |_| nav_open.set(false)>
                         <Icon name="car" color=IconColor::Accent />
-                        "Cars"
+                        {tr!("nav.cars")}
                     </A>
                     <A href="/app/trips" on:click=move |_| nav_open.set(false)>
                         <Icon name="map-trifold" color=IconColor::Accent />
-                        "Trips"
+                        {tr!("nav.trips")}
                     </A>
                     <A href="/app/places" on:click=move |_| nav_open.set(false)>
                         <Icon name="map-pin-area" color=IconColor::Accent />
-                        "Places"
+                        {tr!("nav.places")}
                     </A>
                     <A href="/app/routes" on:click=move |_| nav_open.set(false)>
                         <Icon name="path" color=IconColor::Accent />
-                        "Routes"
+                        {tr!("nav.routes")}
                     </A>
                     <A href="/app/stats" on:click=move |_| nav_open.set(false)>
                         <Icon name="chart-bar" color=IconColor::Accent />
-                        "Statistics"
+                        {tr!("nav.statistics")}
                     </A>
-                    <span class="nav-group-label">"Account"</span>
+                    <span class="nav-group-label">{tr!("nav.account")}</span>
                     <A href="/app/settings" on:click=move |_| nav_open.set(false)>
                         <Icon name="gear" color=IconColor::Accent />
-                        "Settings"
+                        {tr!("nav.settings")}
                     </A>
                 </nav>
                 <div class="sidebar-foot">
@@ -221,7 +223,7 @@ pub fn AppLayout() -> impl IntoView {
                                 });
                             }>
                                 <Icon name="sign-out" />
-                                "Log out"
+                                {tr!("nav.logout")}
                             </button>
                             <ThemeToggle/>
                         </div>
@@ -232,13 +234,13 @@ pub fn AppLayout() -> impl IntoView {
                 <Show when=move || offline.get()>
                     <div class="connectivity-banner offline" role="status">
                         <Icon name="wifi-slash" color=IconColor::Warn />
-                        <span>"You're offline. Trip data needs a network connection."</span>
+                        <span>{tr!("shell.offline")}</span>
                     </div>
                 </Show>
                 <Show when=move || update_available.get()>
                     <div class="connectivity-banner update" role="status">
                         <Icon name="arrow-clockwise" color=IconColor::Accent />
-                        <span>"A new version is available."</span>
+                        <span>{tr!("shell.update_available")}</span>
                         <button
                             type="button"
                             class="btn primary btn-sm"
@@ -262,7 +264,7 @@ pub fn AppLayout() -> impl IntoView {
                                 }
                             }
                         >
-                            "Update now"
+                            {tr!("shell.update_now")}
                         </button>
                     </div>
                 </Show>

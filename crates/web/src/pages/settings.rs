@@ -6,6 +6,7 @@ use crate::api::{
     update_me_preferences, update_me_unit_system,
 };
 use crate::components::{Icon, IconColor, IconSize};
+use crate::i18n::{t, tf};
 use crate::pages::mcp_tokens::McpTokensCard;
 use crate::pages::notifications::PushSettingsCard;
 use crate::pages::sharing::PendingInvites;
@@ -87,8 +88,8 @@ pub fn SettingsPage() -> impl IntoView {
                 Ok(me) => {
                     prefs.set(UnitPrefs::from_me(&me));
                     message.set(Some(match system {
-                        UnitSystem::Metric => "Using International (metric) units.".into(),
-                        UnitSystem::Us => "Using Imperial units.".into(),
+                        UnitSystem::Metric => t("settings.using_metric").into(),
+                        UnitSystem::Us => t("settings.using_imperial").into(),
                     }));
                 }
                 Err(e) => error.set(Some(e.to_string())),
@@ -114,7 +115,7 @@ pub fn SettingsPage() -> impl IntoView {
                     key_set.set(me.openrouter_api_key_set);
                     key_hint.set(me.openrouter_api_key_hint.clone());
                     openrouter_key.set(String::new());
-                    message.set(Some("OpenRouter settings saved.".into()));
+                    message.set(Some(t("settings.openrouter_saved").into()));
                 }
                 Err(e) => error.set(Some(e.to_string())),
             }
@@ -132,7 +133,7 @@ pub fn SettingsPage() -> impl IntoView {
                 Ok(me) => {
                     key_set.set(me.openrouter_api_key_set);
                     key_hint.set(me.openrouter_api_key_hint.clone());
-                    message.set(Some("OpenRouter API key cleared.".into()));
+                    message.set(Some(t("settings.openrouter_cleared").into()));
                 }
                 Err(e) => error.set(Some(e.to_string())),
             }
@@ -153,7 +154,7 @@ pub fn SettingsPage() -> impl IntoView {
                     if let Ok(a) = get_audit(Some(50)).await {
                         audit.set(a);
                     }
-                    message.set(Some("Session revoked.".into()));
+                    message.set(Some(t("settings.session_revoked").into()));
                 }
                 Err(e) => error.set(Some(e.to_string())),
             }
@@ -162,7 +163,7 @@ pub fn SettingsPage() -> impl IntoView {
     };
 
     let revoke_others = move |_| {
-        if !confirm("Revoke all other sessions? You will stay signed in on this device.") {
+        if !confirm(t("settings.confirm_revoke_others")) {
             return;
         }
         saving.set(true);
@@ -177,7 +178,7 @@ pub fn SettingsPage() -> impl IntoView {
                     if let Ok(a) = get_audit(Some(50)).await {
                         audit.set(a);
                     }
-                    message.set(Some("Other sessions revoked.".into()));
+                    message.set(Some(t("settings.others_revoked").into()));
                 }
                 Err(e) => error.set(Some(e.to_string())),
             }
@@ -186,7 +187,7 @@ pub fn SettingsPage() -> impl IntoView {
     };
 
     let revoke_all = move |_| {
-        if !confirm("Sign out everywhere? This will also end your current session.") {
+        if !confirm(t("settings.confirm_sign_out_all")) {
             return;
         }
         saving.set(true);
@@ -204,6 +205,8 @@ pub fn SettingsPage() -> impl IntoView {
         });
     };
 
+    // `done` is an i18n key, translated when the save lands (after a language
+    // change, in the new language).
     let save_region = move |body: serde_json::Value, done: &'static str| {
         saving.set(true);
         message.set(None);
@@ -213,7 +216,8 @@ pub fn SettingsPage() -> impl IntoView {
                 Ok(me) => {
                     timezone.set(me.timezone.clone());
                     locale.set(me.locale.clone().unwrap_or_default());
-                    message.set(Some(done.into()));
+                    crate::i18n::set_locale(crate::i18n::resolve(me.locale.as_deref()));
+                    message.set(Some(t(done).into()));
                 }
                 Err(e) => error.set(Some(e.to_string())),
             }
@@ -229,9 +233,7 @@ pub fn SettingsPage() -> impl IntoView {
         {
             return;
         }
-        if !confirm(
-            "Delete your account and everything in it — cars, trips, devices, chats? This cannot be undone.",
-        ) {
+        if !confirm(t("settings.confirm_delete_account")) {
             return;
         }
         deleting_account.set(true);
@@ -251,8 +253,8 @@ pub fn SettingsPage() -> impl IntoView {
 
     view! {
         <div class="page-header">
-            <h1>"Settings"</h1>
-            <p class="muted">"Units, routing, AI, and security settings"</p>
+            <h1>{tr!("nav.settings")}</h1>
+            <p class="muted">{tr!("settings.lead")}</p>
         </div>
 
         <Show when=move || message.get().is_some()>
@@ -265,13 +267,12 @@ pub fn SettingsPage() -> impl IntoView {
         <div class="card settings-card">
             <h2 class="section-title">
                 <Icon name="globe-hemisphere-west" color=IconColor::Accent />
-                "Display units"
+                {tr!("settings.display_units")}
             </h2>
             <p class="muted">
-                "Distance, speed, odometer, fuel volume, and economy on the dashboard and trips. "
-                "Raw OBD data stays metric in the database."
+                {tr!("settings.units_lead")}
             </p>
-            <div class="unit-choice-grid" role="radiogroup" aria-label="Unit system">
+            <div class="unit-choice-grid" role="radiogroup" aria-label=tr!("settings.unit_system")>
                 <button
                     type="button"
                     class=move || {
@@ -284,7 +285,7 @@ pub fn SettingsPage() -> impl IntoView {
                     prop:disabled=move || saving.get()
                     on:click=move |_| save_units(UnitSystem::Metric)
                 >
-                    <div class="unit-choice-title">"International"</div>
+                    <div class="unit-choice-title">{tr!("settings.international")}</div>
                     <div class="unit-choice-meta">"km, km/h, L, L/100km"</div>
                 </button>
                 <button
@@ -299,7 +300,7 @@ pub fn SettingsPage() -> impl IntoView {
                     prop:disabled=move || saving.get()
                     on:click=move |_| save_units(UnitSystem::Us)
                 >
-                    <div class="unit-choice-title">"Imperial"</div>
+                    <div class="unit-choice-title">{tr!("settings.imperial")}</div>
                     <div class="unit-choice-meta">"mi, mph, gal, mpg"</div>
                 </button>
             </div>
@@ -308,20 +309,23 @@ pub fn SettingsPage() -> impl IntoView {
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">
                 <Icon name="clock" color=IconColor::Accent />
-                "Region & language"
+                {tr!("settings.region_language")}
             </h2>
             <p class="muted">
-                "Your timezone decides where days, weeks and rush hours begin in statistics and route insights."
+                {tr!("settings.region_lead")}
             </p>
             <div class="settings-kv">
-                <span class="muted">"Timezone"</span>
+                <span class="muted">{tr!("settings.timezone")}</span>
                 <strong>{move || if timezone.get().is_empty() { "—".to_string() } else { timezone.get() }}</strong>
                 {
                     let browser_tz = browser_tz.clone();
                     move || {
                         let tz = browser_tz.clone()?;
                         (tz != timezone.get() && loaded.get()).then(|| {
-                            let label = format!("Use this device's timezone ({tz})");
+                            let label = {
+                                let tz = tz.clone();
+                                move || tf("settings.use_device_tz", &[("tz", &tz)])
+                            };
                             view! {
                                 <button
                                     type="button"
@@ -329,7 +333,7 @@ pub fn SettingsPage() -> impl IntoView {
                                     prop:disabled=move || saving.get()
                                     on:click=move |_| save_region(
                                         serde_json::json!({ "timezone": tz.clone() }),
-                                        "Timezone updated.",
+                                        "settings.tz_updated",
                                     )
                                 >
                                     {label}
@@ -340,34 +344,36 @@ pub fn SettingsPage() -> impl IntoView {
                 }
             </div>
             <label class="field">
-                <span>"Language"</span>
+                <span>{tr!("settings.language")}</span>
                 <select
                     prop:value=move || locale.get()
                     prop:disabled=move || saving.get()
                     on:change=move |ev| {
                         let value = event_target_value(&ev);
-                        save_region(serde_json::json!({ "locale": value }), "Language preference saved.");
+                        // Switch the interface now; the save below only persists it.
+                        crate::i18n::set_locale(crate::i18n::resolve(Some(value.as_str())));
+                        locale.set(value.clone());
+                        save_region(serde_json::json!({ "locale": value }), "settings.language_saved");
                     }
                 >
-                    <option value="">"Automatic (browser)"</option>
+                    <option value="">{tr!("settings.language_auto")}</option>
                     <option value="en">"English"</option>
                     <option value="es">"Español"</option>
                 </select>
             </label>
-            <p class="field-hint">"Saved to your account now; the interface is translated in a later release."</p>
+            <p class="field-hint">{tr!("settings.language_hint")}</p>
         </div>
 
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">
                 <Icon name="robot" color=IconColor::Accent />
-                "AI route analysis (OpenRouter)"
+                {tr!("settings.ai_title")}
             </h2>
             <p class="muted">
-                "Your personal OpenRouter API key is stored encrypted and used only when you run "
-                "Analyze on a trip you own. Usage is billed to your OpenRouter account."
+                {tr!("settings.ai_lead")}
             </p>
             <label class="field">
-                <span>"Model id"</span>
+                <span>{tr!("settings.model_id")}</span>
                 <input
                     type="text"
                     prop:value=move || openrouter_model.get()
@@ -376,14 +382,14 @@ pub fn SettingsPage() -> impl IntoView {
                 />
             </label>
             <label class="field">
-                <span>"API key"</span>
+                <span>{tr!("settings.api_key")}</span>
                 <input
                     type="password"
                     prop:value=move || openrouter_key.get()
                     on:input=move |ev| openrouter_key.set(event_target_value(&ev))
                     placeholder=move || {
                         if key_set.get() {
-                            format!("Key saved {}", key_hint.get().unwrap_or_default())
+                            tf("settings.key_saved_hint", &[("hint", &key_hint.get().unwrap_or_default())])
                         } else {
                             "sk-or-…".into()
                         }
@@ -393,17 +399,17 @@ pub fn SettingsPage() -> impl IntoView {
             </label>
             <div class="row-actions" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem">
                 <button type="button" class="btn primary" prop:disabled=move || saving.get() on:click=save_openrouter>
-                    "Save OpenRouter"
+                    {tr!("settings.save_openrouter")}
                 </button>
                 <Show when=move || key_set.get()>
                     <button type="button" class="btn ghost" prop:disabled=move || saving.get() on:click=clear_key>
-                        "Clear key"
+                        {tr!("settings.clear_key")}
                     </button>
                 </Show>
             </div>
             <Show when=move || key_set.get()>
                 <p class="muted" style="margin-top:0.5rem">
-                    "Key on file: " {move || key_hint.get().unwrap_or_else(|| "…".into())}
+                    {tr!("settings.key_on_file")} {move || key_hint.get().unwrap_or_else(|| "…".into())}
                 </p>
             </Show>
         </div>
@@ -414,20 +420,19 @@ pub fn SettingsPage() -> impl IntoView {
                 "OpenRouteService"
             </h2>
             <p class="muted">
-                "Free API key for Routes Optimization (alternate paths + elevation). "
-                "Get a key at openrouteservice.org. Stored encrypted; never shown again in full."
+                {tr!("settings.ors_lead")}
             </p>
             <label class="field">
-                <span>"API key"</span>
+                <span>{tr!("settings.api_key")}</span>
                 <input
                     type="password"
                     prop:value=move || ors_key.get()
                     on:input=move |ev| ors_key.set(event_target_value(&ev))
                     placeholder=move || {
                         if ors_key_set.get() {
-                            format!("Key saved {}", ors_key_hint.get().unwrap_or_default())
+                            tf("settings.key_saved_hint", &[("hint", &ors_key_hint.get().unwrap_or_default())])
                         } else {
-                            "Paste OpenRouteService key".into()
+                            t("settings.ors_paste").into()
                         }
                     }
                     autocomplete="off"
@@ -445,9 +450,7 @@ pub fn SettingsPage() -> impl IntoView {
                         let key = ors_key.get();
                         leptos::task::spawn_local(async move {
                             if key.is_empty() {
-                                message.set(Some(
-                                    "Enter a new key to save, or use Clear key.".into(),
-                                ));
+                                message.set(Some(t("settings.enter_new_key").into()));
                                 saving.set(false);
                                 return;
                             }
@@ -457,7 +460,7 @@ pub fn SettingsPage() -> impl IntoView {
                                     ors_key_set.set(me.ors_api_key_set);
                                     ors_key_hint.set(me.ors_api_key_hint.clone());
                                     ors_key.set(String::new());
-                                    message.set(Some("OpenRouteService key saved.".into()));
+                                    message.set(Some(t("settings.ors_saved").into()));
                                 }
                                 Err(e) => error.set(Some(e.to_string())),
                             }
@@ -465,7 +468,7 @@ pub fn SettingsPage() -> impl IntoView {
                         });
                     }
                 >
-                    "Save ORS key"
+                    {tr!("settings.save_ors")}
                 </button>
                 <Show when=move || ors_key_set.get()>
                     <button
@@ -482,7 +485,7 @@ pub fn SettingsPage() -> impl IntoView {
                                     Ok(me) => {
                                         ors_key_set.set(me.ors_api_key_set);
                                         ors_key_hint.set(me.ors_api_key_hint.clone());
-                                        message.set(Some("OpenRouteService key cleared.".into()));
+                                        message.set(Some(t("settings.ors_cleared").into()));
                                     }
                                     Err(e) => error.set(Some(e.to_string())),
                                 }
@@ -490,13 +493,13 @@ pub fn SettingsPage() -> impl IntoView {
                             });
                         }
                     >
-                        "Clear key"
+                        {tr!("settings.clear_key")}
                     </button>
                 </Show>
             </div>
             <Show when=move || ors_key_set.get()>
                 <p class="muted" style="margin-top:0.5rem">
-                    "Key on file: " {move || ors_key_hint.get().unwrap_or_else(|| "…".into())}
+                    {tr!("settings.key_on_file")} {move || ors_key_hint.get().unwrap_or_else(|| "…".into())}
                 </p>
             </Show>
         </div>
@@ -504,15 +507,13 @@ pub fn SettingsPage() -> impl IntoView {
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">
                 <Icon name="plugs-connected" color=IconColor::Accent />
-                "MCP access (AI agents)"
+                {tr!("settings.mcp_title")}
             </h2>
             <p class="muted">
-                "Generate a personal Bearer token so external AI agents can query your cars and trips "
-                "over MCP. Access is read-only; vault-encrypted data is never exposed. "
-                "The full token is shown only once when you generate or rotate it."
+                {tr!("settings.mcp_lead")}
             </p>
             <p class="muted">
-                "Endpoint: "
+                {tr!("settings.endpoint")}
                 <code>{move || {
                     let u = mcp_url.get();
                     if u.is_empty() { "/mcp".into() } else { u }
@@ -520,12 +521,12 @@ pub fn SettingsPage() -> impl IntoView {
             </p>
             <Show when=move || mcp_token_set.get()>
                 <p class="muted">
-                    "Token on file: " {move || mcp_token_hint.get().unwrap_or_else(|| "…".into())}
+                    {tr!("settings.token_on_file")} {move || mcp_token_hint.get().unwrap_or_else(|| "…".into())}
                 </p>
             </Show>
             <Show when=move || mcp_plaintext.get().is_some()>
                 <div class="banner ok" style="margin-top:0.75rem">
-                    <div>"Copy this token now — it will not be shown again:"</div>
+                    <div>{tr!("settings.copy_token_now")}</div>
                     <code style="display:block;margin-top:0.5rem;word-break:break-all">
                         {move || mcp_plaintext.get().unwrap_or_default()}
                     </code>
@@ -549,10 +550,7 @@ pub fn SettingsPage() -> impl IntoView {
                                     if !resp.mcp_url.is_empty() {
                                         mcp_url.set(resp.mcp_url);
                                     }
-                                    message.set(Some(
-                                        "MCP token generated. Copy it now; it won't be shown again."
-                                            .into(),
-                                    ));
+                                    message.set(Some(t("settings.mcp_generated").into()));
                                 }
                                 Err(e) => error.set(Some(e.to_string())),
                             }
@@ -562,9 +560,9 @@ pub fn SettingsPage() -> impl IntoView {
                 >
                     {move || {
                         if mcp_token_set.get() {
-                            "Rotate token"
+                            t("settings.rotate_token")
                         } else {
-                            "Generate token"
+                            t("settings.generate_token")
                         }
                     }}
                 </button>
@@ -583,7 +581,7 @@ pub fn SettingsPage() -> impl IntoView {
                                         mcp_token_set.set(false);
                                         mcp_token_hint.set(None);
                                         mcp_plaintext.set(None);
-                                        message.set(Some("MCP token revoked.".into()));
+                                        message.set(Some(t("settings.mcp_revoked").into()));
                                     }
                                     Err(e) => error.set(Some(e.to_string())),
                                 }
@@ -591,7 +589,7 @@ pub fn SettingsPage() -> impl IntoView {
                             });
                         }
                     >
-                        "Revoke token"
+                        {tr!("settings.revoke_token")}
                     </button>
                 </Show>
             </div>
@@ -604,10 +602,10 @@ pub fn SettingsPage() -> impl IntoView {
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">
                 <Icon name="shield-check" color=IconColor::Accent />
-                "Active sessions"
+                {tr!("settings.active_sessions")}
             </h2>
             <p class="muted">
-                "Devices currently signed into your account."
+                {tr!("settings.sessions_lead")}
             </p>
             <div class="sessions-list" style="margin-top:1rem;display:grid;gap:0.75rem">
                 <For
@@ -615,21 +613,22 @@ pub fn SettingsPage() -> impl IntoView {
                     key=|s| s.id.clone()
                     children=move |s| {
                         let id = s.id.clone();
+                        let (agent, ip, last_seen) = (s.user_agent.clone(), s.ip.clone(), s.last_seen_at.clone());
                         view! {
                             <div class="session-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.75rem;background:var(--panel-2);border-radius:var(--radius-sm)">
                                 <div style="display:flex;flex-direction:column;gap:0.25rem;min-width:0">
                                     <div style="display:flex;align-items:center;gap:0.5rem">
                                         <span style="font-weight:var(--font-weight-body-semibold);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-                                            {s.user_agent.clone().unwrap_or_else(|| "Unknown device".into())}
+                                            {move || agent.clone().unwrap_or_else(|| t("settings.unknown_device").into())}
                                         </span>
                                         <Show when=move || s.current>
-                                            <span class="badge editor">"This device"</span>
+                                            <span class="badge editor">{tr!("settings.this_device")}</span>
                                         </Show>
                                     </div>
                                     <div class="muted" style="font-size:var(--text-md)">
-                                        {s.ip.clone().unwrap_or_else(|| "Unknown IP".into())}
+                                        {move || ip.clone().unwrap_or_else(|| t("settings.unknown_ip").into())}
                                         " · "
-                                        {time_ago(&s.last_seen_at)}
+                                        {move || time_ago(&last_seen)}
                                     </div>
                                 </div>
                                 <button
@@ -638,7 +637,7 @@ pub fn SettingsPage() -> impl IntoView {
                                     prop:disabled=move || saving.get()
                                     on:click=move |_| do_revoke_session(id.clone())
                                 >
-                                    "Revoke"
+                                    {tr!("common.revoke")}
                                 </button>
                             </div>
                         }
@@ -647,10 +646,10 @@ pub fn SettingsPage() -> impl IntoView {
             </div>
             <div class="row-actions" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem">
                 <button type="button" class="btn ghost sm" prop:disabled=move || saving.get() on:click=revoke_others>
-                    "Revoke others"
+                    {tr!("settings.revoke_others")}
                 </button>
                 <button type="button" class="btn ghost sm err" prop:disabled=move || saving.get() on:click=revoke_all>
-                    "Sign out everywhere"
+                    {tr!("settings.sign_out_everywhere")}
                 </button>
             </div>
         </div>
@@ -658,16 +657,16 @@ pub fn SettingsPage() -> impl IntoView {
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">
                 <Icon name="list-bullets" color=IconColor::Accent />
-                "Security activity"
+                {tr!("settings.security_activity")}
             </h2>
-            <p class="muted">"Last 50 security-related events for your account."</p>
+            <p class="muted">{tr!("settings.security_lead")}</p>
             <div style="margin-top:1rem;overflow-x:auto">
                 <table class="table" style="width:100%;font-size:var(--text-md)">
                     <thead>
                         <tr>
-                            <th>"Action"</th>
-                            <th>"Time"</th>
-                            <th>"IP"</th>
+                            <th>{tr!("settings.action")}</th>
+                            <th>{tr!("common.time")}</th>
+                            <th>{tr!("settings.ip")}</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -675,10 +674,11 @@ pub fn SettingsPage() -> impl IntoView {
                             each=move || audit.get()
                             key=|a| a.id.clone()
                             children=move |a| {
+                                let (action, created) = (a.action.clone(), a.created_at.clone());
                                 view! {
                                     <tr>
-                                        <td>{humanize_action(&a.action)}</td>
-                                        <td class="muted">{pretty_time(&a.created_at)}</td>
+                                        <td>{move || humanize_action(&action)}</td>
+                                        <td class="muted">{move || pretty_time(&created)}</td>
                                         <td class="muted">{a.ip.clone().unwrap_or_else(|| "–".into())}</td>
                                     </tr>
                                 }
@@ -696,29 +696,26 @@ pub fn SettingsPage() -> impl IntoView {
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">
                 <Icon name="database" color=IconColor::Accent />
-                "Your data"
+                {tr!("settings.your_data")}
             </h2>
             <p class="muted">
-                "Download everything this account holds — profile, cars, trips with their samples, devices, "
-                "shares, chats and the security log — as one JSON file. Secrets such as API keys are left out; "
-                "vault data is included as the ciphertext the server stores."
+                {tr!("settings.export_lead")}
             </p>
             <a class="btn secondary" href="/api/me/export" download="" rel="nofollow">
                 <Icon name="download-simple" />
-                "Download my data"
+                {tr!("settings.download_data")}
             </a>
 
             <div class="danger-zone">
                 <h3 class="danger-zone-title">
                     <Icon name="warning" color=IconColor::Danger />
-                    "Delete account"
+                    {tr!("settings.delete_account")}
                 </h3>
                 <p class="muted">
-                    "Erases your account, your cars and everything recorded for them, and signs you out. "
-                    "Cars shared with you stay with their owners. This cannot be undone."
+                    {tr!("settings.delete_lead")}
                 </p>
                 <label class="field">
-                    <span>{move || format!("Type your email ({}) to confirm", account_email.get())}</span>
+                    <span>{move || tf("settings.type_email", &[("email", &account_email.get())])}</span>
                     <input
                         type="email"
                         autocomplete="off"
@@ -740,7 +737,7 @@ pub fn SettingsPage() -> impl IntoView {
                     on:click=delete_account
                 >
                     <Icon name="trash" />
-                    {move || if deleting_account.get() { "Deleting…" } else { "Delete my account" }}
+                    {move || if deleting_account.get() { t("common.deleting") } else { t("settings.delete_my_account") }}
                 </button>
             </div>
         </div>
@@ -748,7 +745,7 @@ pub fn SettingsPage() -> impl IntoView {
         <Show when=move || saving.get()>
             <div class="muted" style="margin-top:0.75rem">
                 <Icon name="spinner-gap" size=IconSize::Sm color=IconColor::Accent />
-                " Saving…"
+                {tr!("settings.saving")}
             </div>
         </Show>
     }
@@ -771,20 +768,21 @@ fn confirm(msg: &str) -> bool {
 }
 
 fn humanize_action(action: &str) -> String {
-    match action {
-        "auth.login" => "Signed in".into(),
-        "auth.logout" => "Signed out".into(),
-        "session.revoke" => "Session revoked".into(),
-        "session.revoke_others" => "Other sessions revoked".into(),
-        "session.revoke_all" => "All sessions revoked".into(),
-        "settings.openrouter_updated" => "OpenRouter updated".into(),
-        "settings.ors_updated" => "OpenRouteService updated".into(),
-        "share.created" => "Access shared".into(),
-        "share.revoked" => "Access revoked".into(),
-        "device.created" => "Tracking device added".into(),
-        "device.revoked" => "Tracking device removed".into(),
-        _ => action.to_string(),
-    }
+    let key = match action {
+        "auth.login" => "audit.login",
+        "auth.logout" => "audit.logout",
+        "session.revoke" => "audit.session_revoke",
+        "session.revoke_others" => "audit.revoke_others",
+        "session.revoke_all" => "audit.revoke_all",
+        "settings.openrouter_updated" => "audit.openrouter",
+        "settings.ors_updated" => "audit.ors",
+        "share.created" => "audit.share_created",
+        "share.revoked" => "audit.share_revoked",
+        "device.created" => "audit.device_created",
+        "device.revoked" => "audit.device_revoked",
+        _ => return action.to_string(),
+    };
+    t(key).to_string()
 }
 
 fn time_ago(iso: &str) -> String {
@@ -795,18 +793,18 @@ fn time_ago(iso: &str) -> String {
     let diff = now.signed_duration_since(ts.with_timezone(&chrono::Utc));
 
     if diff.num_seconds() < 60 {
-        return "Just now".into();
+        return t("common.just_now").into();
     }
     if diff.num_minutes() < 60 {
-        return format!("{}m ago", diff.num_minutes());
+        return tf("common.minutes_ago", &[("n", &diff.num_minutes())]);
     }
     if diff.num_hours() < 24 {
-        return format!("{}h ago", diff.num_hours());
+        return tf("common.hours_ago", &[("n", &diff.num_hours())]);
     }
     if diff.num_days() < 30 {
-        return format!("{}d ago", diff.num_days());
+        return tf("common.days_ago", &[("n", &diff.num_days())]);
     }
-    iso.split('T').next().unwrap_or(iso).to_string()
+    crate::i18n::iso_date(iso.split('T').next().unwrap_or(iso))
 }
 
 fn pretty_time(s: &str) -> String {
@@ -820,6 +818,7 @@ fn pretty_time(s: &str) -> String {
     let time_parts: Vec<&str> = time.split('.').collect();
     let time = time_parts[0];
     let time_hm: Vec<&str> = time.split(':').collect();
+    let date = crate::i18n::iso_date(date);
     if time_hm.len() < 2 {
         return format!("{date} {time}");
     }

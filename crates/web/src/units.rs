@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{Me, Trip, TripPoint, UnitLabelsDto};
+use crate::i18n::num;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -193,25 +194,25 @@ pub fn point_display_to_si(p: &mut TripPoint, system: UnitSystem) {
 pub fn fmt_distance(distance_m: Option<f64>, prefs: &UnitPrefs) -> String {
     let v = distance_m.unwrap_or(0.0);
     match prefs.system {
-        UnitSystem::Metric => format!("{:.1} {}", v / 1000.0, prefs.labels.distance),
-        UnitSystem::Us => format!("{:.1} {}", v, prefs.labels.distance),
+        UnitSystem::Metric => format!("{} {}", num(v / 1000.0, 1), prefs.labels.distance),
+        UnitSystem::Us => format!("{} {}", num(v, 1), prefs.labels.distance),
     }
 }
 
 pub fn fmt_distance_value(distance_m: f64, prefs: &UnitPrefs) -> String {
     match prefs.system {
-        UnitSystem::Metric => format!("{:.1}", distance_m / 1000.0),
-        UnitSystem::Us => format!("{:.1}", distance_m),
+        UnitSystem::Metric => num(distance_m / 1000.0, 1),
+        UnitSystem::Us => num(distance_m, 1),
     }
 }
 
 pub fn fmt_speed(v: Option<f64>, prefs: &UnitPrefs) -> String {
-    format!("{:.0} {}", v.unwrap_or(0.0), prefs.labels.speed)
+    format!("{} {}", num(v.unwrap_or(0.0), 0), prefs.labels.speed)
 }
 
 pub fn fmt_fuel(v: Option<f64>, prefs: &UnitPrefs) -> String {
     match v {
-        Some(f) if f > 0.0 => format!("{f:.2} {}", prefs.labels.fuel_volume),
+        Some(f) if f > 0.0 => format!("{} {}", num(f, 2), prefs.labels.fuel_volume),
         _ => "—".into(),
     }
 }
@@ -219,7 +220,7 @@ pub fn fmt_fuel(v: Option<f64>, prefs: &UnitPrefs) -> String {
 #[allow(dead_code)]
 pub fn fmt_odometer_delta(delta: Option<f64>, prefs: &UnitPrefs) -> String {
     match delta {
-        Some(d) => format!("{d:.1} {}", prefs.labels.odometer),
+        Some(d) => format!("{} {}", num(d, 1), prefs.labels.odometer),
         None => "—".into(),
     }
 }
@@ -251,7 +252,7 @@ pub fn avg_economy(fuel: Option<f64>, distance_m: Option<f64>, prefs: &UnitPrefs
 pub fn fmt_economy(v: Option<f64>, prefs: &UnitPrefs) -> String {
     match v {
         Some(x) if x.is_finite() && x > 0.0 => {
-            format!("{x:.1} {}", prefs.labels.fuel_economy)
+            format!("{} {}", num(x, 1), prefs.labels.fuel_economy)
         }
         _ => "—".into(),
     }
@@ -493,8 +494,8 @@ pub fn l_per_100km_to_display(v: f64, system: UnitSystem) -> Option<f64> {
 pub fn fmt_km(km: Option<f64>, prefs: &UnitPrefs) -> String {
     match km {
         Some(v) if v.is_finite() => format!(
-            "{:.0} {}",
-            km_to_display(v, prefs.system),
+            "{} {}",
+            num(km_to_display(v, prefs.system), 0),
             prefs.labels.distance
         ),
         _ => "—".into(),
@@ -505,8 +506,8 @@ pub fn fmt_km(km: Option<f64>, prefs: &UnitPrefs) -> String {
 pub fn fmt_money(v: Option<f64>, currency: Option<&str>) -> String {
     match v {
         Some(x) if x.is_finite() => match currency.filter(|c| !c.trim().is_empty()) {
-            Some(c) => format!("{x:.2} {c}"),
-            None => format!("{x:.2}"),
+            Some(c) => format!("{} {c}", num(x, 2)),
+            None => num(x, 2),
         },
         _ => "—".into(),
     }
@@ -817,6 +818,25 @@ mod format_tests {
         assert_eq!(fmt_money(Some(12.5), Some("EUR")), "12.50 EUR");
         assert_eq!(fmt_money(Some(3.0), None), "3.00");
         assert_eq!(fmt_money(None, Some("EUR")), "—");
+    }
+
+    #[test]
+    fn spanish_uses_decimal_comma_and_period_thousands() {
+        use crate::i18n::{Locale, with_locale};
+        with_locale(Locale::Es, || {
+            assert_eq!(fmt_economy(Some(11.8), &metric()), "11,8 L/100km");
+            assert_eq!(fmt_distance(Some(1_234_500.0), &metric()), "1.234,5 km");
+            assert_eq!(fmt_distance(Some(12_345.0), &metric()), "12,3 km");
+            assert_eq!(fmt_distance_value(1500.0, &us()), "1.500,0");
+            assert_eq!(fmt_speed(Some(88.4), &metric()), "88 km/h");
+            assert_eq!(fmt_fuel(Some(3.456), &metric()), "3,46 L");
+            assert_eq!(fmt_economy(Some(30.0), &us()), "30,0 mpg");
+            assert_eq!(fmt_km(Some(15_000.0), &metric()), "15.000 km");
+            assert_eq!(fmt_km(Some(1609.344), &us()), "1.000 mi");
+            assert_eq!(fmt_money(Some(1234.5), Some("EUR")), "1.234,50 EUR");
+            assert_eq!(fmt_odometer_delta(Some(42.26), &metric()), "42,3 km");
+            assert_eq!(fmt_fuel(None, &metric()), "—");
+        });
     }
 
     #[test]

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <!-- Theme boot: must run before any CSS paints, so it's inline and the very
+  <!-- Theme + language boot: must run before any CSS paints, so it's inline and the very
        first thing in <head>. Sets [data-theme] on <html> (design-system/
        theme-switcher/) before the WASM app hydrates, avoiding a flash of the
        wrong theme. Precedence: localStorage > prefers-color-scheme > dark
@@ -23,6 +23,15 @@
       } catch (e) {
         document.documentElement.setAttribute("data-theme", "dark");
       }
+      // Language: the locale the app cached last time (src/i18n.rs), else the
+      // browser's. The app keeps <html lang> in step once it starts.
+      try {
+        var loc = localStorage.getItem("locale");
+        if (loc !== "en" && loc !== "es") {
+          loc = /^es/i.test(navigator.language || "") ? "es" : "en";
+        }
+        document.documentElement.setAttribute("lang", loc);
+      } catch (e) {}
     })();
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>

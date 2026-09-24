@@ -1,3 +1,7 @@
+// `i18n` stays first so its `tr!` macro is in scope for every module below.
+#[macro_use]
+mod i18n;
+
 mod api;
 mod components;
 mod default_car;
@@ -29,6 +33,7 @@ use crate::vault::provide_vault_session;
 fn main() {
     console_error_panic_hook::set_once();
     mount_to_body(|| {
+        crate::i18n::provide_locale();
         provide_vault_session();
         provide_theme();
         view! {
