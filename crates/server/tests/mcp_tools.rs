@@ -122,6 +122,7 @@ struct World {
     friend_token: String,
     car: Uuid,
     trip: Uuid,
+    trip2: Uuid,
     corridor: Uuid,
 }
 
@@ -143,6 +144,14 @@ async fn world() -> Option<World> {
         &support::cruise(40),
     )
     .await;
+    let trip2 = support::insert_trip(
+        &pool,
+        car,
+        "DIESEL",
+        Utc::now() - chrono::Duration::hours(3),
+        &support::cruise(20),
+    )
+    .await;
     let corridor = support::insert_corridor(&pool, car).await;
     let base = support::serve(state.clone()).await;
     Some(World {
@@ -157,12 +166,14 @@ async fn world() -> Option<World> {
         friend_token,
         car,
         trip,
+        trip2,
         corridor,
     })
 }
 
-const TRIP_TOOLS: [&str; 7] = [
+const TRIP_TOOLS: [&str; 8] = [
     "get_trip",
+    "get_energy_stats",
     "get_trip_speed_stats",
     "get_trip_engine_stats",
     "get_trip_fuel_stats",
@@ -223,7 +234,7 @@ async fn every_tool_answers_its_owner() {
 
     let (err, dash) = mcp.call("get_dashboard_summary", json!({})).await;
     assert!(!err, "{dash}");
-    assert_eq!(dash["trip_count"], 1);
+    assert_eq!(dash["trip_count"], 2);
     assert_eq!(dash["by_fuel_class"][0]["fuel_class"], "DIESEL");
 
     let (err, corridors) = mcp.call("list_route_corridors", json!({})).await;
@@ -232,6 +243,107 @@ async fn every_tool_answers_its_owner() {
         .call("get_route_corridor", json!({ "corridor_id": w.corridor }))
         .await;
     assert!(!err, "{corridor}");
+
+    let (err, cmp) = mcp
+        .call("compare_trips", json!({ "trip_ids": [w.trip, w.trip2] }))
+        .await;
+    assert!(!err, "{cmp}");
+    assert_eq!(cmp["same_fuel_class"], true);
+    assert_eq!(cmp["trips"][0]["fuel_class"], "DIESEL");
+    assert!(cmp["trips"][0]["fuel_economy"].as_f64().is_some(), "{cmp}");
+    assert_eq!(cmp["units"]["fuel_economy"], "L/100km");
+
+    let (err, trend) = mcp
+        .call(
+            "get_fuel_economy_trend",
+            json!({ "car_id": w.car, "bucket": "week" }),
+        )
+        .await;
+    assert!(!err, "{trend}");
+    assert_eq!(trend["fuel_class"], "DIESEL");
+    let trips: u64 = trend["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["trip_count"].as_u64().unwrap())
+        .sum();
+    assert_eq!(trips, 2, "{trend}");
+
+    let start = Utc::now() - chrono::Duration::hours(2);
+    let (err, window) = mcp
+        .call(
+            "get_trip_point_window",
+            json!({ "trip_id": w.trip, "start": start, "end": Utc::now() }),
+        )
+        .await;
+    assert!(!err, "{window}");
+    assert_eq!(window["fuel_class"], "DIESEL");
+    assert_eq!(window["window"]["matched_count"], 40, "{window}");
+
+    let (err, energy) = mcp
+        .call("get_energy_stats", json!({ "trip_id": w.trip }))
+        .await;
+    assert!(!err, "{energy}");
+    assert_eq!(energy["applicable"], false);
+
+    // Bad input to the new tools is a readable tool error.
+    let (err, body) = mcp
+        .call("compare_trips", json!({ "trip_ids": [w.trip] }))
+        .await;
+    assert!(err, "{body}");
+    let (err, body) = mcp
+        .call(
+            "get_fuel_economy_trend",
+            json!({ "car_id": w.car, "bucket": "fortnight" }),
+        )
+        .await;
+    assert!(err, "{body}");
+}
+
+#[tokio::test]
+async fn energy_stats_describe_an_electric_trip() {
+    let Some(w) = world().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let ev = support::insert_car(&w.pool, w.owner, "Leaf", "FULL_ELECTRIC", Some(40.0)).await;
+    let samples: Vec<support::Sample> = support::cruise(30)
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut s)| {
+            s.rpm = Some(0.0);
+            s.fuel_rate_lph = None;
+            s.soc_pct = Some(80.0 - i as f64 * 0.1);
+            s
+        })
+        .collect();
+    let trip = support::insert_trip(
+        &w.pool,
+        ev,
+        "FULL_ELECTRIC",
+        Utc::now() - chrono::Duration::hours(2),
+        &samples,
+    )
+    .await;
+    let mut mcp = McpClient::connect(&w.base, &w.owner_token).await;
+    let (err, energy) = mcp
+        .call("get_energy_stats", json!({ "trip_id": trip }))
+        .await;
+    assert!(!err, "{energy}");
+    assert_eq!(energy["fuel_class"], "FULL_ELECTRIC");
+    assert_eq!(energy["applicable"], true);
+    let kwh = energy["energy_used_kwh"].as_f64().unwrap();
+    assert!((kwh - 1.16).abs() < 1e-6, "{energy}");
+    assert_eq!(energy["soc_min_pct"].as_f64().unwrap().round(), 77.0);
+    assert!(energy["energy_per_100"].as_f64().is_some(), "{energy}");
+
+    // An electric trip next to a diesel one is flagged as not comparable.
+    let (err, cmp) = mcp
+        .call("compare_trips", json!({ "trip_ids": [trip, w.trip] }))
+        .await;
+    assert!(!err, "{cmp}");
+    assert_eq!(cmp["same_fuel_class"], false);
+    assert_eq!(cmp["trips"][0]["fuel_economy"], Value::Null);
 }
 
 /// Everything a stranger might try with the owner's ids.
@@ -249,6 +361,21 @@ async fn assert_invisible(mcp: &mut McpClient, w: &World) {
         .call("get_route_corridor", json!({ "corridor_id": w.corridor }))
         .await;
     assert!(err, "corridor leaked: {body}");
+    let (err, body) = mcp
+        .call("compare_trips", json!({ "trip_ids": [w.trip, w.trip2] }))
+        .await;
+    assert!(err, "compare leaked: {body}");
+    let (err, body) = mcp
+        .call("get_fuel_economy_trend", json!({ "car_id": w.car }))
+        .await;
+    assert!(err, "trend leaked: {body}");
+    let (err, body) = mcp
+        .call(
+            "get_trip_point_window",
+            json!({ "trip_id": w.trip, "start": Utc::now() - chrono::Duration::days(1), "end": Utc::now() }),
+        )
+        .await;
+    assert!(err, "point window leaked: {body}");
 
     let (err, cars) = mcp.call("list_cars", json!({})).await;
     assert!(!err);
@@ -393,6 +520,26 @@ async fn assert_chat_invisible(w: &World, user: Uuid) {
             user,
             "get_route_corridor",
             json!({ "corridor_id": w.corridor })
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        chat(
+            w,
+            user,
+            "compare_trips",
+            json!({ "trip_ids": [w.trip, w.trip2] })
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        chat(
+            w,
+            user,
+            "get_fuel_economy_trend",
+            json!({ "car_id": w.car })
         )
         .await
         .is_err()

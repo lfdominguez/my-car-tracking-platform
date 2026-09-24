@@ -2,12 +2,16 @@
 
 mod cars;
 mod dashboard;
+mod insights;
 mod routes;
 mod trip_stats;
 mod trips;
 
 pub use cars::{get_car, list_cars};
 pub use dashboard::get_dashboard_summary;
+pub use insights::{
+    TrendBucket, compare_trips, get_energy_stats, get_fuel_economy_trend, get_trip_point_window,
+};
 pub use routes::{get_route_corridor, list_route_corridors};
 pub use trip_stats::{
     get_trip_ai_report, get_trip_engine_stats, get_trip_fuel_stats, get_trip_speed_stats,

@@ -420,7 +420,7 @@ struct StatsRow {
 /// analysis quotes the same L/100 km the trip page does. Whole-km odometers
 /// under-report short trips, so a delta far below GPS is rejected as well as one far
 /// above it.
-fn economy_distance_m(
+pub(crate) fn economy_distance_m(
     gps_m: Option<f64>,
     odo_start_km: Option<f64>,
     odo_end_km: Option<f64>,

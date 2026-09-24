@@ -34,7 +34,7 @@ impl CarTrackingMcp {
     fn new(state: AppState) -> Self {
         Self {
             state,
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::insight_router(),
         }
     }
 
@@ -91,6 +91,37 @@ struct DashboardArgs {
 struct ListCorridorsArgs {
     car_id: Option<String>,
     limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CompareTripsArgs {
+    /// 2 to 10 trip ids (uuid) from list_trips.
+    trip_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct EconomyTrendArgs {
+    car_id: String,
+    from: Option<String>,
+    to: Option<String>,
+    /// "week" or "month" (default).
+    bucket: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PointWindowArgs {
+    trip_id: String,
+    /// RFC3339 start of the window (inclusive).
+    start: String,
+    /// RFC3339 end of the window (inclusive).
+    end: String,
+    /// Anchor points to return (default 5, max 8).
+    limit: Option<i64>,
+}
+
+fn parse_dt(s: &str, field: &str) -> Result<DateTime<Utc>, McpError> {
+    parse_opt_dt(&Some(s.to_string()), field)?
+        .ok_or_else(|| McpError::invalid_params(format!("{field} is required"), None))
 }
 
 fn parse_uuid(s: &str, field: &str) -> Result<Uuid, McpError> {
@@ -301,6 +332,80 @@ impl CarTrackingMcp {
         let user = Self::user_from_parts(&parts)?;
         let id = parse_uuid(&args.corridor_id, "corridor_id")?;
         tools::respond(tools::get_route_corridor(&self.ctx(&user), id).await)
+    }
+}
+
+#[tool_router(router = insight_router)]
+impl CarTrackingMcp {
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Compare 2-10 trips side by side: distance, duration, speeds, fuel or energy used, economy (L/100km or mpg; kWh per 100) and fuel_class."
+    )]
+    async fn compare_trips(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<CompareTripsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = Self::user_from_parts(&parts)?;
+        let ids = args
+            .trip_ids
+            .iter()
+            .map(|id| parse_uuid(id, "trip_ids"))
+            .collect::<Result<Vec<_>, _>>()?;
+        tools::respond(tools::compare_trips(&self.ctx(&user), &ids).await)
+    }
+
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Fuel economy (or kWh per 100 for electric) per week or month for one car_id. Optional from/to (RFC3339) and bucket (week|month)."
+    )]
+    async fn get_fuel_economy_trend(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<EconomyTrendArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = Self::user_from_parts(&parts)?;
+        let car_id = parse_uuid(&args.car_id, "car_id")?;
+        let from = parse_opt_dt(&args.from, "from")?;
+        let to = parse_opt_dt(&args.to, "to")?;
+        let bucket = match tools::TrendBucket::parse(args.bucket.as_deref()) {
+            Ok(b) => b,
+            Err(e) => return tools::respond::<()>(Err(e)),
+        };
+        tools::respond(
+            tools::get_fuel_economy_trend(&self.ctx(&user), car_id, from, to, bucket).await,
+        )
+    }
+
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Summarize one trip's telemetry between start and end (RFC3339): min/avg/max per signal plus a few anchor samples."
+    )]
+    async fn get_trip_point_window(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<PointWindowArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = Self::user_from_parts(&parts)?;
+        let id = parse_uuid(&args.trip_id, "trip_id")?;
+        let start = parse_dt(&args.start, "start")?;
+        let end = parse_dt(&args.end, "end")?;
+        let limit = args.limit.map(|l| l.clamp(1, 100) as usize);
+        tools::respond(tools::get_trip_point_window(&self.ctx(&user), id, start, end, limit).await)
+    }
+
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Battery energy for a HYBRID or FULL_ELECTRIC trip: SoC start/end/min/max, kWh used, kWh per 100, battery power, hybrid engine-on share."
+    )]
+    async fn get_energy_stats(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(args): Parameters<TripIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = Self::user_from_parts(&parts)?;
+        let id = parse_uuid(&args.trip_id, "trip_id")?;
+        tools::respond(tools::get_energy_stats(&self.ctx(&user), id).await)
     }
 }
 

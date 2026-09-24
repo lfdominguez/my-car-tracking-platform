@@ -32,7 +32,7 @@ use super::trips::require_readable_trip;
 ///
 /// Authorization runs first, on every call: the cache is only ever consulted for a
 /// trip this caller may read.
-async fn load_analysis(
+pub(super) async fn load_analysis(
     ctx: &ToolCtx<'_>,
     trip_id: Uuid,
 ) -> AppResult<Arc<ai::TripAnalysisContext>> {
