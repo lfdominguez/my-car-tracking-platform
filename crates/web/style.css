@@ -379,8 +379,14 @@ h3 { font-size: var(--text-lg); }
 /* Route-level entry. `.page-view` is a permanent wrapper around <Outlet/>; its
    children are remounted by the router on every navigation, so the animation
    replays per route without the wrapper itself ever re-running. Successive
-   top-level blocks cascade rather than all arriving at once. */
-.page-view > * { animation: page-in var(--motion-duration-entry) var(--motion-ease-enter) both; }
+   top-level blocks cascade rather than all arriving at once.
+   Fill mode is `backwards`, never `both`: a forwards fill keeps an opacity/
+   transform animation in effect forever, which makes every block its own
+   stacking context. Popovers (the trip Export menu, sticky bars) would then be
+   trapped inside their block and painted under the blocks that follow it. The
+   end keyframe equals the resting style, so dropping the forwards fill is
+   visually identical. Same rule for the stagger/row entries further down. */
+.page-view > * { animation: page-in var(--motion-duration-entry) var(--motion-ease-enter) backwards; }
 .page-view > *:nth-child(2) { animation-delay: 50ms; }
 .page-view > *:nth-child(3) { animation-delay: 100ms; }
 .page-view > *:nth-child(4) { animation-delay: 150ms; }
@@ -1671,7 +1677,7 @@ label {
   line-height: 1.5;
   color: var(--body);
   max-width: 36rem;
-  animation: page-in var(--motion-duration-medium) var(--motion-ease-enter) both;
+  animation: page-in var(--motion-duration-medium) var(--motion-ease-enter) backwards;
 }
 @media (max-width: 860px) {
   .telemetry-panels { grid-template-columns: 1fr; }
@@ -3653,12 +3659,15 @@ a:hover .routes-corridor-card {
 
 /* ---- Staggered list entry ------------------------------------------------
    Any grid/list whose children should cascade in. Children get their index via
-   nth-child rather than inline styles, so no markup carries animation state. */
+   nth-child rather than inline styles, so no markup carries animation state.
+   `backwards` (not `both`) for the stacking-context reason noted at
+   `.page-view > *`; it also lets the cards' own :hover transform lift apply,
+   which a forwards-filled `transform: none` would override. */
 .trip-grid > a,
 .dash-car-grid > a,
 .landing-feature-grid > *,
 .stat-panel-grid > * {
-  animation: stagger-in var(--motion-duration-entry) var(--motion-ease-enter) both;
+  animation: stagger-in var(--motion-duration-entry) var(--motion-ease-enter) backwards;
 }
 @keyframes stagger-in {
   from { opacity: 0; transform: translateY(12px) scale(0.985); }
@@ -3673,7 +3682,7 @@ a:hover .routes-corridor-card {
 .trip-grid > a:nth-child(n + 7), .dash-car-grid > a:nth-child(n + 7), .stat-panel-grid > *:nth-child(n + 7) { animation-delay: 270ms; }
 
 /* KPI numbers count in with a short rise; the row itself is already framed. */
-.kpi-hairline-item { animation: stagger-in var(--motion-duration-entry) var(--motion-ease-enter) both; }
+.kpi-hairline-item { animation: stagger-in var(--motion-duration-entry) var(--motion-ease-enter) backwards; }
 .kpi-hairline-item:nth-child(2) { animation-delay: 40ms; }
 .kpi-hairline-item:nth-child(3) { animation-delay: 80ms; }
 .kpi-hairline-item:nth-child(4) { animation-delay: 120ms; }
@@ -3681,7 +3690,7 @@ a:hover .routes-corridor-card {
 
 /* Table rows fade in on first paint of a page, capped so a 200-row table
    doesn't animate for six seconds. */
-.table tbody tr { animation: row-in var(--motion-duration-medium) var(--motion-ease-enter) both; }
+.table tbody tr { animation: row-in var(--motion-duration-medium) var(--motion-ease-enter) backwards; }
 .table tbody tr:nth-child(1) { animation-delay: 0ms; }
 .table tbody tr:nth-child(2) { animation-delay: 30ms; }
 .table tbody tr:nth-child(3) { animation-delay: 60ms; }
