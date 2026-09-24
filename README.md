@@ -43,7 +43,7 @@
 | 📱 **Installable web** | PWA manifest + icons · Add to Home Screen · light offline shell · update banner |
 | 📍 **Live map** | Latest position per car over SSE · owner can turn live sharing off per car |
 | 🔧 **Maintenance & fuel log** | Service schedule by km/months, odometer readings, fill-ups, cost and CO₂ |
-| 🔔 **Alerts & places** | Speed/idle/battery/DTC rules, geofences with enter/exit events, Web Push + in-app inbox, digest |
+| 🔔 **Alerts & places** | Speed/idle/battery/DTC rules, geofences with enter/exit events, Web Push, email + in-app inbox, digest |
 | 🩺 **Vehicle health** | Stored/pending DTCs, battery voltage trend, driving score and speeding segments |
 | 🏷️ **Trip tools** | Tags, purpose (business/personal), notes, merge/split, GPX/KML/GeoJSON/CSV export, period stats |
 | 🔒 **Account** | Session list + revoke, audit log, new-sign-in notices, data export, account deletion |
@@ -114,6 +114,7 @@ Optional settings, all documented in `.env.example`:
 | Variable | Purpose |
 |----------|---------|
 | `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Web Push. Generate a key with `cargo run -p server -- vapid-keygen` |
+| `SMTP_URL`, `SMTP_FROM` | Email notifications (users opt in per account) |
 | `AUDIT_RETENTION_DAYS` | Audit rows kept (default 365) |
 | `DATABASE_MAX_CONNECTIONS` | Postgres pool size |
 | `CSP_EXTRA_HOSTS` | Extra hosts allowed by the Content-Security-Policy |

@@ -161,11 +161,49 @@ pub async fn notify(pool: &PgPool, user_id: Uuid, n: Notification<'_>) {
     .to_string();
     let pool = pool.clone();
     let kind = n.kind.to_string();
+    let (title, body, url) = (n.title, n.body, n.url);
     tokio::spawn(async move {
         if let Err(e) = push_to_user(&pool, user_id, &kind, &payload).await {
             tracing::warn!(%user_id, error = %e, "push delivery failed");
         }
+        if let Err(e) = email_user(&pool, user_id, &kind, &title, &body, url.as_deref()).await {
+            tracing::warn!(%user_id, error = %e, "email delivery failed");
+        }
     });
+}
+
+fn is_muted(prefs: &serde_json::Value, kind: &str) -> bool {
+    prefs
+        .get("muted")
+        .and_then(|m| m.as_array())
+        .is_some_and(|m| m.iter().any(|k| k == kind))
+}
+
+/// Email the notification when SMTP is configured and the user opted in.
+async fn email_user(
+    pool: &PgPool,
+    user_id: Uuid,
+    kind: &str,
+    title: &str,
+    body: &str,
+    url: Option<&str>,
+) -> AppResult<()> {
+    if !crate::email::enabled() {
+        return Ok(());
+    }
+    let row: Option<(String, serde_json::Value)> =
+        sqlx::query_as("SELECT email, notification_prefs FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    let Some((email, prefs)) = row else {
+        return Ok(());
+    };
+    if prefs.get("email") != Some(&serde_json::Value::Bool(true)) || is_muted(&prefs, kind) {
+        return Ok(());
+    }
+    crate::email::send(&email, title, body, url).await;
+    Ok(())
 }
 
 /// A security notice, linking to the sessions list so an unexpected one can be
@@ -243,12 +281,7 @@ async fn push_to_user(pool: &PgPool, user_id: Uuid, kind: &str, payload: &str) -
             .fetch_optional(pool)
             .await?
             .unwrap_or_default();
-    if prefs.get("push") == Some(&serde_json::Value::Bool(false))
-        || prefs
-            .get("muted")
-            .and_then(|m| m.as_array())
-            .is_some_and(|m| m.iter().any(|k| k == kind))
-    {
+    if prefs.get("push") == Some(&serde_json::Value::Bool(false)) || is_muted(&prefs, kind) {
         return Ok(());
     }
     let subs: Vec<SubRow> = sqlx::query_as(
@@ -424,6 +457,8 @@ async fn read_all(
 async fn push_config(_user: AuthUser) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "vapid_public_key": VAPID.as_ref().map(|v| v.public_b64.clone()),
+        // Lets the UI offer the email toggle only when the server can send.
+        "email_enabled": crate::email::enabled(),
     }))
 }
 
@@ -523,6 +558,9 @@ pub struct NotificationPrefs {
     /// Browser push on (default) or off; the inbox always records.
     #[serde(default = "default_true")]
     pub push: bool,
+    /// Also email notifications (needs `SMTP_URL` on the server). Off by default.
+    #[serde(default)]
+    pub email: bool,
     /// Notification kinds not to push (e.g. "alert.speeding").
     #[serde(default)]
     pub muted: Vec<String>,

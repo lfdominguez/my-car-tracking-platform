@@ -12,6 +12,7 @@ pub mod db;
 pub mod devices;
 pub mod digest;
 pub mod driving;
+pub mod email;
 pub mod error;
 pub mod garage;
 pub mod geofences;
