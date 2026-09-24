@@ -10,7 +10,7 @@ use crate::api::{
     fetch_trip_analysis, finish_trip, get_trip, list_cars, list_trips, start_trip_analysis,
     start_trip_traffic_analyze, trip_map, trip_points, trip_traffic_frames, vault_create_job,
 };
-use crate::components::charts::TripTelemetryDashboard;
+use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{
@@ -965,6 +965,13 @@ pub fn TripDetailPage() -> impl IntoView {
         });
     });
 
+    // Map and charts draw the sanitized speed/RPM (isolated OBD spikes removed);
+    // the AI panel and the counters keep the samples as recorded.
+    let clean_points = Memo::new(move |_| {
+        let system = prefs.with(|p| p.system);
+        points.with(|pts| sanitize_trip_points(pts, system))
+    });
+
     view! {
             <div class="topbar">
                 <div>
@@ -1255,7 +1262,7 @@ pub fn TripDetailPage() -> impl IntoView {
                 )}
                 <TripMap
                     geojson=geojson.into()
-                    points=points
+                    points=clean_points
                     traffic_frames=Signal::derive(move || traffic_frames.get())
                 />
                 <div class="map-legend">
@@ -1303,7 +1310,7 @@ pub fn TripDetailPage() -> impl IntoView {
                     <p class="muted">"Summary badges, overview charts by default, category filters, and smooth trends — expand ⓘ on any chart for what it means."</p>
                 </div>
                 <TripTelemetryDashboard
-                    points=points.into()
+                    points=clean_points.into()
                     trip_economy=Signal::derive(move || {
                         let t = trip.get()?;
                         let p = prefs.get();

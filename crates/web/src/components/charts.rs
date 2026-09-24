@@ -4,9 +4,10 @@ use wasm_bindgen::prelude::*;
 use crate::api::TripPoint;
 use crate::components::{Icon, IconColor, IconSize};
 use crate::units::{
-    ECONOMY_WINDOW_S, EconomySample, headline_economy, integrated_economy, use_unit_prefs,
-    windowed_economy_series,
+    ECONOMY_WINDOW_S, EconomySample, KM_PER_MILE, UnitSystem, headline_economy, integrated_economy,
+    use_unit_prefs, windowed_economy_series,
 };
+use shared::telemetry_sanitize::{SpeedRpmPoint, sanitize_speed_rpm};
 
 #[wasm_bindgen(inline_js = r#"
 const __tripCharts = new Map();
@@ -552,19 +553,112 @@ fn round_series_2dp(data: &[Option<f64>]) -> Vec<Option<f64>> {
     data.iter().map(|v| v.map(round2)).collect()
 }
 
+/// Min/max decimation down to about `max_n` samples.
+///
+/// Every panel shares one category axis, so whole samples are kept rather than
+/// per-series values. Each bucket keeps the samples holding its lowest and highest
+/// speed (RPM when there is no speed), in time order, plus the first and last
+/// sample of the trip. Taking every Nth sample instead dropped short peaks — a
+/// hard acceleration or a top-speed burst could vanish from the chart entirely.
 fn downsample_points(points: &[TripPoint], max_n: usize) -> Vec<TripPoint> {
-    if points.len() <= max_n || max_n < 3 {
-        return points.to_vec();
+    downsample_indices(points, max_n)
+        .into_iter()
+        .map(|i| points[i].clone())
+        .collect()
+}
+
+fn downsample_indices(points: &[TripPoint], max_n: usize) -> Vec<usize> {
+    let n = points.len();
+    if n <= max_n || max_n < 4 {
+        return (0..n).collect();
     }
-    let last = points.len() - 1;
+    let key = |p: &TripPoint| coalesce_speed(p).or_else(|| coalesce_rpm(p));
+    // Two samples per bucket; the endpoints are added separately.
+    let buckets = (max_n - 2) / 2;
+    let inner = n - 2;
     let mut out = Vec::with_capacity(max_n);
-    for i in 0..max_n {
-        let idx = if i == max_n - 1 {
-            last
-        } else {
-            (i * last) / (max_n - 1)
+    out.push(0);
+    for b in 0..buckets {
+        let start = 1 + b * inner / buckets;
+        let end = 1 + (b + 1) * inner / buckets;
+        if start >= end {
+            continue;
+        }
+        let mut lo: Option<(usize, f64)> = None;
+        let mut hi: Option<(usize, f64)> = None;
+        for (i, p) in points.iter().enumerate().take(end).skip(start) {
+            let Some(v) = key(p).filter(|v| v.is_finite()) else {
+                continue;
+            };
+            if lo.is_none_or(|(_, m)| v < m) {
+                lo = Some((i, v));
+            }
+            if hi.is_none_or(|(_, m)| v > m) {
+                hi = Some((i, v));
+            }
+        }
+        match (lo, hi) {
+            (Some((a, _)), Some((b, _))) if a != b => {
+                out.push(a.min(b));
+                out.push(a.max(b));
+            }
+            (Some((a, _)), _) => out.push(a),
+            // No speed or RPM in this bucket: keep its middle sample for the others.
+            _ => out.push((start + end - 1) / 2),
+        }
+    }
+    out.push(n - 1);
+    out
+}
+
+/// Timestamp for the sanitizer (RFC 3339, or the SQL shape `epoch_seconds` accepts).
+fn sample_time(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f")
+        .ok()
+        .map(|n| n.and_utc())
+}
+
+/// Speed/RPM with isolated OBD spikes removed, for the map and the charts.
+///
+/// Runs the same `shared::telemetry_sanitize::sanitize_speed_rpm` pass the server
+/// applies before trip graphs and analysis. Speeds arrive in display units, and the
+/// sanitizer's limits are in km/h, so mph is converted for the pass and back.
+/// Both speed (and both RPM) fields are overwritten so every `coalesce_*` reader
+/// sees the cleaned value.
+pub fn sanitize_trip_points(points: &[TripPoint], system: UnitSystem) -> Vec<TripPoint> {
+    let to_kph = match system {
+        UnitSystem::Metric => 1.0,
+        UnitSystem::Us => KM_PER_MILE,
+    };
+    let mut out = points.to_vec();
+    let mut index = Vec::with_capacity(points.len());
+    let mut series = Vec::with_capacity(points.len());
+    for (i, p) in points.iter().enumerate() {
+        let Some(t) = sample_time(&p.recorded_at) else {
+            continue;
         };
-        out.push(points[idx].clone());
+        index.push(i);
+        series.push(SpeedRpmPoint {
+            t,
+            speed_kph: coalesce_speed(p).map(|v| v * to_kph),
+            rpm: coalesce_rpm(p),
+        });
+    }
+    sanitize_speed_rpm(&mut series);
+    for (i, s) in index.into_iter().zip(series) {
+        let p = &mut out[i];
+        if p.vehicle_speed_kph.is_some() || p.engine_vel.is_some() {
+            let v = s.speed_kph.map(|v| v / to_kph);
+            p.vehicle_speed_kph = v;
+            p.engine_vel = v;
+        }
+        if p.vehicle_engine_rpm.is_some() || p.engine_rpm.is_some() {
+            p.vehicle_engine_rpm = s.rpm;
+            p.engine_rpm = s.rpm;
+        }
     }
     out
 }
@@ -2023,6 +2117,53 @@ pub fn TripTelemetryDashboard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn point(t: usize, speed: Option<f64>) -> TripPoint {
+        serde_json::from_value(serde_json::json!({
+            "recorded_at": format!("2026-01-01T00:{:02}:{:02}Z", t / 60, t % 60),
+            "lat": null, "lon": null, "gps_acc_m": -1.0,
+            "vehicle_speed_kph": speed, "vehicle_engine_rpm": null, "engine_rpm": null,
+            "engine_vel": null, "fuel_consumption_rate": null, "engine_load_pct": null,
+            "absolute_engine_load_pct": null, "short_term_fuel_trim_pct": null,
+            "long_term_fuel_trim_pct": null, "fuel_level_pct": null,
+            "accelerator_pedal_pct": null, "ambient_air_temp_c": null,
+            "odometer_value_km": null, "engine_coolant_temp_c": null,
+            "manifold_absolute_pressure_kpa": null, "control_module_voltage": null,
+            "engine_on_time": null, "lambda_cmd": null, "atmospheric_pressure": null,
+            "intake_air_temperature": null, "mass_air_flow": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn downsample_keeps_short_peaks() {
+        // 3000 samples at 50 with a single 2-sample burst to 120: every-Nth to 100
+        // would almost surely skip it.
+        let pts: Vec<_> = (0..3000)
+            .map(|i| point(i, Some(if i == 1777 || i == 1778 { 120.0 } else { 50.0 })))
+            .collect();
+        let idx = downsample_indices(&pts, 100);
+        assert!(idx.len() <= 100, "{}", idx.len());
+        assert_eq!(idx.first(), Some(&0));
+        assert_eq!(idx.last(), Some(&2999));
+        assert!(
+            idx.windows(2).all(|w| w[0] < w[1]),
+            "must stay in time order"
+        );
+        assert!(idx.iter().any(|&i| i == 1777 || i == 1778), "peak dropped");
+    }
+
+    #[test]
+    fn sanitize_drops_isolated_speed_spike() {
+        let mut pts: Vec<_> = (0..20).map(|i| point(i, Some(50.0))).collect();
+        pts[10] = point(10, Some(200.0));
+        let clean = sanitize_trip_points(&pts, UnitSystem::Metric);
+        assert!(clean.iter().all(|p| p.vehicle_speed_kph == Some(50.0)));
+        // Samples without a speed stay without one.
+        let gaps: Vec<_> = (0..5).map(|i| point(i, None)).collect();
+        let clean = sanitize_trip_points(&gaps, UnitSystem::Us);
+        assert!(clean.iter().all(|p| p.vehicle_speed_kph.is_none()));
+    }
 
     #[test]
     fn ema_empty() {

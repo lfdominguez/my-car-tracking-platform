@@ -296,9 +296,14 @@ function buildSpeedLineFeatures(points, fallbackCoordinates) {
     else if (last != null) speeds[i] = last;
   }
 
-  const finite = speeds.filter((s) => s != null && Number.isFinite(s));
-  let minSpeed = finite.length ? Math.min(...finite) : null;
-  let maxSpeed = finite.length ? Math.max(...finite) : null;
+  // Colour scale spans p2–p98 rather than min–max, so one leftover outlier cannot
+  // squash the whole route into a single hue. (Sorting a copy also avoids
+  // Math.min(...spread), which throws RangeError past the engine's argument limit
+  // on long trips.)
+  const finite = speeds.filter((s) => s != null && Number.isFinite(s)).sort((a, b) => a - b);
+  const pct = (p) => finite[Math.min(finite.length - 1, Math.max(0, Math.round((finite.length - 1) * p)))];
+  let minSpeed = finite.length ? pct(0.02) : null;
+  let maxSpeed = finite.length ? pct(0.98) : null;
   const span = (minSpeed != null && maxSpeed != null) ? (maxSpeed - minSpeed) : 0;
   const hasSpeed = finite.length > 0;
 
