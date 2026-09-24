@@ -42,8 +42,8 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # crates/web is WASM-only and is not linted on a native target, matching
-      # the split in tests.yml.
+      # crates/web is WASM-only, so it is linted for wasm32 below instead of
+      # natively, matching the split in tests.yml.
       - name: Run clippy
         run: |
           for crate in shared vault_crypto ai server; do
@@ -51,3 +51,8 @@ jobs:
             cargo clippy -p "$crate" --all-targets -- -D warnings
             echo "::endgroup::"
           done
+
+      - name: Run clippy on the web crate (wasm32)
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo clippy -p web --target wasm32-unknown-unknown -- -D warnings
