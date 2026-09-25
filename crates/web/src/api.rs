@@ -101,6 +101,9 @@ pub struct Car {
     /// Days of per-second samples kept; `None` keeps everything.
     #[serde(default)]
     pub raw_retention_days: Option<i32>,
+    /// Learned from the phone; put back into the provisioning QR.
+    #[serde(default)]
+    pub tank_capacity_l: Option<f64>,
 }
 
 /// Owner only: keep raw samples for `days` (at least 30) or, with `None`, forever.
@@ -902,6 +905,7 @@ pub fn provisioning_payload_json(token: &str, car: &Car) -> Result<String, ApiEr
         stop_url: format!("{base}/api/track/stop"),
         sample_url: format!("{base}/api/track/sample"),
         samples_url: format!("{base}/api/track/samples"),
+        ping_url: format!("{base}/api/track/ping"),
         fuel_type: car.fuel_type.clone(),
         fuel_class: if car.fuel_class.is_empty() {
             "GASOLINE".into()
@@ -913,6 +917,7 @@ pub fn provisioning_payload_json(token: &str, car: &Car) -> Result<String, ApiEr
         engine_displacement_l: car.displacement_l,
         engine_ve: car.ve,
         battery_capacity_kwh: car.battery_capacity_kwh,
+        tank_capacity_l: car.tank_capacity_l.filter(|l| *l > 0.0),
         car_id: car.id.clone(),
         car_name: car.name.clone(),
     };

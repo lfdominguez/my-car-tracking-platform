@@ -212,6 +212,9 @@ pub struct ProvisioningPayload {
     pub stop_url: String,
     pub sample_url: String,
     pub samples_url: String,
+    /// Side-effect-free token check (`GET /api/track/ping`). Older clients ignore it.
+    #[serde(default)]
+    pub ping_url: String,
     pub fuel_type: String,
     #[serde(default = "default_fuel_class_str")]
     pub fuel_class: String,
@@ -221,6 +224,9 @@ pub struct ProvisioningPayload {
     pub engine_ve: f64,
     #[serde(default)]
     pub battery_capacity_kwh: Option<f64>,
+    /// Omitted when the car has no tank size set, so the app keeps its own value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tank_capacity_l: Option<f64>,
     pub car_id: String,
     pub car_name: String,
 }
@@ -318,6 +324,7 @@ mod tests {
             stop_url: "https://h/api/track/stop".into(),
             sample_url: "https://h/api/track/sample".into(),
             samples_url: "https://h/api/track/samples".into(),
+            ping_url: "https://h/api/track/ping".into(),
             fuel_type: "B7".into(),
             fuel_class: "DIESEL".into(),
             fuel_stoich_afr: 14.5,
@@ -325,6 +332,7 @@ mod tests {
             engine_displacement_l: 1.9,
             engine_ve: 0.85,
             battery_capacity_kwh: None,
+            tank_capacity_l: Some(45.0),
             car_id: "uuid".into(),
             car_name: "Golf".into(),
         };
@@ -336,6 +344,8 @@ mod tests {
         assert!(json.contains("\"fuelClass\""));
         assert!(json.contains("\"DIESEL\""));
         assert!(json.contains("\"B7\""));
+        assert!(json.contains("\"pingUrl\""));
+        assert!(json.contains("\"tankCapacityL\":45"));
     }
 
     #[test]

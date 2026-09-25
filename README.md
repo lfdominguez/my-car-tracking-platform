@@ -249,13 +249,14 @@ To rotate the primary encryption key without losing access to existing encrypted
 
 | Method | Path |
 |--------|------|
+| `GET` | `/api/track/ping` *(token check, no side effects: `{ok, car_id, car_name, vault_required}`)* |
 | `POST` | `/api/track/start` |
 | `POST` | `/api/track/sample` |
 | `POST` | `/api/track/samples` |
 | `POST` | `/api/track/stop` |
 | `GET` / `HEAD` | `/health` *(public)* |
 
-Header: `Authorization: Basic <device_token>`. External track id = Android start timestamp (`legacy_key`), unique per car.
+Header: `Authorization: Basic <device_token>`: `401` without a usable header, `403` for an unknown or revoked token, `409` on plaintext samples for a car whose owner has the vault active. External track id = Android start timestamp (`legacy_key`), unique per car.
 
 </details>
 

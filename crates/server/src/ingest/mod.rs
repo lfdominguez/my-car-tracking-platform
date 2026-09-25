@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-use crate::devices::authenticate_device_token;
+use crate::devices::{authenticate_device_token, verify_device_token};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -23,6 +23,7 @@ const UNKNOWN_GPS_ACC_M: f64 = -1.0;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health).head(health_head))
+        .route("/api/track/ping", get(track_ping))
         .route("/api/track/start", post(track_start))
         .route("/api/track/stop", post(track_stop))
         .route("/api/track/sample", post(track_sample))
@@ -36,6 +37,42 @@ async fn health() -> Json<serde_json::Value> {
 
 async fn health_head() -> StatusCode {
     StatusCode::OK
+}
+
+/// Answer of `GET /api/track/ping`.
+#[derive(Debug, Serialize)]
+pub struct TrackPingResponse {
+    pub ok: bool,
+    pub car_id: Uuid,
+    pub car_name: String,
+    /// The car's owner has an active vault, so plaintext samples will be refused
+    /// and only encrypted chunk uploads are accepted.
+    pub vault_required: bool,
+}
+
+/// Lets a device check its token without side effects. "Test connection" in the
+/// app used to run a real /start + /stop, which left an empty trip every time.
+/// Same auth as ingest: 401 without a usable header, 403 for an unknown or
+/// revoked token.
+async fn track_ping(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<TrackPingResponse>> {
+    // Not `auth_device`: a token check must not count as the device being seen.
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let device = verify_device_token(&state.pool, &state.config.device_token_pepper, auth).await?;
+    let car_name: String = sqlx::query_scalar("SELECT name FROM cars WHERE id = $1")
+        .bind(device.car_id)
+        .fetch_one(&state.pool)
+        .await?;
+    Ok(Json(TrackPingResponse {
+        ok: true,
+        car_id: device.car_id,
+        car_name,
+        vault_required: owner_vault_active_for_car(&state.pool, device.car_id).await?,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +132,14 @@ pub struct TrackSampleRequest {
     pub accel_rms_mps2: Option<f64>,
     #[serde(default)]
     pub device_tilt_delta_deg: Option<f64>,
+    /// PID 31: km since the fault codes were last cleared.
+    #[serde(default)]
+    pub distance_since_dtc_clear_km: Option<f64>,
+    /// Hybrid/EV traction pack voltage and current (PID 9A).
+    #[serde(default)]
+    pub hv_battery_voltage_v: Option<f64>,
+    #[serde(default)]
+    pub hv_battery_current_a: Option<f64>,
     /// Stored diagnostic trouble codes (Mode 03), e.g. `["P0420"]`. Absent means
     /// "not read"; an empty list is a report that no codes are stored.
     #[serde(default)]
@@ -678,7 +723,8 @@ async fn insert_points_batch(
             engine_on_time, lambda_cmd, atmospheric_pressure, intake_air_temperature,
             vehicle_speed_kph, vehicle_engine_rpm, mass_air_flow,
             battery_soc_pct, battery_power_kw,
-            accel_peak_mps2, accel_rms_mps2, device_tilt_delta_deg
+            accel_peak_mps2, accel_rms_mps2, device_tilt_delta_deg,
+            distance_since_dtc_clear_km, hv_battery_voltage_v, hv_battery_current_a
         )
         SELECT
             track_id, recorded_at,
@@ -696,21 +742,24 @@ async fn insert_points_batch(
             on_time, lambda, atmo, iat,
             vel, rpm, maf,
             soc, batt_kw,
-            accel_peak, accel_rms, tilt
+            accel_peak, accel_rms, tilt,
+            dtc_clear_km, hv_volts, hv_amps
         FROM UNNEST(
             $1::uuid[], $2::timestamptz[], $3::float8[], $4::float8[], $5::float8[],
             $6::float8[], $7::float8[], $8::float8[], $9::float8[], $10::float8[],
             $11::float8[], $12::float8[], $13::float8[], $14::float8[], $15::float8[],
             $16::float8[], $17::float8[], $18::float8[], $19::float8[], $20::float8[],
             $21::float8[], $22::float8[], $23::float8[], $24::float8[], $25::float8[],
-            $26::float8[], $27::float8[], $28::float8[], $29::float8[]
+            $26::float8[], $27::float8[], $28::float8[], $29::float8[], $30::float8[],
+            $31::float8[], $32::float8[]
         ) AS u(
             track_id, recorded_at, lon, lat, acc,
             rpm, vel, fuel_rate, load, abs_load,
             stft, ltft, fuel_level, pedal, ambient,
             odometer, coolant, map, voltage, on_time,
             lambda, atmo, iat, maf, soc,
-            batt_kw, accel_peak, accel_rms, tilt
+            batt_kw, accel_peak, accel_rms, tilt, dtc_clear_km,
+            hv_volts, hv_amps
         )
         ON CONFLICT DO NOTHING
         RETURNING track_id, recorded_at
@@ -760,6 +809,9 @@ async fn insert_points_batch(
     .bind(col!(accel_peak_mps2))
     .bind(col!(accel_rms_mps2))
     .bind(col!(device_tilt_delta_deg))
+    .bind(col!(distance_since_dtc_clear_km))
+    .bind(col!(hv_battery_voltage_v))
+    .bind(col!(hv_battery_current_a))
     .fetch_all(&state.pool)
     .await?;
     Ok(rows.into_iter().collect())
