@@ -396,9 +396,8 @@ fn MaintenancePanel(
                         <label class="sr-only" for="garage-odo-input">{tr!("garage.odometer_reading")}</label>
                         <input
                             id="garage-odo-input"
-                            type="number"
+                            type="text"
                             inputmode="decimal"
-                            min="0"
                             placeholder=move || tf("garage.reading_unit", &[("unit", &prefs.get().labels.odometer)])
                             prop:value=move || odo_input.get()
                             on:input=move |ev| odo_input.set(event_target_value(&ev))
@@ -564,7 +563,7 @@ fn MaintenancePanel(
                         </label>
                         <label class="garage-field">
                             <span>{move || tf("garage.every_unit", &[("unit", &prefs.get().labels.distance)])}</span>
-                            <input type="number" inputmode="decimal" min="0" placeholder="15000"
+                            <input type="text" inputmode="decimal" placeholder="15000"
                                 prop:value=move || item_km.get()
                                 on:input=move |ev| item_km.set(event_target_value(&ev)) />
                         </label>
@@ -582,7 +581,7 @@ fn MaintenancePanel(
                         </label>
                         <label class="garage-field">
                             <span>{move || tf("garage.last_done_at", &[("unit", &prefs.get().labels.odometer)])}</span>
-                            <input type="number" inputmode="decimal" min="0"
+                            <input type="text" inputmode="decimal"
                                 prop:value=move || item_last_km.get()
                                 on:input=move |ev| item_last_km.set(event_target_value(&ev)) />
                         </label>
@@ -718,13 +717,13 @@ fn MaintenancePanel(
                         </label>
                         <label class="garage-field">
                             <span>{move || tf("garage.odometer_unit", &[("unit", &prefs.get().labels.odometer)])}</span>
-                            <input type="number" inputmode="decimal" min="0"
+                            <input type="text" inputmode="decimal"
                                 prop:value=move || log_odo.get()
                                 on:input=move |ev| log_odo.set(event_target_value(&ev)) />
                         </label>
                         <label class="garage-field">
                             <span>{tr!("garage.cost")}</span>
-                            <input type="number" inputmode="decimal" min="0" step="0.01"
+                            <input type="text" inputmode="decimal"
                                 prop:value=move || log_cost.get()
                                 on:input=move |ev| log_cost.set(event_target_value(&ev)) />
                         </label>
@@ -937,19 +936,19 @@ fn FuelPanel(
                         </label>
                         <label class="garage-field">
                             <span>{move || tf("garage.quantity_unit", &[("unit", &qty_label())])}</span>
-                            <input type="number" inputmode="decimal" min="0" step="0.01"
+                            <input type="text" inputmode="decimal"
                                 prop:value=move || quantity.get()
                                 on:input=move |ev| quantity.set(event_target_value(&ev)) />
                         </label>
                         <label class="garage-field">
                             <span>{move || tf("garage.price_unit", &[("unit", &qty_label())])}</span>
-                            <input type="number" inputmode="decimal" min="0" step="0.001"
+                            <input type="text" inputmode="decimal"
                                 prop:value=move || price.get()
                                 on:input=move |ev| price.set(event_target_value(&ev)) />
                         </label>
                         <label class="garage-field">
                             <span>{tr!("garage.total_cost")}</span>
-                            <input type="number" inputmode="decimal" min="0" step="0.01"
+                            <input type="text" inputmode="decimal"
                                 prop:value=move || total.get()
                                 on:input=move |ev| total.set(event_target_value(&ev)) />
                         </label>
@@ -961,7 +960,7 @@ fn FuelPanel(
                         </label>
                         <label class="garage-field">
                             <span>{move || tf("garage.odometer_unit", &[("unit", &prefs.get().labels.odometer)])}</span>
-                            <input type="number" inputmode="decimal" min="0"
+                            <input type="text" inputmode="decimal"
                                 prop:value=move || odo.get()
                                 on:input=move |ev| odo.set(event_target_value(&ev)) />
                         </label>
