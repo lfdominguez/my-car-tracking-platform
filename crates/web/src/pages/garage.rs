@@ -1123,7 +1123,10 @@ mod tests {
             .collect();
         assert!(decimal_inputs.len() >= 9, "found {}", decimal_inputs.len());
         for tag in decimal_inputs {
-            assert!(tag.contains(r#"type="text""#), "decimal field must be type=\"text\":{tag}");
+            assert!(
+                tag.contains(r#"type="text""#),
+                "decimal field must be type=\"text\":{tag}"
+            );
         }
     }
 
