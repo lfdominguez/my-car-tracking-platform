@@ -24,13 +24,14 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # crates/web is a WASM-only Leptos crate and is not built here.
+      # crates/web unit tests run natively; the WASM SPA itself is not built here.
       - name: Run tests that need no database
         run: |
           cargo test -p shared
           cargo test -p vault_crypto
           cargo test -p ai --lib
           cargo test -p server --lib
+          cargo test -p web
 
   integration:
     name: Integration tests

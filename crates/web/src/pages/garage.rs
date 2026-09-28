@@ -1105,6 +1105,26 @@ mod tests {
         assert_eq!(parse_num(" 42 "), Some(42.0));
         assert_eq!(parse_num(""), None);
         assert_eq!(parse_num("abc"), None);
+        assert_eq!(parse_num("45."), Some(45.0));
+        assert_eq!(parse_num("1,659"), Some(1.659));
+        assert_eq!(parse_num("62.37"), Some(62.37));
+    }
+
+    /// A `type="number"` input reports "" for "45," / "45." mid-typing, and the
+    /// `prop:value` round-trip then wipes the field — only integers survive.
+    #[test]
+    fn decimal_fields_are_text_inputs() {
+        let src = include_str!("garage.rs");
+        let decimal_inputs: Vec<&str> = src
+            .split("<input")
+            .skip(1)
+            .map(|rest| &rest[..rest.find("/>").unwrap()])
+            .filter(|tag| tag.contains(r#"inputmode="decimal""#))
+            .collect();
+        assert!(decimal_inputs.len() >= 9, "found {}", decimal_inputs.len());
+        for tag in decimal_inputs {
+            assert!(tag.contains(r#"type="text""#), "decimal field must be type=\"text\":{tag}");
+        }
     }
 
     #[test]
