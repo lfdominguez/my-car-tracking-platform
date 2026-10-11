@@ -579,6 +579,17 @@ async fn create_fuel(
     Json(b): Json<FuelRequest>,
 ) -> AppResult<Json<FuelEntry>> {
     can_edit_car(&state.pool, user.id, car_id).await?;
+    Ok(Json(insert_fuel(&state.pool, car_id, user.id, b).await?))
+}
+
+/// Validates and stores a fuel entry. Access checks are the caller's job: a web
+/// user needs edit access, a device token is bound to the car already.
+pub(crate) async fn insert_fuel(
+    pool: &PgPool,
+    car_id: Uuid,
+    created_by: Uuid,
+    b: FuelRequest,
+) -> AppResult<FuelEntry> {
     if !b.quantity.is_finite() || b.quantity <= 0.0 {
         return Err(bad("quantity must be > 0"));
     }
@@ -603,24 +614,22 @@ async fn create_fuel(
              currency, full_tank, station, notes, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING {FUEL_COLS}"
     );
-    Ok(Json(
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(Uuid::new_v4())
-            .bind(car_id)
-            .bind(filled_at)
-            .bind(b.odometer_km)
-            .bind(unit)
-            .bind(b.quantity)
-            .bind(price)
-            .bind(total)
-            .bind(trimmed(b.currency))
-            .bind(b.full_tank.unwrap_or(true))
-            .bind(trimmed(b.station))
-            .bind(trimmed(b.notes))
-            .bind(user.id)
-            .fetch_one(&state.pool)
-            .await?,
-    ))
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(Uuid::new_v4())
+        .bind(car_id)
+        .bind(filled_at)
+        .bind(b.odometer_km)
+        .bind(unit)
+        .bind(b.quantity)
+        .bind(price)
+        .bind(total)
+        .bind(trimmed(b.currency))
+        .bind(b.full_tank.unwrap_or(true))
+        .bind(trimmed(b.station))
+        .bind(trimmed(b.notes))
+        .bind(created_by)
+        .fetch_one(pool)
+        .await?)
 }
 
 async fn delete_fuel(
