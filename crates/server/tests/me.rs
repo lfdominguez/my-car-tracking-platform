@@ -56,6 +56,50 @@ async fn timezone_and_locale_are_validated_and_stored() {
 }
 
 #[tokio::test]
+async fn country_is_validated_normalized_and_clearable() {
+    let Some(base) = start_server().await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let user = login(&base).await;
+    let patch = |body: Value| {
+        user.client
+            .patch(format!("{base}/api/me"))
+            .json(&body)
+            .send()
+    };
+
+    let me: Value = patch(json!({ "locale": "es" }))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(me["country"].is_null());
+
+    let me: Value = patch(json!({ "country": " uy " }))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["country"], "UY");
+
+    for bad in ["Uruguay", "ZZ", "U"] {
+        let resp = patch(json!({ "country": bad })).await.unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST, "{bad}");
+    }
+
+    let me: Value = patch(json!({ "country": "" }))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(me["country"].is_null());
+}
+
+#[tokio::test]
 async fn default_car_accepts_own_and_shared_cars_only() {
     let Some(base) = start_server().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");

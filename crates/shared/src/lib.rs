@@ -1,5 +1,6 @@
 //! Shared DTOs and constants used by the server and (optionally) the web crate.
 
+pub mod country;
 pub mod speed_events;
 pub mod telemetry_sanitize;
 
