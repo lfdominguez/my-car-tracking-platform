@@ -80,20 +80,20 @@ pub fn parse(rows: &[String], default_unit: &str) -> FuelTicket {
     let mut pool = Vec::new();
     for row in &norm {
         let toks = tokens(row);
-        let nums: Vec<(usize, f64)> = toks
+        let nums: Vec<(usize, f64, u8)> = toks
             .iter()
             .enumerate()
             .filter_map(|(i, tok)| match tok {
-                Tok::Num(v) => Some((i, *v)),
+                Tok::Num(v, d) => Some((i, *v, *d)),
                 Tok::Word(_) => None,
             })
             .collect();
         if nums.is_empty() || is_noise_row(row) {
             continue;
         }
-        pool.extend(nums.iter().map(|&(_, v)| v));
+        pool.extend(nums.iter().map(|&(_, v, d)| (v, d)));
         // A unit right after a number is the strongest signal there is.
-        for &(i, v) in &nums {
+        for &(i, v, _) in &nums {
             match toks.get(i + 1) {
                 Some(Tok::Word(w)) if is_price_unit(w) => p.push((v, 3)),
                 Some(Tok::Word(w)) if is_quantity_unit(w) => q.push((v, 3)),
@@ -145,8 +145,8 @@ const PRICE_WORDS: &[&str] = &[
     "€/kwh", "eur/kwh", "/kwh",
 ];
 const TOTAL_WORDS: &[&str] = &[
-    "total", "importe", "pagar", "amount", "pagado", "cobrado", "tarjeta", "card", "efectivo",
-    "cash", "venta",
+    "total", "importe", "monto", "pagar", "amount", "pagado", "cobrado", "tarjeta", "card",
+    "efectivo", "cash", "venta",
 ];
 
 /// Tax breakdowns, change and discounts carry numbers that are none of ours.
@@ -166,11 +166,9 @@ fn is_noise_row(row: &str) -> bool {
         .any(|w| row.contains(w))
 }
 
+/// "€/l", "$/lt", "uyu/kwh", "/l": a per-unit price in any currency.
 fn is_price_unit(w: &str) -> bool {
-    matches!(
-        w,
-        "€/l" | "eur/l" | "/l" | "€/lt" | "eur/lt" | "€/kwh" | "eur/kwh" | "/kwh"
-    )
+    w.ends_with("/l") || w.ends_with("/lt") || w.ends_with("/kwh")
 }
 
 fn is_quantity_unit(w: &str) -> bool {
@@ -183,7 +181,7 @@ fn is_quantity_unit(w: &str) -> bool {
 fn is_currency_word(w: &str) -> bool {
     matches!(
         w,
-        "€" | "eur" | "euro" | "euros" | "$" | "usd" | "£" | "gbp"
+        "€" | "eur" | "euro" | "euros" | "$" | "usd" | "us$" | "u$s" | "$u" | "uyu" | "£" | "gbp"
     )
 }
 
@@ -198,10 +196,12 @@ fn has_any(row: &str, words: &[&str]) -> bool {
     })
 }
 
-// Plausible ranges keep a phone number or a pump id out of the answer.
+// Plausible ranges keep card numbers and phone numbers out of the answer.
+// Quantity is physical and tight; price and total depend on the currency
+// (0.08 €/kWh to over 1 000 CLP/L), so they only bound the absurd.
 const Q_RANGE: (f64, f64) = (0.5, 300.0);
-const P_RANGE: (f64, f64) = (0.05, 5.0);
-const T_RANGE: (f64, f64) = (0.3, 1500.0);
+const P_RANGE: (f64, f64) = (0.01, 100_000.0);
+const T_RANGE: (f64, f64) = (0.3, 10_000_000.0);
 
 fn in_range(v: f64, (lo, hi): (f64, f64)) -> bool {
     v >= lo && v <= hi
@@ -219,7 +219,7 @@ fn solve(
     q: &[(f64, u8)],
     p: &[(f64, u8)],
     t: &[(f64, u8)],
-    pool: &[f64],
+    pool: &[(f64, u8)],
 ) -> (Option<f64>, Option<f64>, Option<f64>) {
     let q: Vec<_> = q
         .iter()
@@ -256,24 +256,35 @@ fn solve(
     let (bq, bp, bt) = (top(&q), top(&p), top(&t));
     match (bq, bp, bt) {
         (None, Some(pv), Some(tv)) => return (Some(round(tv / pv, 2)), Some(pv), Some(tv)),
+        // Many receipts print only litres and amount; the price follows.
+        (Some(qv), None, Some(tv)) => return (Some(qv), Some(round(tv / qv, 3)), Some(tv)),
         (Some(_), _, _) => return (bq, bp, bt),
         _ => {}
     }
 
-    // Nothing labelled: search the bare numbers for q × p = t.
-    let mut found = None;
-    for &tv in pool.iter().filter(|v| in_range(**v, T_RANGE)) {
-        for &pv in pool.iter().filter(|v| in_range(**v, P_RANGE)) {
-            for &qv in pool.iter().filter(|v| in_range(**v, Q_RANGE)) {
+    // Nothing labelled: search the bare numbers for q × p = t. The largest total
+    // wins; q and p commute, so the one printed with more decimals is the price
+    // ("1,600" €/L against "25,00" L), then the larger quantity.
+    let mut found: Option<(f64, f64, f64, i32)> = None;
+    for &(tv, _) in pool.iter().filter(|v| in_range(v.0, T_RANGE)) {
+        for &(pv, pd) in pool.iter().filter(|v| in_range(v.0, P_RANGE)) {
+            for &(qv, qd) in pool.iter().filter(|v| in_range(v.0, Q_RANGE)) {
                 let trivial = qv == 1.0 || pv == tv || qv == tv;
-                if !trivial && agrees(qv, pv, tv) && found.is_none_or(|(_, _, ft)| tv > ft) {
-                    found = Some((qv, pv, tv));
+                if trivial || !agrees(qv, pv, tv) {
+                    continue;
+                }
+                let dd = pd as i32 - qd as i32;
+                let better = found.is_none_or(|(fq, _, ft, fdd)| {
+                    tv > ft || (tv == ft && (dd > fdd || (dd == fdd && qv > fq)))
+                });
+                if better {
+                    found = Some((qv, pv, tv, dd));
                 }
             }
         }
     }
     match found {
-        Some((qv, pv, tv)) => (Some(qv), Some(pv), Some(tv)),
+        Some((qv, pv, tv, _)) => (Some(qv), Some(pv), Some(tv)),
         None => (bq, bp, bt),
     }
 }
@@ -291,13 +302,29 @@ pub fn merge(parsed: FuelTicket, ai: FuelTicket) -> FuelTicket {
         .unit
         .filter(|u| u == "L" || u == "kWh")
         .or(parsed.unit.clone());
+    let aq = plausible(ai.quantity, Q_RANGE);
+    let ap = plausible(ai.price_per_unit, P_RANGE);
+    let at = plausible(ai.total_cost, T_RANGE);
+    // Otherwise the first mix of AI and parser values that multiplies out,
+    // preferring the AI's; with none, the AI's where it has one.
+    let mixed = (0..8u8).find_map(|mask| {
+        let pick = |bit: u8, a: Option<f64>, b: Option<f64>| if mask & bit == 0 { a } else { b };
+        let (q, p, t) = (
+            pick(1, aq, parsed.quantity)?,
+            pick(2, ap, parsed.price_per_unit)?,
+            pick(4, at, parsed.total_cost)?,
+        );
+        agrees(q, p, t).then_some((Some(q), Some(p), Some(t)))
+    });
     let (quantity, price_per_unit, total_cost) = if checked(&parsed) {
         (parsed.quantity, parsed.price_per_unit, parsed.total_cost)
+    } else if let Some(m) = mixed {
+        m
     } else {
         (
-            plausible(ai.quantity, Q_RANGE).or(parsed.quantity),
-            plausible(ai.price_per_unit, P_RANGE).or(parsed.price_per_unit),
-            plausible(ai.total_cost, T_RANGE).or(parsed.total_cost),
+            aq.or(parsed.quantity),
+            ap.or(parsed.price_per_unit),
+            at.or(parsed.total_cost),
         )
     };
     let currency = ai
@@ -328,7 +355,8 @@ fn round(v: f64, places: i32) -> f64 {
 
 #[derive(Debug, PartialEq)]
 enum Tok {
-    Num(f64),
+    /// Value and how many decimals were printed.
+    Num(f64, u8),
     Word(String),
 }
 
@@ -375,8 +403,25 @@ fn tokens(row: &str) -> Vec<Tok> {
 
 fn push_num_or_word(out: &mut Vec<Tok>, s: &str) {
     match parse_number(s) {
-        Some(v) => out.push(Tok::Num(v)),
+        Some(v) => out.push(Tok::Num(v, decimals(s))),
         None => out.push(Tok::Word(s.to_string())),
+    }
+}
+
+/// Digits after the decimal separator, as [`parse_number`] reads it.
+fn decimals(s: &str) -> u8 {
+    let s = s.trim_end_matches(['.', ',']);
+    match s.rfind(['.', ',']) {
+        Some(i) => {
+            let sep = s.as_bytes()[i] as char;
+            let other = if sep == '.' { ',' } else { '.' };
+            if s.matches(sep).count() > 1 && !s.contains(other) {
+                0
+            } else {
+                (s.len() - i - 1) as u8
+            }
+        }
+        None => 0,
     }
 }
 
@@ -425,25 +470,36 @@ fn normalize(s: &str) -> String {
         .collect()
 }
 
+/// Only unambiguous markers. A bare `$` is pesos in most of Latin America and
+/// dollars elsewhere, so it is left to the car's previous entries.
 fn find_currency(all: &str) -> Option<String> {
-    let has = |w: &str| all.split(|c: char| !c.is_alphanumeric()).any(|t| t == w);
+    let words: Vec<&str> = all.split(|c: char| c.is_whitespace() || c == ':').collect();
+    let has = |w: &str| words.iter().any(|t| t.trim_matches(['.', ',']) == w);
     if all.contains('€') || has("eur") || has("euros") {
         Some("EUR".into())
     } else if all.contains('£') || has("gbp") {
         Some("GBP".into())
-    } else if has("usd") || all.contains('$') {
+    } else if has("usd") || all.contains("us$") || all.contains("u$s") {
         Some("USD".into())
+    } else if has("uyu") || all.contains("$u") {
+        Some("UYU".into())
     } else {
         None
     }
 }
 
-/// First date on the receipt, with the first time on the same row or, failing
-/// that, anywhere. Day-first unless the numbers only work month-first.
+/// The date on a "fecha"/"date" row, else the first date on the receipt, with
+/// the time on the same row or, failing that, anywhere. Headers often print the
+/// time the receipt was printed, not when the pump stopped. Day-first unless the
+/// numbers only work month-first.
 fn find_datetime(rows: &[String]) -> Option<NaiveDateTime> {
     let mut date_row = None;
     let mut date = None;
-    for (i, row) in rows.iter().enumerate() {
+    let labelled = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.contains("fecha") || r.contains("date"));
+    for (i, row) in labelled.chain(rows.iter().enumerate()) {
         if let Some(d) = row.split_whitespace().find_map(parse_date) {
             date = Some(d);
             date_row = Some(i);
@@ -513,6 +569,7 @@ fn find_station(rows: &[String], norm: &[String]) -> Option<String> {
         "tel",
         "copia",
         "cliente",
+        "venta",
         "receipt",
         "invoice",
     ];
@@ -720,6 +777,39 @@ mod tests {
         assert_eq!(t.filled_at_local, dt("2026-10-09 18:32:00"));
         assert_eq!(t.currency.as_deref(), Some("EUR"));
         assert_eq!(t.station.as_deref(), Some("REPSOL E.S. LA ROTONDA"));
+    }
+
+    /// Real PaddleOCR output of an ANCAP receipt from Uruguay: thousands comma,
+    /// amount in pesos with a bare `$`, no unit price, header time ≠ sale time.
+    #[test]
+    fn paddle_output_of_an_ancap_receipt() {
+        #[derive(Deserialize)]
+        struct Out {
+            lines: Vec<OcrLine>,
+        }
+        let out: Out =
+            serde_json::from_str(include_str!("testdata/paddle_ancap_uruguay.json")).unwrap();
+        let t = parse(&rows(&out.lines), "L");
+        assert_eq!(
+            t,
+            FuelTicket {
+                filled_at_local: dt("2026-10-10 14:09:00"),
+                unit: Some("L".into()),
+                quantity: Some(35.38),
+                price_per_unit: Some(90.463),
+                total_cost: Some(3200.57),
+                currency: None,
+                station: Some("ERGUS SRL.".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn currency_markers() {
+        assert_eq!(find_currency("total 10,00 €"), Some("EUR".into()));
+        assert_eq!(find_currency("monto 3,200.57 $"), None);
+        assert_eq!(find_currency("total u$s 40"), Some("USD".into()));
+        assert_eq!(find_currency("total $u 1.500"), Some("UYU".into()));
     }
 
     #[test]
