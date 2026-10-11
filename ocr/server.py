@@ -22,12 +22,20 @@ MIN_SCORE = float(os.environ.get("OCR_MIN_SCORE", "0.5"))
 def build():
     # Accuracy over speed: Paddle picks its best models for the language, plus
     # page orientation, unwarping of curled paper and per-line orientation.
+    # Inference runs the ONNX exports on OpenVINO's CPU backend: same text as
+    # Paddle Inference, ~35 % faster per photo and 5 s instead of ~30 s to load
+    # on an i5-6400T. (The iGPU was slower, and hung in FP16.)
+    threads = int(os.environ.get("OCR_CPU_THREADS", os.cpu_count() or 4))
     return PaddleOCR(
         lang=os.environ.get("OCR_LANG", "es"),
         use_doc_orientation_classify=True,
         use_doc_unwarping=True,
         use_textline_orientation=True,
-        cpu_threads=int(os.environ.get("OCR_CPU_THREADS", os.cpu_count() or 4)),
+        engine="onnxruntime",
+        engine_config={
+            "providers": ["OpenVINOExecutionProvider"],
+            "provider_options": [{"device_type": "CPU", "precision": "FP32", "num_of_threads": threads}],
+        },
     )
 
 
