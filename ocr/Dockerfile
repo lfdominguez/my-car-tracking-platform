@@ -1,12 +1,16 @@
-# PaddleOCR sidecar for fuel-ticket reading. CPU only; needs AVX.
-# paddlepaddle 3.3.x crashes in oneDNN on the detector (ConvertPirAttribute2RuntimeAttribute).
+# PaddleOCR sidecar for fuel-ticket reading. CPU only (OpenVINO); needs AVX2.
 FROM python:3.12-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 libgl1 libglib2.0-0 curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir paddlepaddle==3.2.2 paddleocr==3.7.0
+# No paddlepaddle: the ONNX models run on ONNX Runtime's OpenVINO provider, so
+# Paddle Inference (and its oneDNN crash in 3.3.x) is not involved. The plain
+# onnxruntime wheel would shadow onnxruntime-openvino's module, so it goes.
+RUN pip install --no-cache-dir paddleocr==3.7.0 onnxruntime-openvino==1.24.1 openvino==2026.4.1 \
+    && (pip uninstall -y onnxruntime 2>/dev/null || true) \
+    && python -c "import onnxruntime as o; assert 'OpenVINOExecutionProvider' in o.get_available_providers(), o.get_available_providers()"
 
 RUN useradd --create-home ocr
 USER ocr
