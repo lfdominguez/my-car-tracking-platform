@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::api::{
     AuditEvent, SessionInfo, delete_my_account, get_audit, get_me, get_sessions,
@@ -37,6 +38,7 @@ pub fn SettingsPage() -> impl IntoView {
     let account_email = RwSignal::new(String::new());
     let timezone = RwSignal::new(String::new());
     let locale = RwSignal::new(String::new());
+    let country = RwSignal::new(String::new());
     let delete_confirm = RwSignal::new(String::new());
     let deleting_account = RwSignal::new(false);
     let browser_tz = browser_timezone();
@@ -58,6 +60,7 @@ pub fn SettingsPage() -> impl IntoView {
                     account_email.set(me.email.clone());
                     timezone.set(me.timezone.clone());
                     locale.set(me.locale.clone().unwrap_or_default());
+                    country.set(me.country.clone().unwrap_or_default());
                     if let Some(origin) = web_sys::window().and_then(|w| w.location().origin().ok())
                     {
                         mcp_url.set(format!("{origin}/mcp"));
@@ -216,6 +219,7 @@ pub fn SettingsPage() -> impl IntoView {
                 Ok(me) => {
                     timezone.set(me.timezone.clone());
                     locale.set(me.locale.clone().unwrap_or_default());
+                    country.set(me.country.clone().unwrap_or_default());
                     crate::i18n::set_locale(crate::i18n::resolve(me.locale.as_deref()));
                     message.set(Some(t(done).into()));
                 }
@@ -362,6 +366,52 @@ pub fn SettingsPage() -> impl IntoView {
                 </select>
             </label>
             <p class="field-hint">{tr!("settings.language_hint")}</p>
+            <label class="field">
+                <span>{tr!("settings.country")}</span>
+                <select
+                    prop:value=move || country.get()
+                    prop:disabled=move || saving.get()
+                    on:change=move |ev| {
+                        let value = event_target_value(&ev);
+                        country.set(value.clone());
+                        save_region(serde_json::json!({ "country": value }), "settings.country_saved");
+                    }
+                >
+                    <option value="">{tr!("settings.country_unset")}</option>
+                    {move || {
+                        let lang = crate::i18n::locale().as_str();
+                        let mut options: Vec<(&'static str, String)> = shared::country::COUNTRY_CURRENCIES
+                            .iter()
+                            .map(|(cc, _)| (*cc, country_name(cc, lang)))
+                            .collect();
+                        options.sort_by(|a, b| a.1.cmp(&b.1));
+                        options
+                            .into_iter()
+                            .map(|(cc, name)| view! { <option value=cc>{name}</option> })
+                            .collect_view()
+                    }}
+                </select>
+            </label>
+            {move || {
+                let cc = browser_country()?;
+                (country.get().is_empty() && loaded.get()).then(|| {
+                    let name = country_name(cc, crate::i18n::locale().as_str());
+                    view! {
+                        <button
+                            type="button"
+                            class="btn ghost btn-sm"
+                            prop:disabled=move || saving.get()
+                            on:click=move |_| save_region(
+                                serde_json::json!({ "country": cc }),
+                                "settings.country_saved",
+                            )
+                        >
+                            {tf("settings.use_device_country", &[("country", &name)])}
+                        </button>
+                    }
+                })
+            }}
+            <p class="field-hint">{tr!("settings.country_hint")}</p>
         </div>
 
         <div class="card settings-card" style="margin-top:1rem">
@@ -760,6 +810,35 @@ pub fn browser_timezone() -> Option<String> {
         .ok()?
         .as_string()
         .filter(|s| !s.is_empty())
+}
+
+/// Region of the browser's language tag (`es-UY` → `UY`), when it is a country.
+fn browser_country() -> Option<&'static str> {
+    let lang = web_sys::window()?.navigator().language()?;
+    let region = lang.split(['-', '_']).nth(1)?;
+    shared::country::normalize_country(region)
+}
+
+/// Localized country name from the browser's `Intl.DisplayNames`; the code when
+/// the browser lacks it.
+fn country_name(code: &str, lang: &str) -> String {
+    let name = (|| {
+        let intl = js_sys::Reflect::get(&js_sys::global(), &"Intl".into()).ok()?;
+        let ctor: js_sys::Function = js_sys::Reflect::get(&intl, &"DisplayNames".into())
+            .ok()?
+            .dyn_into()
+            .ok()?;
+        let opts = js_sys::Object::new();
+        js_sys::Reflect::set(&opts, &"type".into(), &"region".into()).ok()?;
+        let langs = js_sys::Array::of1(&lang.into());
+        let names = js_sys::Reflect::construct(&ctor, &js_sys::Array::of2(&langs, &opts)).ok()?;
+        let of: js_sys::Function = js_sys::Reflect::get(&names, &"of".into())
+            .ok()?
+            .dyn_into()
+            .ok()?;
+        of.call1(&names, &code.into()).ok()?.as_string()
+    })();
+    name.unwrap_or_else(|| code.to_string())
 }
 
 fn confirm(msg: &str) -> bool {

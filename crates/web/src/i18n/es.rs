@@ -557,6 +557,14 @@ pub const TABLE: &[(&str, &str)] = &[
         "settings.language_hint",
         "Se aplica al instante y se guarda en tu cuenta. Los mensajes que genera el servidor, como las notificaciones y los análisis de IA, conservan el idioma en que se escribieron.",
     ),
+    ("settings.country", "País"),
+    ("settings.country_unset", "Sin definir"),
+    ("settings.country_saved", "País guardado."),
+    ("settings.use_device_country", "Usar {country}"),
+    (
+        "settings.country_hint",
+        "Para leer tickets de combustible: un \"$\" solo pasa a ser tu moneda y las fechas siguen el orden de tu país. Si el teléfono sabe dónde está, manda eso, así los tickets del exterior también salen bien.",
+    ),
     ("settings.ai_title", "Análisis de rutas con IA (OpenRouter)"),
     (
         "settings.ai_lead",
