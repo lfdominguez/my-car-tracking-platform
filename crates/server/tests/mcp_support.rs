@@ -44,6 +44,8 @@ pub fn test_config(database_url: String) -> Config {
         overpass_url: "http://127.0.0.1:9/overpass".into(),
         csp_cloudflare_analytics: false,
         trip_stale_finish_after_secs: 7200,
+        ocr_url: None,
+        ocr_allowed_users: Vec::new(),
     }
 }
 

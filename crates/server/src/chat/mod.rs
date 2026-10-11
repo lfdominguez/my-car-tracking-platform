@@ -328,9 +328,9 @@ impl Drop for AbortOnDrop {
 }
 
 /// Decrypted OpenRouter credentials for one user.
-struct Credentials {
-    api_key: String,
-    model: String,
+pub(crate) struct Credentials {
+    pub(crate) api_key: String,
+    pub(crate) model: String,
 }
 
 struct GenerationJob {
@@ -520,7 +520,10 @@ pub async fn call_tool(
 }
 
 /// Decrypt the user's OpenRouter key, mirroring `analysis::start_analysis`.
-async fn openrouter_credentials(state: &AppState, user_id: Uuid) -> AppResult<Credentials> {
+pub(crate) async fn openrouter_credentials(
+    state: &AppState,
+    user_id: Uuid,
+) -> AppResult<Credentials> {
     let row = sqlx::query(
         r#"
         SELECT openrouter_api_key_enc, openrouter_api_key_nonce, openrouter_key_version,

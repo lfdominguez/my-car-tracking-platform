@@ -45,6 +45,11 @@ pub struct Config {
     pub csp_cloudflare_analytics: bool,
     /// Auto-finish open trips after this many seconds without new samples (default 2h).
     pub trip_stale_finish_after_secs: u64,
+    /// Fuel-ticket OCR sidecar endpoint (`OCR_URL`). Unset disables the feature.
+    pub ocr_url: Option<String>,
+    /// Lowercased emails of car owners allowed to use OCR (`OCR_ALLOWED_USERS`,
+    /// comma-separated). Empty means nobody.
+    pub ocr_allowed_users: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -185,6 +190,12 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(crate::trips::DEFAULT_STALE_FINISH_AFTER_SECS)
             .max(60);
+        let ocr_url = env::var("OCR_URL")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let ocr_allowed_users =
+            parse_email_list(&env::var("OCR_ALLOWED_USERS").unwrap_or_default());
 
         if is_local_dev
             && (session_secret == DEFAULT_SESSION_SECRET
@@ -225,8 +236,18 @@ impl Config {
             overpass_url,
             csp_cloudflare_analytics,
             trip_stale_finish_after_secs,
+            ocr_url,
+            ocr_allowed_users,
         })
     }
+}
+
+/// Comma-separated emails, trimmed and lowercased; blanks dropped.
+fn parse_email_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect()
 }
 
 fn required(key: &'static str) -> Result<String, ConfigError> {
@@ -502,5 +523,14 @@ mod tests {
         let cfg = Config::from_env().expect("config");
         assert_eq!(cfg.session_idle_hours, 168);
         assert_eq!(cfg.secrets_key_version, 2);
+    }
+
+    #[test]
+    fn email_list_is_trimmed_lowercased_and_skips_blanks() {
+        assert_eq!(
+            parse_email_list(" A@x.com, ,b@Y.org ,"),
+            vec!["a@x.com".to_string(), "b@y.org".to_string()]
+        );
+        assert!(parse_email_list("").is_empty());
     }
 }

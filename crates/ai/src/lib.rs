@@ -8,6 +8,7 @@ mod agent;
 mod chat;
 mod context;
 mod error;
+mod extract;
 mod math;
 mod openrouter;
 mod prompt;
@@ -23,6 +24,7 @@ pub use chat::{
 };
 pub use context::*;
 pub use error::{AiError, user_facing_error};
+pub use extract::complete_json;
 pub use prompt::{ChatCarBrief, chat_system_prompt, quoted_user_text, sanitize_user_text};
 pub use report::*;
 pub use tools::{

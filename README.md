@@ -186,6 +186,8 @@ docker run --rm -p 8080:8080 \
 
 Required outside local: `DATABASE_URL`, independent `SESSION_SECRET`, `SECRETS_KEY`, `DEVICE_TOKEN_PEPPER` (≥32 chars). Keep `ALLOW_DEV_LOGIN=0`. Terminate TLS at a reverse proxy and set `PUBLIC_BASE_URL=https://…` (Secure cookies + HSTS). Compose does **not** publish Postgres by default.
 
+Fuel-ticket OCR runs as a separate PaddleOCR container (`ocr/`, published as `ghcr.io/lfdominguez/my-car-tracking-platform-ocr`). Compose starts it and points `OCR_URL` at it; elsewhere run it on the app's network without publishing its port, then set `OCR_URL=http://<ocr-host>:8866/ocr` and `OCR_ALLOWED_USERS`. It needs a CPU with AVX and about 1 GB RAM. When the owner has an OpenRouter key, the OCR text (never the photo) also goes through their model to refine the suggestion.
+
 Packages may start private on GHCR — mark public in GitHub → Packages, or `docker login ghcr.io`.
 
 </details>
@@ -254,6 +256,8 @@ To rotate the primary encryption key without losing access to existing encrypted
 | `POST` | `/api/track/sample` |
 | `POST` | `/api/track/samples` |
 | `POST` | `/api/track/stop` |
+| `POST` | `/api/track/fuel-log` *(fuel-log entry for the token's car; same body as `/api/cars/{id}/fuel-log`)* |
+| `POST` | `/api/track/fuel-ticket` *(raw jpeg\|png\|webp body → suggested entry, nothing stored; needs `OCR_URL` and the owner in `OCR_ALLOWED_USERS`, else 503/403 "Service not available yet")* |
 | `GET` / `HEAD` | `/health` *(public)* |
 
 Header: `Authorization: Basic <device_token>`: `401` without a usable header, `403` for an unknown or revoked token, `409` on plaintext samples for a car whose owner has the vault active. External track id = Android start timestamp (`legacy_key`), unique per car.

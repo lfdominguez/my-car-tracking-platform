@@ -329,7 +329,7 @@ fn parse_json_args<T: serde::de::DeserializeOwned>(args_raw: &str) -> Result<T, 
     serde_json::from_str(candidate).map_err(|e| format!("args: {e}"))
 }
 
-fn strip_code_fences(s: &str) -> &str {
+pub(crate) fn strip_code_fences(s: &str) -> &str {
     let trimmed = s.trim();
     let body = if let Some(rest) = trimmed.strip_prefix("```json") {
         rest
@@ -381,7 +381,7 @@ fn try_parse_report_from_text(text: &str) -> Result<AnalysisReport, AiError> {
     Ok(report)
 }
 
-fn extract_json_object(s: &str) -> Option<&str> {
+pub(crate) fn extract_json_object(s: &str) -> Option<&str> {
     let start = s.find('{')?;
     let end = s.rfind('}')?;
     if end > start {

@@ -166,7 +166,7 @@ pub struct TrackSamplesBatchResponse {
     pub rejected: Vec<RejectedSample>,
 }
 
-async fn auth_device(
+pub(crate) async fn auth_device(
     state: &AppState,
     headers: &HeaderMap,
 ) -> AppResult<crate::devices::DeviceAuth> {

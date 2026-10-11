@@ -14,6 +14,7 @@ pub mod digest;
 pub mod driving;
 pub mod email;
 pub mod error;
+pub mod fuel_ticket;
 pub mod garage;
 pub mod geofences;
 pub mod health;
@@ -67,10 +68,12 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
 
     let photo_routes = Router::new()
         .merge(cars::photo_router())
+        .merge(fuel_ticket::ticket_router())
         .layer(DefaultBodyLimit::max(PHOTO_BODY_LIMIT));
 
     let mut app = Router::new()
         .merge(ingest::router())
+        .merge(fuel_ticket::router())
         .merge(account::router())
         .merge(auth::router())
         .merge(mcp::settings_router())

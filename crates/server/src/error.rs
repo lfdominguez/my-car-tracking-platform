@@ -16,6 +16,12 @@ pub enum AppError {
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    /// 403 with a caller-facing reason, for features gated per account.
+    #[error("{0}")]
+    Denied(String),
+    /// 503 for an optional backing service that is off or unreachable.
+    #[error("{0}")]
+    Unavailable(String),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
@@ -49,6 +55,8 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (StatusCode::FORBIDDEN, "Forbidden".into()),
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".into()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m.clone()),
+            AppError::Denied(m) => (StatusCode::FORBIDDEN, m.clone()),
+            AppError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m.clone()),
             AppError::Db(e) => {
                 tracing::error!(error = %e, "database error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "Database error".into())
