@@ -45,6 +45,9 @@ pub struct Me {
     /// `en`, `es`, or unset (follow the browser).
     #[serde(default)]
     pub locale: Option<String>,
+    /// ISO 3166-1 alpha-2 country; unset until chosen in Settings.
+    #[serde(default)]
+    pub country: Option<String>,
     /// Car preselected in filters and on the live map; unset means all cars.
     #[serde(default)]
     pub default_car_id: Option<String>,

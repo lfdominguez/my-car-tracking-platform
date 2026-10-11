@@ -56,6 +56,8 @@ pub struct MeResponse {
     pub timezone: String,
     /// UI language; `None` follows the browser.
     pub locale: Option<String>,
+    /// ISO 3166-1 alpha-2 country, e.g. `UY`; `None` until the user sets it.
+    pub country: Option<String>,
     /// Car the web app preselects in filters and on the live map. Only reported
     /// while the user can still read it (a revoked share hides it).
     pub default_car_id: Option<Uuid>,
@@ -73,6 +75,8 @@ pub struct UpdateMeRequest {
     pub timezone: Option<String>,
     /// `en`, `es`, or empty to follow the browser.
     pub locale: Option<String>,
+    /// ISO 3166-1 alpha-2 country, or empty to clear.
+    pub country: Option<String>,
     /// A car id the user can read, or empty to clear.
     pub default_car_id: Option<String>,
 }
@@ -143,6 +147,7 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
             unit_system,
             timezone,
             locale,
+            country,
             (SELECT c.id FROM cars c
               WHERE c.id = users.default_car_id
                 AND (c.owner_user_id = users.id
@@ -176,6 +181,7 @@ async fn load_me(state: &AppState, user: &AuthUser) -> AppResult<MeResponse> {
         mcp_token_hint: row.mcp_token_hint,
         timezone: row.timezone,
         locale: row.locale,
+        country: row.country,
         default_car_id: row.default_car_id,
     })
 }
@@ -192,6 +198,7 @@ struct MeOpenRouterRow {
     unit_system: String,
     timezone: String,
     locale: Option<String>,
+    country: Option<String>,
     default_car_id: Option<Uuid>,
 }
 
@@ -212,6 +219,7 @@ async fn update_me(
         && body.ors_api_key.is_none()
         && body.timezone.is_none()
         && body.locale.is_none()
+        && body.country.is_none()
         && body.default_car_id.is_none()
     {
         return Ok(Json(load_me(&state, &user).await?));
@@ -267,6 +275,20 @@ async fn update_me(
         sqlx::query("UPDATE users SET locale = $2 WHERE id = $1")
             .bind(user.id)
             .bind(locale)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    if let Some(raw) = body.country.as_deref() {
+        let country = match raw.trim() {
+            "" => None,
+            cc => Some(shared::country::normalize_country(cc).ok_or_else(|| {
+                AppError::BadRequest("country must be an ISO 3166-1 alpha-2 code".into())
+            })?),
+        };
+        sqlx::query("UPDATE users SET country = $2 WHERE id = $1")
+            .bind(user.id)
+            .bind(country)
             .execute(&state.pool)
             .await?;
     }

@@ -7,6 +7,7 @@
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
+use shared::country::{currency_for_country, month_first_dates};
 
 /// One recognised text box: `[x1, y1, x2, y2]` in image pixels.
 #[derive(Debug, Clone, Deserialize)]
@@ -64,8 +65,9 @@ fn center_y(l: &OcrLine) -> f64 {
 }
 
 /// Parses receipt rows. `default_unit` comes from the car's fuel class and is
-/// used when the receipt does not say.
-pub fn parse(rows: &[String], default_unit: &str) -> FuelTicket {
+/// used when the receipt does not say. `country` (alpha-2) is where the receipt
+/// was issued, when known: it settles a bare "$" and day/month order.
+pub fn parse(rows: &[String], default_unit: &str, country: Option<&str>) -> FuelTicket {
     let norm: Vec<String> = rows.iter().map(|r| normalize(r)).collect();
     let all = norm.join("\n");
     let unit = if all.contains("kwh") {
@@ -114,12 +116,13 @@ pub fn parse(rows: &[String], default_unit: &str) -> FuelTicket {
 
     let (quantity, price, total) = solve(&q, &p, &t, &pool);
     FuelTicket {
-        filled_at_local: find_datetime(&norm),
+        filled_at_local: find_datetime(&norm, country.is_some_and(month_first_dates)),
         unit: Some(unit.to_string()),
         quantity,
         price_per_unit: price,
         total_cost: total,
-        currency: find_currency(&all),
+        currency: find_currency(&all)
+            .or_else(|| country.and_then(currency_for_country).map(str::to_string)),
         station: find_station(rows, &norm),
     }
 }
@@ -492,7 +495,7 @@ fn find_currency(all: &str) -> Option<String> {
 /// the time on the same row or, failing that, anywhere. Headers often print the
 /// time the receipt was printed, not when the pump stopped. Day-first unless the
 /// numbers only work month-first.
-fn find_datetime(rows: &[String]) -> Option<NaiveDateTime> {
+fn find_datetime(rows: &[String], month_first: bool) -> Option<NaiveDateTime> {
     let mut date_row = None;
     let mut date = None;
     let labelled = rows
@@ -500,7 +503,10 @@ fn find_datetime(rows: &[String]) -> Option<NaiveDateTime> {
         .enumerate()
         .filter(|(_, r)| r.contains("fecha") || r.contains("date"));
     for (i, row) in labelled.chain(rows.iter().enumerate()) {
-        if let Some(d) = row.split_whitespace().find_map(parse_date) {
+        if let Some(d) = row
+            .split_whitespace()
+            .find_map(|tok| parse_date(tok, month_first))
+        {
             date = Some(d);
             date_row = Some(i);
             break;
@@ -517,7 +523,7 @@ fn find_datetime(rows: &[String]) -> Option<NaiveDateTime> {
     Some(date.and_time(time))
 }
 
-fn parse_date(tok: &str) -> Option<NaiveDate> {
+fn parse_date(tok: &str, month_first: bool) -> Option<NaiveDate> {
     let tok = tok.trim_matches(|c: char| !c.is_ascii_digit());
     let parts: Vec<&str> = tok.split(['/', '-', '.']).collect();
     if parts.len() != 3 || parts.iter().any(|p| p.is_empty() || p.len() > 4) {
@@ -532,7 +538,13 @@ fn parse_date(tok: &str) -> Option<NaiveDate> {
         (n[0], n[1] as u32, n[2] as u32)
     } else if parts[2].len() == 4 || parts[2].len() == 2 {
         let y = year(n[2], parts[2].len());
-        if n[1] > 12 && n[0] <= 12 {
+        // The country's order unless the numbers only work the other way.
+        let month_first = if month_first {
+            !(n[0] > 12 && n[1] <= 12)
+        } else {
+            n[1] > 12 && n[0] <= 12
+        };
+        if month_first {
             (y, n[0] as u32, n[1] as u32)
         } else {
             (y, n[1] as u32, n[0] as u32)
@@ -624,6 +636,7 @@ mod tests {
                  TOTAL: 61,79 €",
             ),
             "L",
+            None,
         );
         assert_eq!(
             t,
@@ -649,6 +662,7 @@ mod tests {
                  Tarjeta 50,87 EUR",
             ),
             "L",
+            None,
         );
         assert_eq!(t.quantity, Some(30.12));
         assert_eq!(t.price_per_unit, Some(1.689));
@@ -667,6 +681,7 @@ mod tests {
                  TOTAL 60,00",
             ),
             "L",
+            None,
         );
         assert_eq!(
             (t.quantity, t.price_per_unit, t.total_cost),
@@ -676,7 +691,11 @@ mod tests {
 
     #[test]
     fn unlabelled_numbers_found_by_product() {
-        let t = parse(&rows_of("PUMP 4\n25,00\n1,600\n40,00\nTEL 912345678"), "L");
+        let t = parse(
+            &rows_of("PUMP 4\n25,00\n1,600\n40,00\nTEL 912345678"),
+            "L",
+            None,
+        );
         assert_eq!(
             (t.quantity, t.price_per_unit, t.total_cost),
             (Some(25.0), Some(1.6), Some(40.0))
@@ -685,7 +704,7 @@ mod tests {
 
     #[test]
     fn quantity_derived_from_total_and_price() {
-        let t = parse(&rows_of("PRECIO 1,500 €/L\nTOTAL 60,00 €"), "L");
+        let t = parse(&rows_of("PRECIO 1,500 €/L\nTOTAL 60,00 €"), "L", None);
         assert_eq!(t.quantity, Some(40.0));
     }
 
@@ -694,6 +713,7 @@ mod tests {
         let t = parse(
             &rows_of("Ionity\n11.10.2026 12:00\nEnergy 35,20 kWh\nPrice 0,59 €/kWh\nTotal 20,77 €"),
             "L",
+            None,
         );
         assert_eq!(t.unit.as_deref(), Some("kWh"));
         assert_eq!(t.quantity, Some(35.2));
@@ -704,7 +724,7 @@ mod tests {
 
     #[test]
     fn empty_text_suggests_nothing_but_the_unit() {
-        let t = parse(&[], "kWh");
+        let t = parse(&[], "kWh", None);
         assert_eq!(
             t,
             FuelTicket {
@@ -769,7 +789,7 @@ mod tests {
         }
         let out: Out =
             serde_json::from_str(include_str!("testdata/paddle_repsol_rotated.json")).unwrap();
-        let t = parse(&rows(&out.lines), "L");
+        let t = parse(&rows(&out.lines), "L", None);
         assert_eq!(
             (t.quantity, t.price_per_unit, t.total_cost),
             (Some(42.35), Some(1.459), Some(61.79))
@@ -789,7 +809,7 @@ mod tests {
         }
         let out: Out =
             serde_json::from_str(include_str!("testdata/paddle_ancap_uruguay.json")).unwrap();
-        let t = parse(&rows(&out.lines), "L");
+        let t = parse(&rows(&out.lines), "L", None);
         assert_eq!(
             t,
             FuelTicket {
@@ -801,6 +821,30 @@ mod tests {
                 currency: None,
                 station: Some("ERGUS SRL.".into()),
             }
+        );
+    }
+
+    #[test]
+    fn country_settles_bare_dollar_and_date_order() {
+        #[derive(Deserialize)]
+        struct Out {
+            lines: Vec<OcrLine>,
+        }
+        let out: Out =
+            serde_json::from_str(include_str!("testdata/paddle_ancap_uruguay.json")).unwrap();
+        let t = parse(&rows(&out.lines), "L", Some("UY"));
+        assert_eq!(t.currency.as_deref(), Some("UYU"));
+        assert_eq!(t.filled_at_local, dt("2026-10-10 14:09:00"));
+
+        let us = rows_of("Fecha 10/09/26 08:15\nGallons 10.000\nTotal 35.90 $");
+        assert_eq!(
+            parse(&us, "L", Some("US")).filled_at_local,
+            dt("2026-10-09 08:15:00")
+        );
+        assert_eq!(parse(&us, "L", Some("US")).currency.as_deref(), Some("USD"));
+        assert_eq!(
+            parse(&us, "L", Some("UY")).filled_at_local,
+            dt("2026-09-10 08:15:00")
         );
     }
 

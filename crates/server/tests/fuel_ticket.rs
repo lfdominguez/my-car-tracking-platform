@@ -18,6 +18,8 @@ use server::state::AppState;
 use uuid::Uuid;
 
 const PADDLE_OUTPUT: &str = include_str!("../src/fuel_ticket/testdata/paddle_repsol_rotated.json");
+/// Uruguayan receipt: amount with a bare `$`, so the currency comes from the country.
+const PADDLE_ANCAP: &str = include_str!("../src/fuel_ticket/testdata/paddle_ancap_uruguay.json");
 /// Smallest thing `sniff_image` accepts as a JPEG.
 const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F'];
 
@@ -31,7 +33,7 @@ struct Ctx {
 }
 
 /// Stub sidecar: counts calls and replays the recorded Paddle answer.
-async fn ocr_stub() -> (String, Arc<AtomicUsize>) {
+async fn ocr_stub(output: &'static str) -> (String, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
     let counter = hits.clone();
     let app = Router::new().route(
@@ -42,7 +44,7 @@ async fn ocr_stub() -> (String, Arc<AtomicUsize>) {
                 counter.fetch_add(1, Ordering::SeqCst);
                 (
                     [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    PADDLE_OUTPUT,
+                    output,
                 )
             }
         }),
@@ -57,6 +59,10 @@ async fn ocr_stub() -> (String, Arc<AtomicUsize>) {
 
 /// `allow_owner`: put the car owner on `OCR_ALLOWED_USERS`. `with_ocr`: set `OCR_URL`.
 async fn setup(allow_owner: bool, with_ocr: bool) -> Option<Ctx> {
+    setup_with(allow_owner, with_ocr, PADDLE_OUTPUT).await
+}
+
+async fn setup_with(allow_owner: bool, with_ocr: bool, ocr_output: &'static str) -> Option<Ctx> {
     let database_url = std::env::var("DATABASE_URL").ok()?;
     let mut config = common::test_config(database_url);
     let pool = db::connect(&config.database_url).await.ok()?;
@@ -94,7 +100,7 @@ async fn setup(allow_owner: bool, with_ocr: bool) -> Option<Ctx> {
     .await
     .ok()?;
 
-    let (ocr_url, ocr_hits) = ocr_stub().await;
+    let (ocr_url, ocr_hits) = ocr_stub(ocr_output).await;
     config.ocr_url = with_ocr.then_some(ocr_url);
     if allow_owner {
         config.ocr_allowed_users = vec![owner_email.to_lowercase()];
@@ -122,8 +128,12 @@ async fn setup(allow_owner: bool, with_ocr: bool) -> Option<Ctx> {
 }
 
 async fn post_ticket(ctx: &Ctx, body: &[u8]) -> reqwest::Response {
+    post_ticket_to(ctx, "/api/track/fuel-ticket", body).await
+}
+
+async fn post_ticket_to(ctx: &Ctx, path: &str, body: &[u8]) -> reqwest::Response {
     reqwest::Client::new()
-        .post(format!("{}/api/track/fuel-ticket", ctx.base))
+        .post(format!("{}{path}", ctx.base))
         .header("Authorization", format!("Basic {}", ctx.token))
         .header("Content-Type", "image/jpeg")
         .body(body.to_vec())
@@ -246,4 +256,36 @@ async fn allowed_owner_gets_a_suggestion_without_storing_anything() {
         .await
         .unwrap();
     assert_eq!(stored, 0);
+}
+
+#[tokio::test]
+async fn bare_dollar_follows_the_phone_country_then_the_profile() {
+    let Some(ctx) = setup_with(true, true, PADDLE_ANCAP).await else {
+        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
+        return;
+    };
+    let currency = |resp: Value| resp["suggestion"]["currency"].clone();
+
+    // No hint, no profile country, no earlier entries: unknown.
+    let r: Value = post_ticket(&ctx, JPEG).await.json().await.unwrap();
+    assert!(currency(r).is_null());
+
+    sqlx::query(
+        "UPDATE users SET country = 'UY' WHERE id = (SELECT owner_user_id FROM cars WHERE id = $1)",
+    )
+    .bind(ctx.car_id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    let r: Value = post_ticket(&ctx, JPEG).await.json().await.unwrap();
+    assert_eq!(currency(r.clone()), "UYU");
+    assert_eq!(r["suggestion"]["price_per_unit"], 90.463);
+
+    // Refuelling abroad: the phone's network country wins.
+    let r: Value = post_ticket_to(&ctx, "/api/track/fuel-ticket?country=ar", JPEG)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(currency(r), "ARS");
 }

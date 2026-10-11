@@ -11,7 +11,7 @@ pub mod parse;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -43,16 +43,31 @@ pub fn ticket_router() -> Router<AppState> {
 struct Owner {
     id: Uuid,
     email: String,
+    country: Option<String>,
 }
 
 async fn car_owner(state: &AppState, car_id: Uuid) -> AppResult<Owner> {
-    let (id, email): (Uuid, String) = sqlx::query_as(
-        "SELECT u.id, u.email FROM cars c JOIN users u ON u.id = c.owner_user_id WHERE c.id = $1",
+    let (id, email, country): (Uuid, String, Option<String>) = sqlx::query_as(
+        "SELECT u.id, u.email, u.country FROM cars c JOIN users u ON u.id = c.owner_user_id \
+         WHERE c.id = $1",
     )
     .bind(car_id)
     .fetch_one(&state.pool)
     .await?;
-    Ok(Owner { id, email })
+    Ok(Owner { id, email, country })
+}
+
+#[derive(Debug, Deserialize)]
+struct TicketQuery {
+    /// Where the phone is right now (alpha-2, from its mobile network). Beats the
+    /// owner's profile country, so a receipt abroad gets that country's currency.
+    country: Option<String>,
+}
+
+/// The phone's current country when it sent a valid one, else the owner's.
+fn ticket_country(hint: Option<&str>, profile: Option<&str>) -> Option<&'static str> {
+    hint.and_then(shared::country::normalize_country)
+        .or_else(|| profile.and_then(shared::country::normalize_country))
 }
 
 async fn fuel_log(
@@ -90,6 +105,7 @@ fn ocr_allowed(allowed: &[String], email: &str) -> bool {
 async fn fuel_ticket(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<TicketQuery>,
     body: Bytes,
 ) -> AppResult<Json<FuelTicketResponse>> {
     let device = auth_device(&state, &headers).await?;
@@ -119,10 +135,11 @@ async fn fuel_ticket(
         Some("FULL_ELECTRIC") => "kWh",
         _ => "L",
     };
-    let mut suggestion = parse::parse(&text, default_unit);
+    let country = ticket_country(query.country.as_deref(), owner.country.as_deref());
+    let mut suggestion = parse::parse(&text, default_unit, country);
     let mut source = "parser";
     if !text.is_empty()
-        && let Some(refined) = ai_refine(&state, owner.id, &text, &suggestion).await
+        && let Some(refined) = ai_refine(&state, owner.id, &text, &suggestion, country).await
     {
         suggestion = parse::merge(suggestion, refined);
         source = "ai";
@@ -167,7 +184,8 @@ Answer with one JSON object and nothing else, with these keys (null when the rec
 filled_at_local (\"YYYY-MM-DDTHH:MM:SS\", the receipt's local time), unit (\"L\" or \"kWh\"), \
 quantity (number, litres or kWh dispensed), price_per_unit (number, per litre or per kWh), \
 total_cost (number, amount paid), currency (ISO 4217 code), station (station or operator name). \
-Correct the draft only where the receipt clearly says otherwise. OCR may confuse O/0, l/1, S/5 and \
+The country, when given, is where the receipt was issued (ISO 3166-1 alpha-2): use it for the \
+currency of a bare \"$\" and for the date order. Correct the draft only where the receipt clearly says otherwise. OCR may confuse O/0, l/1, S/5 and \
 drop decimal separators; quantity x price_per_unit should be about total_cost.";
 
 /// Text-only second opinion from the owner's own model. Any failure, including
@@ -177,6 +195,7 @@ async fn ai_refine(
     owner_id: Uuid,
     text: &[String],
     draft: &FuelTicket,
+    country: Option<&str>,
 ) -> Option<FuelTicket> {
     let creds = crate::chat::openrouter_credentials(state, owner_id)
         .await
@@ -186,7 +205,8 @@ async fn ai_refine(
         .take(80)
         .map(|r| ai::sanitize_user_text(r, 200))
         .collect();
-    let user = serde_json::json!({ "receipt_rows": receipt, "draft": draft }).to_string();
+    let user = serde_json::json!({ "receipt_rows": receipt, "draft": draft, "country": country })
+        .to_string();
     let call = ai::complete_json::<FuelTicket>(&creds.api_key, &creds.model, AI_SYSTEM, &user, 400);
     match tokio::time::timeout(AI_TIMEOUT, call).await {
         Ok(Ok(t)) => Some(t),
@@ -216,6 +236,14 @@ async fn last_currency(state: &AppState, car_id: Uuid) -> AppResult<Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phone_country_beats_profile_and_bad_hints_are_ignored() {
+        assert_eq!(ticket_country(Some("ar"), Some("UY")), Some("AR"));
+        assert_eq!(ticket_country(None, Some("UY")), Some("UY"));
+        assert_eq!(ticket_country(Some("zz9"), Some("UY")), Some("UY"));
+        assert_eq!(ticket_country(Some(""), None), None);
+    }
 
     #[test]
     fn allowlist_matches_case_insensitively_and_defaults_closed() {
