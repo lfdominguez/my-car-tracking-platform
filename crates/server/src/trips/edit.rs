@@ -12,10 +12,11 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{TripDetailResponse, get_trip, purge_track, stats};
+use super::{TripDetailResponse, delete_tracks, get_trip, stats};
+use crate::audit::{self, AuditEvent, actions};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use crate::shares::access::can_edit_car;
+use crate::shares::access::{can_edit_car, require_owner};
 use crate::state::AppState;
 
 const MAX_TAGS: usize = 20;
@@ -29,12 +30,15 @@ struct TripMeta {
     finished_at: Option<DateTime<Utc>>,
     finished: bool,
     vault: bool,
+    /// Points dropped by retention; only `archived_route` is left.
+    pruned: bool,
 }
 
 async fn load_meta(pool: &PgPool, id: Uuid) -> AppResult<TripMeta> {
-    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Option<DateTime<Utc>>, bool, bool)>(
+    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Option<DateTime<Utc>>, bool, bool, bool)>(
         r#"
-        SELECT t.car_id, t.started_at, t.finished_at, t.finished, u.vault_status = 'active'
+        SELECT t.car_id, t.started_at, t.finished_at, t.finished, u.vault_status = 'active',
+               t.points_pruned_at IS NOT NULL
         FROM tracks t JOIN cars c ON c.id = t.car_id JOIN users u ON u.id = c.owner_user_id
         WHERE t.id = $1
         "#,
@@ -49,6 +53,7 @@ async fn load_meta(pool: &PgPool, id: Uuid) -> AppResult<TripMeta> {
         finished_at: row.2,
         finished: row.3,
         vault: row.4,
+        pruned: row.5,
     })
 }
 
@@ -185,9 +190,16 @@ pub async fn merge_trips(
             "trips belong to different cars".into(),
         ));
     }
+    // Merge deletes the absorbed trips, so it takes the same right as delete.
+    require_owner(&state.pool, user.id, car_id).await?;
     if metas.iter().any(|(_, m)| !m.finished) {
         return Err(AppError::BadRequest(
             "only finished trips can be merged".into(),
+        ));
+    }
+    if metas.iter().any(|(_, m)| m.pruned) {
+        return Err(AppError::BadRequest(
+            "trips whose points were pruned cannot be merged".into(),
         ));
     }
     metas.sort_by_key(|(_, m)| m.started_at);
@@ -225,28 +237,160 @@ pub async fn merge_trips(
         ));
     }
 
+    let meta_rows = sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, Vec<String>)>(
+        "SELECT id, purpose, notes, tags FROM tracks WHERE id = ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(&state.pool)
+    .await?;
+    // In trip order, so notes and tag order read like the drive.
+    let ordered: Vec<TripText> = metas
+        .iter()
+        .filter_map(|(id, _)| meta_rows.iter().find(|r| r.0 == *id))
+        .map(|r| TripText {
+            purpose: r.1.clone(),
+            notes: r.2.clone(),
+            tags: r.3.clone(),
+        })
+        .collect();
+    let text = merge_text(&ordered);
+    let corridor_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT corridor_id FROM route_trip_assignments WHERE track_id = ANY($1)",
+    )
+    .bind(&others)
+    .fetch_all(&state.pool)
+    .await?;
+    let fill_nulls = duplicate_fill_sql(&state.pool).await?;
+
     let mut tx = state.pool.begin().await?;
-    // Re-home the points; identical timestamps (overlapping trips) keep the first.
+    // One absorbed trip at a time: two of them may share a timestamp with each other,
+    // and moving both at once would collide on the (track_id, recorded_at) key.
+    for other in &others {
+        // A point at the same instant already on the kept trip wins, but its empty
+        // fields take the absorbed point's values (e.g. GPS on one, OBD on the other).
+        // Column names come from the catalog and are quoted by format('%I').
+        sqlx::query(sqlx::AssertSqlSafe(fill_nulls.as_str()))
+            .bind(keep)
+            .bind(other)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE track_points o SET track_id = $1
+             WHERE o.track_id = $2
+               AND NOT EXISTS (SELECT 1 FROM track_points k
+                               WHERE k.track_id = $1 AND k.recorded_at = o.recorded_at)",
+        )
+        .bind(keep)
+        .bind(other)
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query(
-        "UPDATE track_points SET track_id = $1
-         WHERE track_id = ANY($2)
-           AND recorded_at NOT IN (SELECT recorded_at FROM track_points WHERE track_id = $1)",
+        "UPDATE tracks SET finished_at = $2, purpose = $3, notes = $4, tags = $5 WHERE id = $1",
+    )
+    .bind(keep)
+    .bind(last)
+    .bind(&text.purpose)
+    .bind(&text.notes)
+    .bind(&text.tags)
+    .execute(&mut *tx)
+    .await?;
+    // Late samples for the absorbed trips' tracking ids land on the kept trip.
+    sqlx::query("UPDATE track_aliases SET track_id = $1 WHERE track_id = ANY($2)")
+        .bind(keep)
+        .bind(&others)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO track_aliases (car_id, legacy_key, track_id)
+         SELECT car_id, legacy_key, $1 FROM tracks WHERE id = ANY($2)
+         ON CONFLICT (car_id, legacy_key) DO UPDATE SET track_id = EXCLUDED.track_id",
     )
     .bind(keep)
     .bind(&others)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE tracks SET finished_at = $2 WHERE id = $1")
-        .bind(keep)
-        .bind(last)
-        .execute(&mut *tx)
-        .await?;
+    delete_tracks(&mut tx, &others).await?;
     tx.commit().await?;
-    for id in &others {
-        purge_track(&state.pool, *id).await?;
+
+    if let Err(e) = crate::route_opt::sync_corridors(&state.pool, corridor_ids).await {
+        tracing::warn!(%keep, error = %e, "route corridor sync after trip merge failed");
     }
+    let keep_str = keep.to_string();
+    let car_str = car_id.to_string();
+    let merged: Vec<String> = others.iter().map(Uuid::to_string).collect();
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            user_id: Some(user.id),
+            actor_session_id: Some(user.session_id.as_str()),
+            action: actions::TRIP_MERGED,
+            resource_type: Some("trip"),
+            resource_id: Some(&keep_str),
+            ip: None,
+            user_agent: None,
+            meta: serde_json::json!({ "car_id": car_str, "merged": merged }),
+        },
+    )
+    .await;
     after_reshape(&state, &[keep]).await?;
     get_trip(State(state), user, Path(keep)).await
+}
+
+/// Purpose, notes and tags of one trip taking part in a merge.
+#[derive(Debug, Clone, Default)]
+struct TripText {
+    purpose: Option<String>,
+    notes: Option<String>,
+    tags: Vec<String>,
+}
+
+/// Longest notes the `tracks.notes` check allows.
+const MAX_NOTES_CHARS: usize = 2000;
+
+/// Combine the trips' text, earliest first: first purpose set wins, notes are joined
+/// by a blank line (cut to fit the column), tags are unioned up to [`MAX_TAGS`].
+fn merge_text(trips: &[TripText]) -> TripText {
+    let purpose = trips.iter().find_map(|t| t.purpose.clone());
+    let joined = trips
+        .iter()
+        .filter_map(|t| t.notes.as_deref().map(str::trim))
+        .filter(|n| !n.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let notes = (!joined.is_empty()).then(|| joined.chars().take(MAX_NOTES_CHARS).collect());
+    let mut tags: Vec<String> = Vec::new();
+    for tag in trips.iter().flat_map(|t| &t.tags) {
+        if tags.len() < MAX_TAGS && !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+    TripText {
+        purpose,
+        notes,
+        tags,
+    }
+}
+
+/// `UPDATE` that fills NULL columns of the kept trip's points (`$1`) from the absorbed
+/// trip's points (`$2`) at the same instant. The column list is read from the catalog
+/// so new telemetry columns are covered without touching this code.
+async fn duplicate_fill_sql(pool: &PgPool) -> AppResult<String> {
+    let set: String = sqlx::query_scalar(
+        "SELECT string_agg(format('%1$I = COALESCE(k.%1$I, o.%1$I)', column_name), ', ')
+         FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'track_points'
+           AND column_name NOT IN ('track_id', 'recorded_at', 'gps_acc_m')",
+    )
+    .fetch_one(pool)
+    .await?;
+    // gps_acc_m is NOT NULL (-1 = unknown), so it follows whichever fix `gps` keeps.
+    Ok(format!(
+        "UPDATE track_points k
+         SET gps_acc_m = CASE WHEN k.gps IS NULL THEN o.gps_acc_m ELSE k.gps_acc_m END, {set}
+         FROM track_points o
+         WHERE k.track_id = $1 AND o.track_id = $2 AND o.recorded_at = k.recorded_at"
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -330,4 +474,44 @@ pub async fn split_trip(
     tx.commit().await?;
     after_reshape(&state, &[id, new_id]).await?;
     get_trip(State(state), user, Path(new_id)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(purpose: Option<&str>, notes: Option<&str>, tags: &[&str]) -> TripText {
+        TripText {
+            purpose: purpose.map(str::to_string),
+            notes: notes.map(str::to_string),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn merge_text_keeps_every_trips_notes_and_tags() {
+        let merged = merge_text(&[
+            text(None, Some("fuel stop"), &["commute"]),
+            text(Some("business"), Some("  "), &["client-x", "commute"]),
+            text(Some("personal"), Some("back home"), &[]),
+        ]);
+        assert_eq!(merged.purpose.as_deref(), Some("business"));
+        assert_eq!(merged.notes.as_deref(), Some("fuel stop\n\nback home"));
+        assert_eq!(merged.tags, vec!["commute", "client-x"]);
+    }
+
+    #[test]
+    fn merge_text_respects_column_limits() {
+        let long = "x".repeat(MAX_NOTES_CHARS);
+        let many: Vec<String> = (0..MAX_TAGS).map(|i| format!("t{i}")).collect();
+        let many_refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let merged = merge_text(&[
+            text(None, Some(&long), &many_refs),
+            text(None, Some("more"), &["extra"]),
+        ]);
+        assert_eq!(merged.notes.unwrap().chars().count(), MAX_NOTES_CHARS);
+        assert_eq!(merged.tags.len(), MAX_TAGS);
+        assert!(!merged.tags.contains(&"extra".to_string()));
+        assert!(merge_text(&[text(None, None, &[])]).notes.is_none());
+    }
 }

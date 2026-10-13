@@ -375,7 +375,7 @@ pub(crate) fn purpose_label(purpose: &str) -> Option<&'static str> {
 }
 
 /// Why the selected trips cannot be merged, or `None` when they can.
-fn merge_blocker(selected: &[Trip]) -> Option<&'static str> {
+fn merge_blocker(selected: &[Trip], cars: &[Car]) -> Option<&'static str> {
     if selected.len() < 2 {
         return Some(i18n::t("trips.merge_need_two"));
     }
@@ -391,6 +391,10 @@ fn merge_blocker(selected: &[Trip]) -> Option<&'static str> {
     }
     if selected.iter().any(|trip| trip.vault_sealed) {
         return Some(i18n::t("trips.merge_vault"));
+    }
+    // Merging deletes the absorbed trips, which only the owner may do.
+    if cars.iter().any(|c| &c.id == car && c.role != "owner") {
+        return Some(i18n::t("trips.merge_owner"));
     }
     None
 }
@@ -551,7 +555,11 @@ pub fn TripsPage() -> impl IntoView {
 
     let on_merge = move |_| {
         let picked = selected_trips();
-        if merge_blocker(&picked).is_some() || merging.get_untracked() {
+        if cars_list
+            .with_untracked(|cars| merge_blocker(&picked, cars))
+            .is_some()
+            || merging.get_untracked()
+        {
             return;
         }
         if !confirm(&tf("trips.confirm_merge", &[("n", &picked.len())])) {
@@ -742,13 +750,13 @@ pub fn TripsPage() -> impl IntoView {
                     {move || tp("trips.selected", selected.get().len() as i64)}
                 </span>
                 <span class="muted trips-select-hint">
-                    {move || merge_blocker(&selected_trips()).unwrap_or_else(|| i18n::t("trips.merge_hint"))}
+                    {move || cars_list.with(|cars| merge_blocker(&selected_trips(), cars)).unwrap_or_else(|| i18n::t("trips.merge_hint"))}
                 </span>
                 <div class="trips-select-actions">
                     <button
                         type="button"
                         class="btn secondary btn-sm"
-                        prop:disabled=move || merging.get() || merge_blocker(&selected_trips()).is_some()
+                        prop:disabled=move || merging.get() || cars_list.with(|cars| merge_blocker(&selected_trips(), cars)).is_some()
                         on:click=on_merge
                     >
                         <Icon name="arrows-merge" size=IconSize::Sm />
@@ -2993,10 +3001,26 @@ mod tests {
     fn merge_needs_two_finished_trips_of_one_car() {
         let a = trip("a", "c1", true);
         let b = trip("b", "c1", true);
-        assert!(merge_blocker(std::slice::from_ref(&a)).is_some());
-        assert!(merge_blocker(&[a.clone(), b.clone()]).is_none());
-        assert!(merge_blocker(&[a.clone(), trip("c", "c2", true)]).is_some());
-        assert!(merge_blocker(&[a, trip("d", "c1", false)]).is_some());
+        assert!(merge_blocker(std::slice::from_ref(&a), &[]).is_some());
+        assert!(merge_blocker(&[a.clone(), b.clone()], &[]).is_none());
+        assert!(merge_blocker(&[a.clone(), trip("c", "c2", true)], &[]).is_some());
+        assert!(merge_blocker(&[a.clone(), trip("d", "c1", false)], &[]).is_some());
+    }
+
+    #[test]
+    fn merge_is_owner_only() {
+        let car = |role: &str| -> Car {
+            serde_json::from_value(serde_json::json!({
+                "id": "c1", "owner_user_id": "u1", "name": "Car", "make_model": "",
+                "photo_path": null, "fuel_type": "E10", "stoich_afr": 14.7,
+                "density_gl": 745.0, "displacement_l": 1.6, "ve": 0.85, "notes": null,
+                "role": role
+            }))
+            .unwrap()
+        };
+        let pair = [trip("a", "c1", true), trip("b", "c1", true)];
+        assert!(merge_blocker(&pair, &[car("owner")]).is_none());
+        assert!(merge_blocker(&pair, &[car("editor")]).is_some());
     }
 
     #[test]
