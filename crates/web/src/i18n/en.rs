@@ -635,6 +635,7 @@ pub const TABLE: &[(&str, &str)] = &[
         "Merged trips must belong to the same car",
     ),
     ("trips.merge_finished", "Only finished trips can be merged"),
+    ("trips.merge_owner", "Only the car owner can merge trips"),
     (
         "trips.merge_vault",
         "Vault trips cannot be merged on the server",

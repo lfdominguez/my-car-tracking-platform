@@ -251,14 +251,13 @@ async fn track_stop(
     let legacy_key = parse_legacy_key(&body.id)
         .ok_or_else(|| AppError::BadRequest("invalid tracking id".into()))?;
 
-    let track_id = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2",
-    )
-    .bind(device.car_id)
-    .bind(legacy_key)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let (track_id, ..) =
+        sqlx::query_as::<_, (uuid::Uuid, bool, DateTime<Utc>, Option<DateTime<Utc>>)>(TRACK_BY_KEY)
+            .bind(device.car_id)
+            .bind(legacy_key)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(AppError::NotFound)?;
 
     // Idempotent: already-finished tracks return OK so phone stop retries succeed.
     crate::trips::finish_track(
@@ -476,6 +475,14 @@ fn sample_coords(sample: &TrackSampleRequest) -> Result<Option<(f64, f64)>, Samp
     }
 }
 
+/// The trip a phone tracking id (`$1` car, `$2` legacy_key) refers to: its own row, or
+/// the trip it was merged into (`track_aliases`). No row when neither exists.
+const TRACK_BY_KEY: &str = "
+    SELECT id, finished, started_at, finished_at FROM tracks
+    WHERE id = COALESCE(
+        (SELECT id FROM tracks WHERE car_id = $1 AND legacy_key = $2),
+        (SELECT track_id FROM track_aliases WHERE car_id = $1 AND legacy_key = $2))";
+
 async fn resolve_track(
     state: &AppState,
     car_id: Uuid,
@@ -483,15 +490,13 @@ async fn resolve_track(
 ) -> Result<TrackRef, SampleError> {
     let legacy_key = parse_legacy_key(tracking_id).ok_or(SampleError::UnknownTrack)?;
     let (track_id, finished, started_at, finished_at) =
-        sqlx::query_as::<_, (Uuid, bool, DateTime<Utc>, Option<DateTime<Utc>>)>(
-            "SELECT id, finished, started_at, finished_at FROM tracks WHERE car_id = $1 AND legacy_key = $2",
-        )
-        .bind(car_id)
-        .bind(legacy_key)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(SampleError::Db)?
-        .ok_or(SampleError::UnknownTrack)?;
+        sqlx::query_as::<_, (Uuid, bool, DateTime<Utc>, Option<DateTime<Utc>>)>(TRACK_BY_KEY)
+            .bind(car_id)
+            .bind(legacy_key)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(SampleError::Db)?
+            .ok_or(SampleError::UnknownTrack)?;
     Ok(TrackRef {
         track_id,
         finished,

@@ -31,6 +31,7 @@ pub mod actions {
     pub const VAULT_JOB_SUBMITTED: &str = "vault.job_submitted";
     pub const TRIP_DELETED: &str = "trip.deleted";
     pub const TRIP_FINISHED: &str = "trip.finished";
+    pub const TRIP_MERGED: &str = "trip.merged";
     pub const AUTH_LOGIN_FAILED: &str = "auth.login_failed";
     pub const SHARE_UPDATED: &str = "share.updated";
     pub const CAR_CREATED: &str = "car.created";

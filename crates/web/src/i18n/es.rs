@@ -687,6 +687,10 @@ pub const TABLE: &[(&str, &str)] = &[
         "Solo se pueden unir viajes finalizados",
     ),
     (
+        "trips.merge_owner",
+        "Solo el dueño del auto puede unir viajes",
+    ),
+    (
         "trips.merge_vault",
         "Los viajes de la bóveda no se pueden unir en el servidor",
     ),

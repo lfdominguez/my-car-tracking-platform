@@ -282,19 +282,29 @@ pub async fn purge_track(pool: &PgPool, track_id: Uuid) -> AppResult<()> {
     .await?;
 
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM vault_objects WHERE logical_id = $1")
-        .bind(track_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM tracks WHERE id = $1")
-        .bind(track_id)
-        .execute(&mut *tx)
-        .await?;
+    delete_tracks(&mut tx, &[track_id]).await?;
     tx.commit().await?;
 
     if let Err(e) = crate::route_opt::sync_corridors(pool, corridor_ids).await {
         tracing::warn!(%track_id, error = %e, "route corridor sync after trip purge failed");
     }
+    Ok(())
+}
+
+/// Delete vault ciphertext and track rows inside the caller's transaction. Route
+/// corridors are left to the caller (`route_opt::sync_corridors` after commit).
+pub(crate) async fn delete_tracks(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ids: &[Uuid],
+) -> AppResult<()> {
+    sqlx::query("DELETE FROM vault_objects WHERE logical_id = ANY($1)")
+        .bind(ids)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM tracks WHERE id = ANY($1)")
+        .bind(ids)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
