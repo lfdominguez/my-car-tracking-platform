@@ -8,7 +8,7 @@ use crate::mcp::token::clamp_list_limit;
 use crate::shares::access::can_read_car;
 use crate::units::convert_distance_m;
 
-use super::{ToolCtx, reject_vault};
+use super::ToolCtx;
 
 #[derive(Debug, Serialize)]
 pub struct CorridorListItem {
@@ -64,22 +64,6 @@ pub struct VariantOut {
     pub median_distance: Option<f64>,
 }
 
-async fn car_vault_sealed(pool: &sqlx::PgPool, car_id: Uuid) -> AppResult<bool> {
-    let sealed: bool = sqlx::query_scalar(
-        r#"
-        SELECT (u.vault_status = 'active')
-        FROM cars c
-        JOIN users u ON u.id = c.owner_user_id
-        WHERE c.id = $1
-        "#,
-    )
-    .bind(car_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
-    Ok(sealed)
-}
-
 pub async fn list_route_corridors(
     ctx: &ToolCtx<'_>,
     car_id: Option<Uuid>,
@@ -90,7 +74,6 @@ pub async fn list_route_corridors(
 
     if let Some(cid) = car_id {
         can_read_car(&ctx.state.pool, ctx.user.id, cid).await?;
-        reject_vault(car_vault_sealed(&ctx.state.pool, cid).await?)?;
     }
 
     let rows = sqlx::query(
@@ -107,9 +90,7 @@ pub async fn list_route_corridors(
                ) AS last_trip_at
         FROM route_corridors c
         JOIN cars car ON car.id = c.car_id
-        JOIN users ou ON ou.id = car.owner_user_id
-        WHERE ou.vault_status IS DISTINCT FROM 'active'
-          AND (
+        WHERE (
             car.owner_user_id = $1
             OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = c.car_id AND cs.user_id = $1)
           )
@@ -183,7 +164,6 @@ pub async fn get_route_corridor(ctx: &ToolCtx<'_>, corridor_id: Uuid) -> AppResu
 
     let car_id: Uuid = row.try_get("car_id")?;
     can_read_car(&ctx.state.pool, ctx.user.id, car_id).await?;
-    reject_vault(car_vault_sealed(&ctx.state.pool, car_id).await?)?;
 
     let system = ctx.user.unit_system;
     let variant_rows = sqlx::query(

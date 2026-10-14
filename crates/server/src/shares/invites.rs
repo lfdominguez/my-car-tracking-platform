@@ -144,7 +144,6 @@ pub async fn accept_invite(
             crate::notifications::Notification {
                 kind: crate::notifications::kinds::SECURITY,
                 title: format!("{} accepted your invitation", user.email),
-                // A vault car also needs its key wrapped for the new member.
                 body: "They now have access to the car.".into(),
                 url: Some(format!("/app/cars/{car_id}")),
                 dedup_key: None,
@@ -172,8 +171,7 @@ pub async fn decline_invite(
 }
 
 /// Remove yourself from a car shared with you. Tokens you created on it stop
-/// working, and your wrapped vault key is dropped, exactly as if the owner had
-/// removed you.
+/// working, exactly as if the owner had removed you.
 pub async fn leave_share(
     State(state): State<AppState>,
     user: AuthUser,
@@ -189,11 +187,6 @@ pub async fn leave_share(
         CarAccess::Editor | CarAccess::Viewer => {}
     }
     sqlx::query("DELETE FROM car_shares WHERE car_id = $1 AND user_id = $2")
-        .bind(car_id)
-        .bind(user.id)
-        .execute(&state.pool)
-        .await?;
-    sqlx::query("DELETE FROM vault_car_deks WHERE car_id = $1 AND recipient_user_id = $2")
         .bind(car_id)
         .bind(user.id)
         .execute(&state.pool)

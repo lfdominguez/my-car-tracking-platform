@@ -50,7 +50,6 @@ struct CarDashRow {
     fuel_level_pct: Option<f64>,
     tracked_distance_m: f64,
     trip_count: i64,
-    vault_sealed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,14 +90,11 @@ pub async fn get_dashboard_summary(
         WITH accessible AS (
             SELECT c.id
             FROM cars c
-            JOIN users u ON u.id = c.owner_user_id
-            WHERE c.owner_user_id = $1 AND u.vault_status IS DISTINCT FROM 'active'
+            WHERE c.owner_user_id = $1
             UNION
-            SELECT c.id
-            FROM cars c
-            JOIN car_shares cs ON cs.car_id = c.id
-            JOIN users u ON u.id = c.owner_user_id
-            WHERE cs.user_id = $1 AND u.vault_status IS DISTINCT FROM 'active'
+            SELECT cs.car_id
+            FROM car_shares cs
+            WHERE cs.user_id = $1
         ),
         filtered_tracks AS (
             SELECT t.*
@@ -159,17 +155,13 @@ pub async fn get_dashboard_summary(
     let car_sql = format!(
         r#"
         WITH accessible AS (
-            SELECT c.id, c.name, c.make_model, c.fuel_class, c.battery_capacity_kwh,
-                   (u.vault_status = 'active') AS vault_sealed
+            SELECT c.id, c.name, c.make_model, c.fuel_class, c.battery_capacity_kwh
             FROM cars c
-            JOIN users u ON u.id = c.owner_user_id
             WHERE c.owner_user_id = $1
             UNION ALL
-            SELECT c.id, c.name, c.make_model, c.fuel_class, c.battery_capacity_kwh,
-                   (u.vault_status = 'active') AS vault_sealed
+            SELECT c.id, c.name, c.make_model, c.fuel_class, c.battery_capacity_kwh
             FROM cars c
             JOIN car_shares cs ON cs.car_id = c.id
-            JOIN users u ON u.id = c.owner_user_id
             WHERE cs.user_id = $1
         ),
         filtered AS (
@@ -249,8 +241,7 @@ pub async fn get_dashboard_summary(
             o.odometer_at,
             lf.fuel_level_pct,
             COALESCE(ct.tracked_distance_m, 0)::float8 AS tracked_distance_m,
-            COALESCE(ct.trip_count, 0)::bigint AS trip_count,
-            f.vault_sealed
+            COALESCE(ct.trip_count, 0)::bigint AS trip_count
         FROM filtered f
         LEFT JOIN car_trip ct ON ct.car_id = f.id
         LEFT JOIN latest_odo o ON o.car_id = f.id
@@ -272,7 +263,6 @@ pub async fn get_dashboard_summary(
 
     let cars: Vec<CarDashDto> = car_rows
         .into_iter()
-        .filter(|c| !c.vault_sealed)
         .map(|c| CarDashDto {
             car_id: c.car_id,
             name: ai::sanitize_user_text(&c.name, 80),

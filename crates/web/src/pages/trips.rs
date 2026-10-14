@@ -9,7 +9,7 @@ use crate::api::{
     Car, Trip, TripAnalysis, TripListOpts, TripPoint, TripTrafficFrame, cancel_trip_analysis,
     delete_trip, fetch_trip_analysis, finish_trip, get_car, get_trip, list_cars, list_trips,
     merge_trips, split_trip, start_trip_analysis, start_trip_traffic_analyze, trip_map,
-    trip_points, trip_traffic_frames, update_trip_meta, vault_create_job,
+    trip_points, trip_traffic_frames, update_trip_meta,
 };
 use crate::components::charts::{TripTelemetryDashboard, sanitize_trip_points};
 use crate::components::map::TripMap;
@@ -20,17 +20,8 @@ use crate::pages::trip_export::TripExportMenu;
 use crate::pages::trip_replay::TripReplay;
 use crate::pages::trips_views::{TripsCalendar, TripsOverlayMap};
 use crate::units::{
-    avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, point_si_to_display,
-    trip_si_to_display, use_unit_prefs,
+    avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, use_unit_prefs,
 };
-use crate::vault::{
-    VaultUnlockGate, build_analysis_context_json, decrypt_ai_report, decrypt_car_profile,
-    decrypt_track_meta, decrypt_track_points, seal_ai_report, use_vault_session,
-};
-
-/// A decrypted vault trip in SI units: the summary patched from `track_meta`, and
-/// its samples.
-type VaultTripSi = (Trip, Vec<TripPoint>);
 
 /// Drive three futures concurrently and return all outputs (a dependency-free
 /// `futures::join!` for the one place that needs it).
@@ -389,9 +380,6 @@ fn merge_blocker(selected: &[Trip], cars: &[Car]) -> Option<&'static str> {
     if selected.iter().any(|trip| !trip.finished) {
         return Some(i18n::t("trips.merge_finished"));
     }
-    if selected.iter().any(|trip| trip.vault_sealed) {
-        return Some(i18n::t("trips.merge_vault"));
-    }
     // Merging deletes the absorbed trips, which only the owner may do.
     if cars.iter().any(|c| &c.id == car && c.role != "owner") {
         return Some(i18n::t("trips.merge_owner"));
@@ -438,9 +426,6 @@ pub fn TripsPage() -> impl IntoView {
         tag_filter.set(tag);
     }
 
-    let vault = use_vault_session();
-    let vault_unlocked = vault.unlocked();
-
     Effect::new(move |_| {
         let url_car_id = query.with(|q| q.get("car_id"));
         let id = url_car_id.or_else(|| default_car.get());
@@ -483,17 +468,7 @@ pub fn TripsPage() -> impl IntoView {
                 return;
             }
             match result {
-                Ok(mut page) => {
-                    let unlocked = vault_unlocked.get_untracked();
-                    for trip in page.iter_mut() {
-                        if trip.vault_sealed && trip.car_name.is_empty() {
-                            trip.car_name = if unlocked {
-                                i18n::t("trips.vault_trip").into()
-                            } else {
-                                i18n::t("trips.locked").into()
-                            };
-                        }
-                    }
+                Ok(page) => {
                     has_more.set(page.len() as i64 >= TRIPS_PAGE_SIZE);
                     if append {
                         trips.update(|list| {
@@ -516,8 +491,6 @@ pub fn TripsPage() -> impl IntoView {
     };
 
     Effect::new(move |_| {
-        // Refetch on unlock/lock so sealed rows swap between "Locked" and "Vault trip".
-        vault_unlocked.track();
         refresh.track();
         save_trips_filter(filter.get());
         let opts = base_opts();
@@ -1153,9 +1126,6 @@ pub fn TripDetailPage() -> impl IntoView {
     let car_role = RwSignal::new(Option::<String>::None);
     let can_edit =
         Signal::derive(move || matches!(car_role.get().as_deref(), Some("owner") | Some("editor")));
-    let vault = use_vault_session();
-    let vault_unlocked = vault.unlocked();
-
     // Charts and map announce the pinned sample on `window`; mirror it here so the
     // split control knows where to cut.
     Effect::new(move |_| {
@@ -1196,40 +1166,11 @@ pub fn TripDetailPage() -> impl IntoView {
         });
         car_id
     });
-    // A vault trip decrypts to SI, while everything on screen expects the display units
-    // the server applies to plaintext trips. Keep the SI copy: the display copy is
-    // re-derived from it whenever the unit system changes (it may still be loading),
-    // and the client-built AI bundle is declared in SI.
-    let vault_si = RwSignal::new(Option::<VaultTripSi>::None);
-    Effect::new(move |_| {
-        let system = prefs.with(|p| p.system);
-        vault_si.with(|si| {
-            let Some((si_trip, si_points)) = si else {
-                return;
-            };
-            let mut t = si_trip.clone();
-            trip_si_to_display(&mut t, system);
-            trip.set(Some(t));
-            points.set(
-                si_points
-                    .iter()
-                    .cloned()
-                    .map(|mut p| {
-                        point_si_to_display(&mut p, system);
-                        p
-                    })
-                    .collect(),
-            );
-        });
-    });
-
     Effect::new(move |_| {
         let id = params.with(|p| p.get("id").map(|s| s.to_string()).unwrap_or_default());
         if id.is_empty() {
             return;
         }
-        // Unlocking through the gate on this page must decrypt the trip without a reload.
-        vault_unlocked.track();
         reload.track();
 
         // Cancel in-flight fetches/polls when the trip id changes or the page unmounts.
@@ -1245,7 +1186,6 @@ pub fn TripDetailPage() -> impl IntoView {
         // signal starts over here. Otherwise the previous trip's map, charts, traffic
         // colours and AI report stay on screen until (or, when a fetch fails, even
         // after) the new trip loads.
-        vault_si.set(None);
         trip.set(None);
         points.set(Vec::new());
         geojson.set(None);
@@ -1261,7 +1201,6 @@ pub fn TripDetailPage() -> impl IntoView {
 
         let alive_fetch = Arc::clone(&alive);
         let id_fetch = id.clone();
-        let sess = vault.clone();
         leptos::task::spawn_local(async move {
             let mut err: Option<String> = None;
             match get_trip(&id_fetch).await {
@@ -1275,131 +1214,36 @@ pub fn TripDetailPage() -> impl IntoView {
             if !alive_fetch.load(Ordering::SeqCst) {
                 return;
             }
-            // Snapshot trip for vault branch (signal may already hold it).
-            let sealed = trip
-                .try_get_untracked()
-                .flatten()
-                .map(|t| t.vault_sealed)
-                .unwrap_or(false);
-            let car_id = trip
-                .try_get_untracked()
-                .flatten()
-                .map(|t| t.car_id.clone())
-                .unwrap_or_default();
-
-            if sealed {
-                if sess.is_unlocked() {
-                    match decrypt_track_points(&sess, &car_id, &id_fetch).await {
-                        Ok(p) => {
-                            if alive_fetch.load(Ordering::SeqCst) {
-                                let coords: Vec<[f64; 2]> =
-                                    p.iter().filter_map(|pt| Some([pt.lon?, pt.lat?])).collect();
-                                geojson.set(Some(serde_json::json!({
-                                    "type": "LineString",
-                                    "coordinates": coords,
-                                })));
-                                let mut si_trip = trip.try_get_untracked().flatten();
-                                if let Ok(Some(meta)) =
-                                    decrypt_track_meta(&sess, &car_id, &id_fetch).await
-                                    && let Some(t) = si_trip.as_mut()
-                                {
-                                    t.point_count = meta.point_count;
-                                    t.distance_m = meta.distance_m;
-                                    t.economy_distance_m = meta.economy_distance_m;
-                                    t.duration_s = meta.duration_s;
-                                    t.avg_speed_kph = meta.avg_speed_kph;
-                                    t.max_speed_kph = meta.max_speed_kph;
-                                    t.fuel_used_l = meta.fuel_used_l;
-                                    t.fuel_used_moving_l = meta.fuel_used_moving_l;
-                                    t.fuel_from_level_l = meta.fuel_from_level_l;
-                                }
-                                // The charts gate liquid-fuel panels on the fuel class;
-                                // a sealed trip may only have it in the car profile.
-                                if let Some(t) = si_trip.as_mut()
-                                    && t.fuel_class_snapshot.is_empty()
-                                    && let Ok(Some(profile)) =
-                                        decrypt_car_profile(&sess, &car_id).await
-                                {
-                                    t.fuel_class_snapshot = profile.fuel_class;
-                                }
-                                // The effect above converts both into display units.
-                                if alive_fetch.load(Ordering::SeqCst)
-                                    && let Some(t) = si_trip
-                                {
-                                    vault_si.set(Some((t, p)));
-                                }
-                            }
-                        }
-                        Err(e) => err = Some(tf("trip.vault_decrypt_failed", &[("error", &e)])),
+            // Fetched together and applied in one synchronous block, so the map
+            // (which depends on all three) builds once instead of once per
+            // response, and the three round trips overlap.
+            let (p, g, f) = join3(
+                trip_points(&id_fetch, Some(DETAIL_MAX_POINTS)),
+                trip_map(&id_fetch),
+                trip_traffic_frames(&id_fetch),
+            )
+            .await;
+            if !alive_fetch.load(Ordering::SeqCst) {
+                return;
+            }
+            match p {
+                Ok(p) => points.set(p),
+                Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
+            }
+            match g {
+                Ok(g) => geojson.set(Some(g)),
+                Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
+            }
+            traffic_frames.set(f.unwrap_or_default());
+            match fetch_trip_analysis(&id_fetch).await {
+                Ok(a) => {
+                    if alive_fetch.load(Ordering::SeqCst) {
+                        analysis.set(Some(a));
                     }
-                    match decrypt_ai_report(&sess, &car_id, &id_fetch).await {
-                        Ok(Some(report)) => {
-                            if alive_fetch.load(Ordering::SeqCst) {
-                                analysis.set(Some(TripAnalysis {
-                                    analyzed: true,
-                                    analysis_status: "completed".into(),
-                                    analyzed_at: None,
-                                    analysis_model: None,
-                                    analysis_error: None,
-                                    can_analyze: true,
-                                    report: Some(report),
-                                }));
-                            }
-                        }
-                        Ok(None) => {
-                            if alive_fetch.load(Ordering::SeqCst) {
-                                analysis.set(Some(TripAnalysis {
-                                    analyzed: false,
-                                    analysis_status: "none".into(),
-                                    analyzed_at: None,
-                                    analysis_model: None,
-                                    analysis_error: None,
-                                    can_analyze: true,
-                                    report: None,
-                                }));
-                            }
-                        }
-                        Err(e) => {
-                            if alive_fetch.load(Ordering::SeqCst) {
-                                analysis_err.set(Some(e));
-                            }
-                        }
-                    }
-                } else if alive_fetch.load(Ordering::SeqCst) {
-                    err = Some(i18n::t("trip.unlock_to_decrypt").into());
                 }
-            } else {
-                // Fetched together and applied in one synchronous block, so the map
-                // (which depends on all three) builds once instead of once per
-                // response, and the three round trips overlap.
-                let (p, g, f) = join3(
-                    trip_points(&id_fetch, Some(DETAIL_MAX_POINTS)),
-                    trip_map(&id_fetch),
-                    trip_traffic_frames(&id_fetch),
-                )
-                .await;
-                if !alive_fetch.load(Ordering::SeqCst) {
-                    return;
-                }
-                match p {
-                    Ok(p) => points.set(p),
-                    Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
-                }
-                match g {
-                    Ok(g) => geojson.set(Some(g)),
-                    Err(e) => err = Some(err.unwrap_or_default() + &format!("; {e}")),
-                }
-                traffic_frames.set(f.unwrap_or_default());
-                match fetch_trip_analysis(&id_fetch).await {
-                    Ok(a) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            analysis.set(Some(a));
-                        }
-                    }
-                    Err(e) => {
-                        if alive_fetch.load(Ordering::SeqCst) {
-                            analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
-                        }
+                Err(e) => {
+                    if alive_fetch.load(Ordering::SeqCst) {
+                        analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
                     }
                 }
             }
@@ -1539,12 +1383,7 @@ pub fn TripDetailPage() -> impl IntoView {
                         </button>
                     </Show>
                     <Show when=move || trip.with(|t| t.is_some())>
-                        <TripExportMenu
-                            trip=trip
-                            vault_points=Signal::derive(move || {
-                                vault_si.with(|v| v.as_ref().map(|(_, points)| points.clone()))
-                            })
-                        />
+                        <TripExportMenu trip=trip />
                     </Show>
                     <button
                         type="button"
@@ -1738,15 +1577,8 @@ pub fn TripDetailPage() -> impl IntoView {
             </Show>
 
 
-            <Show when=move || trip.get().map(|t| t.vault_sealed).unwrap_or(false) && !vault_unlocked.get()>
-                <VaultUnlockGate message="trip.unlock_points"/>
-            </Show>
-
             <TripAiPanel
                 trip_id=Signal::derive(move || params.with(|p| p.get("id").unwrap_or_default()))
-                trip=trip
-                points=points
-                vault_si=vault_si
                 analysis=analysis
                 analysis_busy=analysis_busy
                 analysis_err=analysis_err
@@ -1803,7 +1635,7 @@ pub fn TripDetailPage() -> impl IntoView {
                         <Show when=move || {
                             can_edit.get()
                                 && selected_iso.get().is_some()
-                                && trip.get().is_some_and(|t| t.finished && !t.vault_sealed)
+                                && trip.get().is_some_and(|t| t.finished)
                         }>
                             <button
                                 type="button"
@@ -1902,7 +1734,7 @@ fn parse_tags(raw: &str) -> Vec<String> {
 }
 
 /// Purpose, notes and tags of a trip (#121, #89). Owners and editors edit them;
-/// viewers see them read-only. Vault trips keep them off the server entirely.
+/// viewers see them read-only.
 #[component]
 fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl IntoView {
     let purpose = RwSignal::new(String::new());
@@ -1962,10 +1794,8 @@ fn TripMetaEditor(trip: RwSignal<Option<Trip>>, can_edit: Signal<bool>) -> impl 
         });
     };
 
-    let sealed = move || trip.with(|t| t.as_ref().is_some_and(|t| t.vault_sealed));
-
     view! {
-        <Show when=move || trip.get().is_some() && !sealed()>
+        <Show when=move || trip.get().is_some()>
             <section class="card trip-meta-card">
                 <div class="telemetry-section-head">
                     <h2 class="section-title">
@@ -2146,7 +1976,7 @@ fn traffic_route_toolbar(
                                 let done = t.traffic_analyzed
                                     || matches!(
                                         st.as_str(),
-                                        "ready" | "failed" | "skipped" | "skipped_vault"
+                                        "ready" | "failed" | "skipped"
                                     );
                                 trip.set(Some(t));
                                 if done {
@@ -2230,7 +2060,6 @@ fn traffic_route_toolbar(
                         };
                         let st = t.traffic.as_ref().map(|x| x.status.as_str()).unwrap_or("");
                         t.finished
-                            && !t.vault_sealed
                             && !t.traffic_analyzed
                             && st != "pending"
                             && !traffic_busy.get()
@@ -2319,7 +2148,7 @@ fn friendly_traffic_status(
     match status {
         "ready" => (i18n::t("status.ready"), "ai-status-badge is-done"),
         "failed" => (i18n::t("status.failed"), "ai-status-badge is-failed"),
-        "skipped" | "skipped_vault" => (i18n::t("status.skipped"), "ai-status-badge is-idle"),
+        "skipped" => (i18n::t("status.skipped"), "ai-status-badge is-idle"),
         _ if analyzed => (i18n::t("status.ready"), "ai-status-badge is-done"),
         _ => (i18n::t("status.not_analyzed"), "ai-status-badge is-idle"),
     }
@@ -2403,9 +2232,6 @@ fn download_markdown_report(filename: &str, markdown: &str) {
 #[component]
 fn TripAiPanel(
     trip_id: Signal<String>,
-    trip: RwSignal<Option<Trip>>,
-    points: RwSignal<Vec<TripPoint>>,
-    vault_si: RwSignal<Option<VaultTripSi>>,
     analysis: RwSignal<Option<TripAnalysis>>,
     analysis_busy: RwSignal<bool>,
     analysis_err: RwSignal<Option<String>>,
@@ -2417,13 +2243,11 @@ fn TripAiPanel(
         panel_alive_cleanup.store(false, Ordering::SeqCst);
     });
     let cancelling = RwSignal::new(false);
-    let vault = use_vault_session();
     // Collapsed by default — status stays visible in the header.
     let ai_open = RwSignal::new(false);
 
     let run = Callback::new({
         let panel_alive = Arc::clone(&panel_alive);
-        let vault = vault.clone();
         move |_| {
             let Some(id) = trip_id.try_get() else {
                 return;
@@ -2445,120 +2269,36 @@ fn TripAiPanel(
                         && trip_id.try_get_untracked().as_deref() == Some(id.as_str())
                 }
             };
-            let sealed = trip
-                .try_get_untracked()
-                .flatten()
-                .map(|t| t.vault_sealed)
-                .unwrap_or(false);
-            // A vault trip's bundle is built from the SI copy: the context declares
-            // metric units, and the display copy is in whatever the user prefers.
-            let (trip_snap, pts) = match vault_si.try_get_untracked().flatten() {
-                Some((t, p)) if sealed => (Some(t), p),
-                _ => (
-                    trip.try_get_untracked().flatten(),
-                    points.try_get_untracked().unwrap_or_default(),
-                ),
-            };
-            let sess = vault.clone();
             leptos::task::spawn_local(async move {
-                if sealed {
-                    let Some(t) = trip_snap else {
-                        if alive_job() {
-                            analysis_err.set(Some(i18n::t("trip.not_loaded").into()));
-                            analysis_busy.set(false);
+                match start_trip_analysis(&id).await {
+                    Ok(_) => loop {
+                        if !alive_job() {
+                            break;
                         }
-                        return;
-                    };
-                    if !sess.is_unlocked() {
-                        if alive_job() {
-                            analysis_err.set(Some(i18n::t("trip.unlock_consent").into()));
-                            analysis_busy.set(false);
-                        }
-                        return;
-                    }
-                    if pts.is_empty() {
-                        if alive_job() {
-                            analysis_err.set(Some(i18n::t("trip.no_decrypted_points").into()));
-                            analysis_busy.set(false);
-                        }
-                        return;
-                    }
-                    // The profile carries fuel_class and the engine constants; a
-                    // failure here only thins the bundle, it does not block analysis.
-                    let profile = decrypt_car_profile(&sess, &t.car_id).await.ok().flatten();
-                    let car_name = profile
-                        .as_ref()
-                        .map(|p| p.name.clone())
-                        .filter(|n| !n.is_empty())
-                        .unwrap_or_else(|| t.car_name.clone());
-                    let ctx = build_analysis_context_json(&t, &car_name, &pts, profile.as_ref());
-                    let bundle = serde_json::json!({
-                        "track_id": id,
-                        "context": ctx,
-                    });
-                    match vault_create_job("ai_analysis", bundle).await {
-                        Ok(job) => {
-                            if !alive_job() {
-                                return;
-                            }
-                            if job.status != "done" {
-                                analysis_err.set(Some(job.error.unwrap_or_else(|| {
-                                    i18n::t("trip.vault_analysis_failed").into()
-                                })));
-                            } else if let Some(report) = job.result {
-                                if let Err(e) = seal_ai_report(&sess, &t.car_id, &id, &report).await
-                                {
-                                    analysis_err
-                                        .set(Some(tf("trip.seal_failed", &[("error", &e)])));
+                        match fetch_trip_analysis(&id).await {
+                            Ok(a) => {
+                                if !alive_job() {
+                                    break;
                                 }
-                                analysis.set(Some(TripAnalysis {
-                                    analyzed: true,
-                                    analysis_status: "completed".into(),
-                                    analyzed_at: None,
-                                    analysis_model: None,
-                                    analysis_error: None,
-                                    can_analyze: true,
-                                    report: Some(report),
-                                }));
-                            }
-                        }
-                        Err(e) => {
-                            if alive_job() {
-                                analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
-                            }
-                        }
-                    }
-                } else {
-                    match start_trip_analysis(&id).await {
-                        Ok(_) => loop {
-                            if !alive_job() {
-                                break;
-                            }
-                            match fetch_trip_analysis(&id).await {
-                                Ok(a) => {
-                                    if !alive_job() {
-                                        break;
-                                    }
-                                    let st = a.analysis_status.clone();
-                                    analysis.set(Some(a));
-                                    if st != "pending" && st != "running" {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    if alive_job() {
-                                        analysis_err
-                                            .set(Some(sanitize_analysis_ui_error(&e.to_string())));
-                                    }
+                                let st = a.analysis_status.clone();
+                                analysis.set(Some(a));
+                                if st != "pending" && st != "running" {
                                     break;
                                 }
                             }
-                            gloo_timers::future::TimeoutFuture::new(3000).await;
-                        },
-                        Err(e) => {
-                            if alive_job() {
-                                analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                            Err(e) => {
+                                if alive_job() {
+                                    analysis_err
+                                        .set(Some(sanitize_analysis_ui_error(&e.to_string())));
+                                }
+                                break;
                             }
+                        }
+                        gloo_timers::future::TimeoutFuture::new(3000).await;
+                    },
+                    Err(e) => {
+                        if alive_job() {
+                            analysis_err.set(Some(sanitize_analysis_ui_error(&e.to_string())));
                         }
                     }
                 }
@@ -2633,12 +2373,6 @@ fn TripAiPanel(
             </button>
 
             <div class="ai-analysis-body">
-                {move || trip.get().map(|tr| tr.vault_sealed).unwrap_or(false).then(|| view! {
-                    <p class="muted" style="margin:0">
-                        {tr!("trip.vault_mode")}
-                    </p>
-                })}
-
                 <div class="ai-analysis-toolbar">
                     <div class="ai-status-block">
                         <span class=move || {
@@ -2704,7 +2438,6 @@ fn TripAiPanel(
                             </span>
                             <Show when=move || {
                                 analysis.get().is_some_and(|a| a.can_analyze)
-                                    && !trip.with(|t| t.as_ref().is_some_and(|t| t.vault_sealed))
                             }>
                                 <button
                                     type="button"

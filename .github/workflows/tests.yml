@@ -28,7 +28,6 @@ jobs:
       - name: Run tests that need no database
         run: |
           cargo test -p shared
-          cargo test -p vault_crypto
           cargo test -p ai --lib
           cargo test -p server --lib
           cargo test -p web

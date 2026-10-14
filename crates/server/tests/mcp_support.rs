@@ -37,9 +37,6 @@ pub fn test_config(database_url: String) -> Config {
         allow_dev_login: true,
         is_local_dev: true,
         trust_forwarded_headers: false,
-        vault_ui_enabled: true,
-        vault_job_ttl_secs: 300,
-        vault_max_object_bytes: 1024,
         // Closed port: nothing in these tests may depend on Overpass.
         overpass_url: "http://127.0.0.1:9/overpass".into(),
         csp_cloudflare_analytics: false,
@@ -163,14 +160,6 @@ pub async fn unshare(pool: &PgPool, car_id: Uuid, user_id: Uuid) {
         .execute(pool)
         .await
         .expect("unshare car");
-}
-
-pub async fn seal_vault(pool: &PgPool, user_id: Uuid) {
-    sqlx::query("UPDATE users SET vault_status = 'active' WHERE id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .expect("seal vault");
 }
 
 /// One telemetry sample for [`insert_trip`].

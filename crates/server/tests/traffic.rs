@@ -32,9 +32,6 @@ fn test_config(database_url: String) -> Config {
         allow_dev_login: true,
         is_local_dev: true,
         trust_forwarded_headers: false,
-        vault_ui_enabled: true,
-        vault_job_ttl_secs: 300,
-        vault_max_object_bytes: 1024,
         // Unreachable — job should use seeded cache only.
         overpass_url: "http://127.0.0.1:9/overpass".into(),
         csp_cloudflare_analytics: false,

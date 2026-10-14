@@ -1,8 +1,8 @@
 //! MCP `tools/call` coverage and authorization, mirrored for the chat toolbox.
 //!
 //! Every tool is called over real Streamable HTTP; then the same ids are probed as
-//! a second user (stranger, viewer via share, after revocation) and after the owner
-//! seals their vault. Requires DATABASE_URL pointing at Postgres+PostGIS.
+//! a second user (stranger, viewer via share, after revocation). Requires
+//! DATABASE_URL pointing at Postgres+PostGIS.
 
 #[path = "mcp_support.rs"]
 mod support;
@@ -424,17 +424,6 @@ async fn a_stranger_sees_nothing_until_shared_and_nothing_after_revocation() {
 }
 
 #[tokio::test]
-async fn a_sealed_vault_hides_everything_even_from_its_owner() {
-    let Some(w) = world().await else {
-        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
-        return;
-    };
-    support::seal_vault(&w.pool, w.owner).await;
-    let mut mcp = McpClient::connect(&w.base, &w.owner_token).await;
-    assert_invisible(&mut mcp, &w).await;
-}
-
-#[tokio::test]
 async fn bad_arguments_are_errors_not_crashes() {
     let Some(w) = world().await else {
         eprintln!("skipping: DATABASE_URL not set or DB unavailable");
@@ -578,7 +567,4 @@ async fn the_chat_toolbox_enforces_the_same_authorization() {
         .expect("shared trip");
     support::unshare(&w.pool, w.car, w.stranger).await;
     assert_chat_invisible(&w, w.stranger).await;
-
-    support::seal_vault(&w.pool, w.owner).await;
-    assert_chat_invisible(&w, w.owner).await;
 }

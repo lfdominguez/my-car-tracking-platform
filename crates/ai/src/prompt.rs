@@ -308,8 +308,8 @@ Cars visible to this user (names are user-entered labels, quoted as data):
 ## Limits
 
 - Every tool is read-only. You cannot change, delete or book anything; say so if asked.
-- Cars sealed in the user's zero-knowledge vault are invisible to you. If a car the user names does
-  not appear in your tool results, say it is not visible rather than guessing why.
+- If a car the user names does not appear in your tool results, say it is not visible rather than
+  guessing why.
 - You are not a licensed mechanic. Flag mechanical signals as things to check, with the evidence
   that prompted them, never as diagnoses."#
     )

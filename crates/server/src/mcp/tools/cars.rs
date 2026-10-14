@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::shares::access::can_read_car;
 
-use super::{ToolCtx, reject_vault};
+use super::ToolCtx;
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct CarRow {
@@ -21,7 +21,6 @@ struct CarRow {
     ve: f64,
     notes: Option<String>,
     role: String,
-    vault_sealed: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -90,19 +89,15 @@ pub async fn list_cars(ctx: &ToolCtx<'_>) -> AppResult<Vec<CarDto>> {
         r#"
         SELECT c.id, c.name, c.make_model, c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl,
                c.displacement_l, c.ve, c.notes, c.created_at, c.updated_at,
-               'owner'::text AS role,
-               (u.vault_status = 'active') AS vault_sealed
+               'owner'::text AS role
         FROM cars c
-        JOIN users u ON u.id = c.owner_user_id
         WHERE c.owner_user_id = $1
         UNION ALL
         SELECT c.id, c.name, c.make_model, c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl,
                c.displacement_l, c.ve, c.notes, c.created_at, c.updated_at,
-               cs.role,
-               (u.vault_status = 'active') AS vault_sealed
+               cs.role
         FROM cars c
         JOIN car_shares cs ON cs.car_id = c.id
-        JOIN users u ON u.id = c.owner_user_id
         WHERE cs.user_id = $1
         ORDER BY name
         "#,
@@ -111,11 +106,7 @@ pub async fn list_cars(ctx: &ToolCtx<'_>) -> AppResult<Vec<CarDto>> {
     .fetch_all(&ctx.state.pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .filter(|r| !r.vault_sealed)
-        .map(CarDto::from)
-        .collect())
+    Ok(rows.into_iter().map(CarDto::from).collect())
 }
 
 pub async fn get_car(ctx: &ToolCtx<'_>, car_id: Uuid) -> AppResult<CarDto> {
@@ -124,10 +115,8 @@ pub async fn get_car(ctx: &ToolCtx<'_>, car_id: Uuid) -> AppResult<CarDto> {
         r#"
         SELECT c.id, c.name, c.make_model, c.fuel_type, c.fuel_class, c.battery_capacity_kwh, c.stoich_afr, c.density_gl,
                c.displacement_l, c.ve, c.notes, c.created_at, c.updated_at,
-               CASE WHEN c.owner_user_id = $2 THEN 'owner' ELSE COALESCE(cs.role, 'viewer') END AS role,
-               (u.vault_status = 'active') AS vault_sealed
+               CASE WHEN c.owner_user_id = $2 THEN 'owner' ELSE COALESCE(cs.role, 'viewer') END AS role
         FROM cars c
-        JOIN users u ON u.id = c.owner_user_id
         LEFT JOIN car_shares cs ON cs.car_id = c.id AND cs.user_id = $2
         WHERE c.id = $1
         "#,
@@ -137,6 +126,5 @@ pub async fn get_car(ctx: &ToolCtx<'_>, car_id: Uuid) -> AppResult<CarDto> {
     .fetch_optional(&ctx.state.pool)
     .await?
     .ok_or(AppError::NotFound)?;
-    reject_vault(row.vault_sealed)?;
     Ok(CarDto::from(row))
 }

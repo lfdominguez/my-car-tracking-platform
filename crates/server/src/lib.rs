@@ -32,7 +32,6 @@ pub mod state;
 pub mod traffic;
 pub mod trips;
 pub mod units;
-pub mod vault;
 pub mod web;
 
 use axum::Router;
@@ -95,7 +94,6 @@ pub fn build_router(state: AppState, _upload_dir: std::path::PathBuf) -> Router 
         .merge(analysis::router())
         .merge(chat::router())
         .merge(route_opt::router())
-        .merge(vault::router())
         .merge(web::spa_router())
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .layer(axum_mw::from_fn_with_state(state.clone(), csrf_middleware))

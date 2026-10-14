@@ -29,19 +29,12 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn readable_trip(state: &AppState, user: &AuthUser, id: Uuid) -> AppResult<Uuid> {
-    let (car_id, vault): (Uuid, bool) = sqlx::query_as(
-        "SELECT t.car_id, u.vault_status = 'active'
-         FROM tracks t JOIN cars c ON c.id = t.car_id JOIN users u ON u.id = c.owner_user_id
-         WHERE t.id = $1",
-    )
+    let car_id: Uuid = sqlx::query_scalar("SELECT car_id FROM tracks WHERE id = $1")
     .bind(id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
-    if vault {
-        return Err(AppError::Conflict("not available for vault trips".into()));
-    }
     Ok(car_id)
 }
 
@@ -382,9 +375,8 @@ async fn car_score(
     let trips: Vec<(Uuid, NaiveDate)> = sqlx::query_as(
         "SELECT t.id, date_trunc('week', t.started_at AT TIME ZONE u.timezone)::date
          FROM tracks t
-         JOIN cars c ON c.id = t.car_id JOIN users o ON o.id = c.owner_user_id
          JOIN users u ON u.id = $3
-         WHERE t.car_id = $1 AND t.finished AND o.vault_status <> 'active'
+         WHERE t.car_id = $1 AND t.finished
            AND t.started_at > NOW() - make_interval(weeks => $2::int)
          ORDER BY t.started_at DESC LIMIT 200",
     )

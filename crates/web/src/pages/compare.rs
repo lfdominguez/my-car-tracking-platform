@@ -123,9 +123,6 @@ pub fn TripComparePage() -> impl IntoView {
                 let points = trip_points(&id, Some(COMPARE_POINTS)).await;
                 match (trip, points) {
                     (Ok(t), Ok(p)) => {
-                        if t.vault_sealed {
-                            let _ = error.try_set(Some(crate::i18n::t("compare.no_vault").into()));
-                        }
                         let _ = slot.try_set(Some((t, p)));
                     }
                     (Err(e), _) | (_, Err(e)) => {

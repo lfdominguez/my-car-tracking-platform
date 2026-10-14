@@ -46,7 +46,7 @@ jobs:
       # natively, matching the split in tests.yml.
       - name: Run clippy
         run: |
-          for crate in shared vault_crypto ai server; do
+          for crate in shared ai server; do
             echo "::group::clippy -p $crate"
             cargo clippy -p "$crate" --all-targets -- -D warnings
             echo "::endgroup::"

@@ -151,7 +151,7 @@ fn parse_opt_dt(s: &Option<String>, field: &str) -> Result<Option<DateTime<Utc>>
 impl CarTrackingMcp {
     #[tool(
         annotations(read_only_hint = true, open_world_hint = false),
-        description = "List accessible non-vault cars (id, name, make/model, fuel, role)."
+        description = "List accessible cars (id, name, make/model, fuel, role)."
     )]
     async fn list_cars(
         &self,
@@ -419,7 +419,7 @@ impl ServerHandler for CarTrackingMcp {
             ))
             .with_instructions(
                 "Read-only car tracking tools. Authenticate with Authorization: Bearer <mcp-token>. \
-                 Vault-encrypted data is never exposed. Do not attempt writes or job triggers.",
+                 Do not attempt writes or job triggers.",
             )
     }
 }

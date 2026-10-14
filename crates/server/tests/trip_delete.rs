@@ -1,4 +1,4 @@
-//! DELETE /api/trips/{id} — owner purge + vault cascade.
+//! DELETE /api/trips/{id} — owner purge + cascade.
 //! Requires DATABASE_URL pointing at Postgres+PostGIS.
 
 use std::net::SocketAddr;
@@ -31,9 +31,6 @@ fn test_config(database_url: String) -> Config {
         allow_dev_login: true,
         is_local_dev: true,
         trust_forwarded_headers: false,
-        vault_ui_enabled: true,
-        vault_job_ttl_secs: 300,
-        vault_max_object_bytes: 1024,
         overpass_url: "http://127.0.0.1:9/overpass".into(),
         csp_cloudflare_analytics: false,
         trip_stale_finish_after_secs: 7200,
@@ -164,23 +161,6 @@ async fn owner_can_delete_trip_and_cascades() {
 
     let track_id = insert_track_with_points(&ctx.pool, ctx.car_id).await;
 
-    sqlx::query(
-        r#"
-        INSERT INTO vault_objects (
-            id, car_id, object_type, logical_id, chunk_index, schema_version,
-            nonce, ciphertext, byte_size, content_version
-        ) VALUES ($1, $2, 'track_meta', $3, NULL, 1, $4, $5, 4, 1)
-        "#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(ctx.car_id)
-    .bind(track_id)
-    .bind(vec![0u8; 12])
-    .bind(vec![9u8, 9, 9, 9])
-    .execute(&ctx.pool)
-    .await
-    .expect("insert vault object");
-
     let resp = ctx
         .client
         .delete(format!("{}/api/trips/{}", ctx.base, track_id))
@@ -210,13 +190,6 @@ async fn owner_can_delete_trip_and_cascades() {
             .unwrap();
     assert_eq!(points, 0);
 
-    let vault: i64 =
-        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM vault_objects WHERE logical_id = $1")
-            .bind(track_id)
-            .fetch_one(&ctx.pool)
-            .await
-            .unwrap();
-    assert_eq!(vault, 0);
 }
 
 #[tokio::test]

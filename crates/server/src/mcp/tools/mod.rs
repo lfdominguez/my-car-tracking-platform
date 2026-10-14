@@ -43,10 +43,10 @@ pub fn json_ok(value: impl Serialize) -> Result<CallToolResult, McpError> {
 }
 
 /// What the calling model is told when an id does not resolve. Identical for
-/// "does not exist", "someone else's" and "vault-sealed", so the tools cannot be
-/// used to probe for other users' ids.
-pub const NOT_VISIBLE: &str = "not found, or not visible to this user (it may belong to someone \
-                               else, or be sealed in the vault)";
+/// "does not exist" and "someone else's", so the tools cannot be used to probe
+/// for other users' ids.
+pub const NOT_VISIBLE: &str =
+    "not found, or not visible to this user (it may belong to someone else)";
 
 /// Turn a loader result into an MCP tool response.
 ///
@@ -88,15 +88,6 @@ pub fn display_distance(meters: f64, system: UnitSystem) -> f64 {
     match system {
         UnitSystem::Metric => meters / 1000.0,
         UnitSystem::Us => crate::units::convert_distance_m(meters, system),
-    }
-}
-
-/// Reject vault-sealed entities as not found for MCP.
-pub fn reject_vault(sealed: bool) -> Result<(), AppError> {
-    if sealed {
-        Err(AppError::NotFound)
-    } else {
-        Ok(())
     }
 }
 

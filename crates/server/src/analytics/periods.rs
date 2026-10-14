@@ -88,12 +88,10 @@ pub async fn periods(
                  ORDER BY f.filled_at DESC LIMIT 1) AS price_per_l
             FROM tracks t
             JOIN cars c ON c.id = t.car_id
-            JOIN users ou ON ou.id = c.owner_user_id
             JOIN users me ON me.id = $1
             {stats_join}
             {lateral}
             WHERE t.finished
-              AND ou.vault_status <> 'active'
               AND (c.owner_user_id = $1
                    OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = c.id AND cs.user_id = $1))
               AND ($2::uuid IS NULL OR t.car_id = $2)

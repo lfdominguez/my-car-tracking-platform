@@ -1,11 +1,9 @@
 //! Precomputed per-trip statistics (`track_stats`).
 //! Requires DATABASE_URL pointing at Postgres+PostGIS.
 //!
-//! The two tests that matter most here are the equivalence guard — stored values must
+//! The test that matters most here is the equivalence guard — stored values must
 //! equal what the live aggregate produces, which is what the old `-- Keep in sync
-//! with fuel_stats::sanitize_fuel_rate_lph` comments tried and failed to enforce —
-//! and the vault guard, since these rows are derived from plaintext the vault
-//! migration deletes.
+//! with fuel_stats::sanitize_fuel_rate_lph` comments tried and failed to enforce.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -39,9 +37,6 @@ fn test_config(database_url: String) -> Config {
         allow_dev_login: true,
         is_local_dev: true,
         trust_forwarded_headers: false,
-        vault_ui_enabled: true,
-        vault_job_ttl_secs: 300,
-        vault_max_object_bytes: 512 * 1024,
         overpass_url: "http://127.0.0.1:9/overpass".into(),
         csp_cloudflare_analytics: false,
         trip_stale_finish_after_secs: 7200,
@@ -54,7 +49,6 @@ struct Ctx {
     base: String,
     client: reqwest::Client,
     token: String,
-    user_id: Uuid,
     car_id: Uuid,
     pool: sqlx::PgPool,
 }
@@ -125,7 +119,6 @@ async fn setup() -> Option<Ctx> {
         base: format!("http://{addr}"),
         client: reqwest::Client::new(),
         token,
-        user_id,
         car_id,
         pool: pool_for_tests,
     })
@@ -305,59 +298,6 @@ async fn a_late_sample_invalidates_stored_stats() {
             .await
             .unwrap();
     assert_eq!(after, (5, false));
-}
-
-/// Sealing a car deletes its plaintext points but keeps the `tracks` rows, so nothing
-/// cascades. The derived figures must be deleted explicitly or the vault's at-rest
-/// guarantee is broken by numbers computed from the telemetry it just erased.
-#[tokio::test]
-async fn sealing_a_car_removes_its_stored_stats() {
-    let Some(ctx) = setup().await else {
-        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
-        return;
-    };
-    let (track_id, _, _) = record_trip(&ctx, 5).await;
-    assert!(
-        stats_row_exists(&ctx.pool, track_id).await,
-        "precondition: the finished trip should have stored stats"
-    );
-
-    // Stand in for the vault migration: it deletes the plaintext points for the car
-    // and leaves the tracks rows in place.
-    sqlx::query(
-        "DELETE FROM track_points WHERE track_id IN (SELECT id FROM tracks WHERE car_id = $1)",
-    )
-    .bind(ctx.car_id)
-    .execute(&ctx.pool)
-    .await
-    .unwrap();
-    stats::purge_for_car(&ctx.pool, ctx.car_id).await.unwrap();
-
-    assert!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*)::bigint FROM tracks WHERE car_id = $1")
-            .bind(ctx.car_id)
-            .fetch_one(&ctx.pool)
-            .await
-            .unwrap()
-            > 0,
-        "the tracks row is expected to survive sealing — that is why the purge is needed"
-    );
-    assert!(
-        !stats_row_exists(&ctx.pool, track_id).await,
-        "derived statistics outlived the plaintext they came from"
-    );
-
-    // And the sweeper must not put them back for a vault-active owner.
-    sqlx::query("UPDATE users SET vault_status = 'active' WHERE id = $1")
-        .bind(ctx.user_id)
-        .execute(&ctx.pool)
-        .await
-        .unwrap();
-    assert!(
-        !stats::recompute(&ctx.pool, track_id).await.unwrap(),
-        "recompute must refuse to write for a vault-active owner"
-    );
-    assert!(!stats_row_exists(&ctx.pool, track_id).await);
 }
 
 /// Deleting a trip takes its statistics with it, via the foreign key.

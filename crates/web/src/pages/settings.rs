@@ -12,7 +12,6 @@ use crate::pages::mcp_tokens::McpTokensCard;
 use crate::pages::notifications::PushSettingsCard;
 use crate::pages::sharing::PendingInvites;
 use crate::units::{UnitPrefs, UnitSystem, use_unit_prefs};
-use crate::vault::VaultSettingsCard;
 
 #[component]
 pub fn SettingsPage() -> impl IntoView {
@@ -647,8 +646,6 @@ pub fn SettingsPage() -> impl IntoView {
         </div>
 
         <McpTokensCard />
-
-        <VaultSettingsCard/>
 
         <div class="card settings-card" style="margin-top:1rem">
             <h2 class="section-title">

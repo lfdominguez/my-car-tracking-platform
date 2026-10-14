@@ -222,10 +222,8 @@ pub fn no_usable_stats() -> String {
 
 /// Compute and store statistics for one track.
 ///
-/// Returns `false` without writing when the track no longer exists or its owner has
-/// an active vault: `vault::migration_clear_car` erases the plaintext points these
-/// numbers are derived from, so storing them would reintroduce exactly the at-rest
-/// data the vault exists to remove.
+/// Returns `false` without writing when the track no longer exists or its points
+/// were pruned by retention.
 pub async fn recompute(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
     let sql = format!(
         "INSERT INTO track_stats (
@@ -247,10 +245,8 @@ pub async fn recompute(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
             {SCHEMA_VERSION}, false, NOW(), NOW()
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
-        JOIN users ou ON ou.id = c.owner_user_id
         {lateral}
         WHERE t.id = $1
-          AND ou.vault_status <> 'active'
           -- Pruned trips keep the row computed before their points were deleted.
           AND t.points_pruned_at IS NULL
         ON CONFLICT (track_id) DO UPDATE SET
@@ -338,21 +334,6 @@ pub async fn mark_stale_for_car(pool: &PgPool, car_id: Uuid) -> AppResult<()> {
                     OR stoich_afr_snapshot IS NULL OR density_gl_snapshot IS NULL
                     OR displacement_l_snapshot IS NULL OR ve_snapshot IS NULL)
          ) AND NOT stale",
-    )
-    .bind(car_id)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Drop stored rows for a car outright.
-///
-/// Used by the vault migration, which deletes the plaintext points these values were
-/// derived from. Marking them stale would not be enough: the numbers would still be
-/// sitting in the table, readable, after the telemetry behind them was erased.
-pub async fn purge_for_car(pool: &PgPool, car_id: Uuid) -> AppResult<()> {
-    sqlx::query(
-        "DELETE FROM track_stats WHERE track_id IN (SELECT id FROM tracks WHERE car_id = $1)",
     )
     .bind(car_id)
     .execute(pool)

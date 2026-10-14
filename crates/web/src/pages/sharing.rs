@@ -2,9 +2,8 @@
 //!
 //! An owner invites an email; the share exists only once that person accepts.
 //! The car's Sharing card lists members and pending invites (owner), lets a
-//! sharee leave, and — for vault cars — lets the owner hand the car key to
-//! members who published a vault identity. [`PendingInvites`] is the invitee's
-//! side, shown on the dashboard and in Settings.
+//! sharee leave. [`PendingInvites`] is the invitee's side, shown on the
+//! dashboard and in Settings.
 
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -13,11 +12,10 @@ use leptos_router::hooks::use_navigate;
 use crate::api::{
     Car, CarInvite, MyInvite, Share, accept_share_invite, cancel_car_invite, create_share,
     decline_share_invite, leave_shared_car, list_car_invites, list_shares, my_share_invites,
-    set_live_sharing, vault_list_deks,
+    set_live_sharing,
 };
 use crate::components::{Icon, IconColor, IconSize};
 use crate::i18n::{role_label, t, tf, tp};
-use crate::vault::{load_car_dek, use_vault_session, wrap_and_upload_dek};
 
 fn confirm(msg: &str) -> bool {
     web_sys::window()
@@ -45,12 +43,8 @@ pub fn SharingCard(
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let navigate = StoredValue::new(use_navigate());
-    let vault = use_vault_session();
-    let unlocked = vault.unlocked();
     let shares = RwSignal::new(Vec::<Share>::new());
     let invites = RwSignal::new(Vec::<CarInvite>::new());
-    // Members that already hold a wrapped copy of the vault car key.
-    let wrapped_for = RwSignal::new(Vec::<String>::new());
     let email = RwSignal::new(String::new());
     let role = RwSignal::new("viewer".to_string());
     let notice = RwSignal::new(Option::<String>::None);
@@ -59,13 +53,11 @@ pub fn SharingCard(
     let refresh = RwSignal::new(0u32);
 
     let is_owner = move || car.with(|c| c.as_ref().is_some_and(|c| c.role == "owner"));
-    let sealed = move || car.with(|c| c.as_ref().is_some_and(|c| c.vault_sealed));
 
     Effect::new(move |_| {
         let id = car_id.get();
         refresh.track();
         let owner = is_owner();
-        let is_sealed = sealed();
         if id.is_empty() || car.with(|c| c.is_none()) {
             return;
         }
@@ -78,17 +70,8 @@ pub fn SharingCard(
                     let _ = error.try_set(Some(e.to_string()));
                 }
             }
-            if owner {
-                if let Ok(i) = list_car_invites(&id).await {
-                    let _ = invites.try_set(i);
-                }
-                if is_sealed && let Ok(deks) = vault_list_deks(&id).await {
-                    let ids = deks
-                        .iter()
-                        .filter_map(|d| d.get("recipient_user_id")?.as_str().map(str::to_string))
-                        .collect();
-                    let _ = wrapped_for.try_set(ids);
-                }
+            if owner && let Ok(i) = list_car_invites(&id).await {
+                let _ = invites.try_set(i);
             }
         });
     });
@@ -160,7 +143,7 @@ pub fn SharingCard(
                 </Show>
             </div>
 
-            <Show when=move || is_owner() && !sealed()>
+            <Show when=is_owner>
                 <div class="live-sharing-row">
                     <div>
                         <div class="live-sharing-title">
@@ -234,11 +217,7 @@ pub fn SharingCard(
                     </button>
                 </div>
                 <p class="field-hint">
-                    {move || if sealed() {
-                        t("share.hint_vault")
-                    } else {
-                        t("share.hint")
-                    }}
+                    {tr!("share.hint")}
                 </p>
             </Show>
             <Show when=move || notice.get().is_some()>
@@ -309,9 +288,6 @@ pub fn SharingCard(
                             <th>{tr!("share.user")}</th>
                             <th>{tr!("share.email")}</th>
                             <th>{tr!("cars.role")}</th>
-                            <Show when=move || is_owner() && sealed()>
-                                <th>{tr!("share.vault_key")}</th>
-                            </Show>
                         </tr>
                     </thead>
                     <tbody>
@@ -322,39 +298,6 @@ pub fn SharingCard(
                                 let role_icon = match s.role.as_str() {
                                     "editor" => "pencil-simple",
                                     _ => "eye",
-                                };
-                                let user_id = s.user_id.clone();
-                                let has_key = {
-                                    let uid = user_id.clone();
-                                    move || wrapped_for.with(|w| w.contains(&uid))
-                                };
-                                let pubkey = s.vault_identity_pubkey_b64.clone();
-                                let has_pubkey = s.vault_has_pubkey && pubkey.is_some();
-                                let sess = use_vault_session();
-                                let share_key = move |_| {
-                                    let Some(pk) = pubkey.clone() else {
-                                        return;
-                                    };
-                                    let car = car_id.get_untracked();
-                                    let uid = user_id.clone();
-                                    let sess = sess.clone();
-                                    busy.set(true);
-                                    leptos::task::spawn_local(async move {
-                                        let res = match load_car_dek(&sess, &car).await {
-                                            Ok(dek) => wrap_and_upload_dek(&sess, &car, &uid, &pk, &dek).await,
-                                            Err(e) => Err(e),
-                                        };
-                                        match res {
-                                            Ok(()) => {
-                                                let _ = wrapped_for.try_update(|w| w.push(uid));
-                                                let _ = notice.try_set(Some(t("share.key_shared").into()));
-                                            }
-                                            Err(e) => {
-                                                let _ = error.try_set(Some(tf("share.key_failed", &[("error", &e)])));
-                                            }
-                                        }
-                                        let _ = busy.try_set(false);
-                                    });
                                 };
                                 let role = s.role.clone();
                                 view! {
@@ -369,36 +312,6 @@ pub fn SharingCard(
                                                 </span>
                                             </span>
                                         </td>
-                                        <Show when=move || is_owner() && sealed()>
-                                            <td data-label=tr!("share.vault_key")>
-                                                {
-                                                    let has_key = has_key.clone();
-                                                    let share_key = share_key.clone();
-                                                    move || {
-                                                        if has_key() {
-                                                            view! { <span class="pill pill-ok">{tr!("share.shared")}</span> }.into_any()
-                                                        } else if !has_pubkey {
-                                                            view! { <span class="muted">{tr!("share.no_identity")}</span> }.into_any()
-                                                        } else {
-                                                            let share_key = share_key.clone();
-                                                            view! {
-                                                                <button
-                                                                    type="button"
-                                                                    class="btn secondary btn-sm"
-                                                                    title=move || if unlocked.get() { "" } else { t("share.unlock_first") }
-                                                                    prop:disabled=move || busy.get() || !unlocked.get()
-                                                                    on:click=share_key
-                                                                >
-                                                                    <Icon name="key" size=IconSize::Sm />
-                                                                    {tr!("share.share_key")}
-                                                                </button>
-                                                            }
-                                                            .into_any()
-                                                        }
-                                                    }
-                                                }
-                                            </td>
-                                        </Show>
                                     </tr>
                                 }
                             }

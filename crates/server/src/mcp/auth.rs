@@ -16,7 +16,7 @@ use super::token::{hash_token, legacy_hash_token};
 ///
 /// Named for its original MCP use, but it carries nothing MCP-specific: the in-app
 /// chat builds one from the session [`crate::auth::AuthUser`] so both paths share the
-/// same tool loaders and therefore the same ownership and vault scoping.
+/// same tool loaders and therefore the same ownership scoping.
 #[derive(Debug, Clone)]
 pub struct McpUser {
     pub id: Uuid,

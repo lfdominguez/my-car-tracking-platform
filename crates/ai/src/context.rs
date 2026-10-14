@@ -113,8 +113,7 @@ pub struct SpeedProfile {
 }
 
 /// Thresholds behind [`SpeedProfile`]'s event counts, and the provenance of those
-/// counts. Re-exported from `shared` so the server and the client-side vault path
-/// cannot drift apart.
+/// counts. Re-exported from `shared`.
 pub use shared::speed_events::{EventSource, SpeedEventThresholds};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
