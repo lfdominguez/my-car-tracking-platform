@@ -251,7 +251,7 @@ To rotate the primary encryption key without losing access to existing encrypted
 
 | Method | Path |
 |--------|------|
-| `GET` | `/api/track/ping` *(token check, no side effects: `{ok, car_id, car_name, vault_required}`)* |
+| `GET` | `/api/track/ping` *(token check, no side effects: `{ok, car_id, car_name}`)* |
 | `POST` | `/api/track/start` |
 | `POST` | `/api/track/sample` |
 | `POST` | `/api/track/samples` |
@@ -260,7 +260,7 @@ To rotate the primary encryption key without losing access to existing encrypted
 | `POST` | `/api/track/fuel-ticket` *(raw jpeg\|png\|webp body → suggested entry, nothing stored; needs `OCR_URL` and the owner in `OCR_ALLOWED_USERS`, else 503/403 "Service not available yet")* |
 | `GET` / `HEAD` | `/health` *(public)* |
 
-Header: `Authorization: Basic <device_token>`: `401` without a usable header, `403` for an unknown or revoked token, `409` on plaintext samples for a car whose owner has the vault active. External track id = Android start timestamp (`legacy_key`), unique per car.
+Header: `Authorization: Basic <device_token>`: `401` without a usable header, `403` for an unknown or revoked token. External track id = Android start timestamp (`legacy_key`), unique per car.
 
 </details>
 
@@ -331,38 +331,12 @@ QR payload keys align with Android `AppSettings` (`apiToken`, absolute track URL
 <details>
 <summary>🚦 Traffic guessing</summary>
 
-- After plaintext `track/stop`, async job builds ~80 m / ~10 s frames and scores congestion vs free-flow
+- After `track/stop`, async job builds ~80 m / ~10 s frames and scores congestion vs free-flow
 - Free-flow from OSM `maxspeed` / highway class via **Overpass** (`OVERPASS_URL`, default public interpreter) + optional own off-peak history
 - Levels: free → jam; short stationary then leave → `signal_stop` (not counted as queue)
-- Trip detail chips + map polyline colors; vault trips skipped in v1
+- Trip detail chips + map polyline colors
 - `tracks.traffic_analyzed` is true only when status is **ready**; trip detail shows **Analyze traffic** (owner) when false — `POST /api/trips/{id}/traffic/analyze`
 - Env: `OVERPASS_URL`
-
-</details>
-
-<details>
-<summary>🔐 Zero-knowledge vault (optional)</summary>
-
-Opt-in **client-side E2E encryption** so trip/GPS/OBD and personal payloads are stored as ciphertext the operator cannot read.
-
-- **Enable:** Settings → Zero-knowledge vault. Generate a one-time **recovery key**, store it offline, acknowledge permanent loss if key + devices are gone. Support cannot recover vault data.
-- **Clients:** Web (Leptos + `vault_crypto` WASM) unlocks with the recovery key and caches a device-local identity secret (best-effort `localStorage`). Android (external app) must enroll the same identity before tracking vault cars.
-- **Ingest:** For vault-active owners, `/api/track/sample` and `/samples` return **409**. Upload encrypted chunks to `POST /api/track/vault/chunk` with Basic device auth:
-
-```json
-{
-  "track_id": "<uuid>",
-  "chunk_index": 0,
-  "schema_version": 1,
-  "nonce": "<base64 12 bytes>",
-  "ciphertext": "<base64 AES-GCM>"
-}
-```
-
-- **Crypto parity:** Golden vectors live at `crates/vault_crypto/vectors/vault_crypto_v1.json` for Kotlin tests.
-- **Sharing:** Owner wraps each car DEK to the recipient pubkey (`PUT /api/vault/cars/{id}/deks`). Share list includes `vault_has_pubkey`. Revoke deletes the wrap (v1 does **not** re-encrypt history).
-- **AI / route-opt:** Use `POST /api/vault/jobs` with an explicit client-prepared bundle; results must be sealed client-side into `vault_objects`. No durable plaintext job payload in Postgres.
-- **Honest limits:** Metadata (share graph, timestamps, ciphertext sizes) remains visible. XSS on an unlocked browser can still steal keys — use Lock and keep CSP tight. Env: `VAULT_UI_ENABLED`, `VAULT_JOB_TTL_SECS`, `VAULT_MAX_OBJECT_BYTES`.
 
 </details>
 

@@ -422,8 +422,7 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
 }
 
 /// Percentiles and moving share come from the sanitized `points`; harsh-event
-/// counts come from `raw_speed` via [`shared::speed_events`], which the vault path
-/// in `crates/web` shares so both report the same numbers.
+/// counts come from `raw_speed` via [`shared::speed_events`].
 fn compute_speed_profile(
     points: &[PointRow],
     raw_speed: &[SpeedSample],

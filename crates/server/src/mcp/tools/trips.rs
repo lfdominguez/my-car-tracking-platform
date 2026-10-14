@@ -8,7 +8,7 @@ use crate::shares::access::can_read_car;
 use crate::trips::stats;
 use crate::units::{convert_fuel_l, convert_speed_kph};
 
-use super::{ToolCtx, display_distance, reject_vault};
+use super::{ToolCtx, display_distance};
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct TripRow {
@@ -34,7 +34,6 @@ struct TripRow {
     analyzed_at: Option<DateTime<Utc>>,
     analyzed: bool,
     traffic_analyzed: bool,
-    vault_sealed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -155,11 +154,9 @@ fn trip_select() -> String {
             t.analysis_status,
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
-            t.traffic_analyzed,
-            (ou.vault_status = 'active') AS vault_sealed
+            t.traffic_analyzed
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
-        JOIN users ou ON ou.id = c.owner_user_id
         {stats_join}
         {lateral}
 "#,
@@ -182,7 +179,6 @@ pub async fn list_trips(
             c.owner_user_id = $1
             OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = t.car_id AND cs.user_id = $1)
         )
-        AND (ou.vault_status IS DISTINCT FROM 'active')
         AND ($2::uuid IS NULL OR t.car_id = $2)
         AND ($3::timestamptz IS NULL OR t.started_at >= $3)
         AND ($4::timestamptz IS NULL OR t.started_at <= $4)
@@ -202,7 +198,6 @@ pub async fn list_trips(
 
     Ok(rows
         .into_iter()
-        .filter(|r| !r.vault_sealed)
         .map(|r| to_dto(r, ctx.user.unit_system))
         .collect())
 }
@@ -221,26 +216,16 @@ pub async fn get_trip(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<TripDto> {
         .fetch_optional(&ctx.state.pool)
         .await?
         .ok_or(AppError::NotFound)?;
-    reject_vault(row.vault_sealed)?;
     Ok(to_dto(row, ctx.user.unit_system))
 }
 
-/// Ensure trip is readable and not vault-sealed; returns car_id.
+/// Ensure trip is readable; returns car_id.
 pub async fn require_readable_trip(ctx: &ToolCtx<'_>, trip_id: Uuid) -> AppResult<Uuid> {
-    let row = sqlx::query_as::<_, (Uuid, bool)>(
-        r#"
-        SELECT t.car_id, (ou.vault_status = 'active') AS vault_sealed
-        FROM tracks t
-        JOIN cars c ON c.id = t.car_id
-        JOIN users ou ON ou.id = c.owner_user_id
-        WHERE t.id = $1
-        "#,
-    )
-    .bind(trip_id)
-    .fetch_optional(&ctx.state.pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
-    can_read_car(&ctx.state.pool, ctx.user.id, row.0).await?;
-    reject_vault(row.1)?;
-    Ok(row.0)
+    let car_id = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
+        .bind(trip_id)
+        .fetch_optional(&ctx.state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    can_read_car(&ctx.state.pool, ctx.user.id, car_id).await?;
+    Ok(car_id)
 }

@@ -29,38 +29,14 @@ pub async fn process_finished_track(
     overpass_url: &str,
     track_id: Uuid,
 ) -> Result<(), JobError> {
-    let meta = sqlx::query_as::<_, (Uuid, bool)>(
-        r#"
-        SELECT t.car_id,
-               COALESCE(u.vault_status = 'active', false) AS vault_active
-        FROM tracks t
-        JOIN cars c ON c.id = t.car_id
-        JOIN users u ON u.id = c.owner_user_id
-        WHERE t.id = $1
-        "#,
-    )
-    .bind(track_id)
-    .fetch_optional(pool)
-    .await?;
+    let car_id = sqlx::query_scalar::<_, Uuid>("SELECT car_id FROM tracks WHERE id = $1")
+        .bind(track_id)
+        .fetch_optional(pool)
+        .await?;
 
-    let Some((car_id, vault_active)) = meta else {
+    let Some(car_id) = car_id else {
         return Ok(());
     };
-
-    if vault_active {
-        upsert_summary(
-            pool,
-            track_id,
-            "skipped_vault",
-            None,
-            json!({}),
-            json!({}),
-            0,
-            None,
-        )
-        .await?;
-        return Ok(());
-    }
 
     let rows = sqlx::query_as::<_, (DateTime<Utc>, f64, f64, Option<f64>, Option<f64>)>(
         r#"

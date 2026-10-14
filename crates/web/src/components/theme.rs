@@ -68,8 +68,8 @@ fn write_attr(theme: Theme) {
     }
 }
 
-/// Global reactive theme signal. Call once near the app root (main.rs, alongside
-/// `provide_vault_session()`); read/toggle it elsewhere via `use_theme()`.
+/// Global reactive theme signal. Call once near the app root (main.rs); read/toggle
+/// it elsewhere via `use_theme()`.
 pub fn provide_theme() {
     let (theme, set_theme) = signal(read_current_attr());
     provide_context(ThemeSignal { theme, set_theme });

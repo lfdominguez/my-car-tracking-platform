@@ -57,13 +57,12 @@ pub async fn export_trip(
     Path(id): Path<Uuid>,
     Query(q): Query<ExportQuery>,
 ) -> AppResult<Response> {
-    let (car_id, car_name, started_at, vault) =
-        sqlx::query_as::<_, (Uuid, String, chrono::DateTime<chrono::Utc>, bool)>(
+    let (car_id, car_name, started_at) =
+        sqlx::query_as::<_, (Uuid, String, chrono::DateTime<chrono::Utc>)>(
             r#"
-            SELECT t.car_id, c.name, t.started_at, u.vault_status = 'active'
+            SELECT t.car_id, c.name, t.started_at
             FROM tracks t
             JOIN cars c ON c.id = t.car_id
-            JOIN users u ON u.id = c.owner_user_id
             WHERE t.id = $1
             "#,
         )
@@ -72,12 +71,6 @@ pub async fn export_trip(
         .await?
         .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
-    if vault {
-        // The server holds only ciphertext; the web client exports after decrypting.
-        return Err(AppError::Conflict(
-            "vault trips are exported from the unlocked web app".into(),
-        ));
-    }
 
     let points = load_trip_points(&state.pool, id, None, None).await?;
     let name = format!("{car_name} {}", started_at.format("%Y-%m-%d %H:%M UTC"));

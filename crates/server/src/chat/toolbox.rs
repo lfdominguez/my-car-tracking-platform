@@ -2,8 +2,8 @@
 //! as OpenAI-shaped function tools.
 //!
 //! No queries are written here. Every tool delegates to `crate::mcp::tools`, which
-//! already enforces `can_read_car` and hides vault-sealed rows via `reject_vault`, so
-//! the chat path cannot widen what a user may see.
+//! already enforces `can_read_car`, so the chat path cannot widen what a user may
+//! see.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -355,8 +355,7 @@ pub fn definitions() -> Vec<Value> {
     vec![
         tool(
             "list_cars",
-            "List the cars this user can see (id, name, make/model, fuel class, role). \
-             Vault-sealed cars are never included.",
+            "List the cars this user can see (id, name, make/model, fuel class, role).",
             no_params(),
             &[],
         ),

@@ -8,84 +8,32 @@ use crate::api::{
 };
 use crate::components::qr::QrCode;
 use crate::components::{Icon, IconColor, IconSize};
-use crate::i18n::{fuel_class_label, role_label, t, tf};
+use crate::i18n::{fuel_class_label, role_label, t};
 use crate::pages::alerts::AlertsSection;
 use crate::pages::driving::CarScoreChart;
 use crate::pages::garage::GarageSection;
 use crate::pages::health::HealthSection;
 use crate::pages::retention::RetentionCard;
 use crate::pages::sharing::SharingCard;
-use crate::vault::{
-    CarProfileV1, VaultUnlockGate, decrypt_car_profile, put_car_profile, use_vault_session,
-};
-
-fn placeholder_vault_names(sess: &crate::vault::VaultSession, mut c: Vec<Car>) -> Vec<Car> {
-    let unlocked = sess.is_unlocked();
-    for car in c.iter_mut() {
-        if car.vault_sealed && car.name.is_empty() {
-            car.name = if unlocked {
-                t("cars.vault_car").into()
-            } else {
-                t("cars.locked_vault_car").into()
-            };
-        }
-    }
-    c
-}
-
-async fn decrypt_vault_car_names(sess: &crate::vault::VaultSession, mut c: Vec<Car>) -> Vec<Car> {
-    if !sess.is_unlocked() {
-        return c;
-    }
-    for car in c.iter_mut() {
-        if !car.vault_sealed {
-            continue;
-        }
-        if let Ok(Some(p)) = decrypt_car_profile(sess, &car.id).await {
-            car.name = p.name;
-            car.make_model = p.make_model;
-            car.fuel_type = p.fuel_type;
-            car.fuel_class = p.fuel_class;
-            car.battery_capacity_kwh = p.battery_capacity_kwh;
-            car.notes = p.notes;
-        }
-    }
-    c
-}
-
 #[component]
 pub fn CarsPage() -> impl IntoView {
     let cars = RwSignal::new(Vec::<Car>::new());
     let error = RwSignal::new(Option::<String>::None);
     let name = RwSignal::new(String::new());
     let make_model = RwSignal::new(String::new());
-    // Capture vault session in the reactive owner — not inside spawn_local after await.
-    let vault = use_vault_session();
     let default_car = crate::default_car::use_default_car();
     let default_busy = RwSignal::new(false);
 
-    Effect::new({
-        let vault = vault.clone();
-        move |_| {
-            // Reload when the vault is unlocked elsewhere so sealed names decrypt.
-            vault.unlocked().track();
-            let sess = vault.clone();
-            leptos::task::spawn_local(async move {
-                match list_cars().await {
-                    Ok(c) => {
-                        // Show rows immediately; decrypt names only after the list is visible.
-                        let labeled = placeholder_vault_names(&sess, c);
-                        cars.set(labeled.clone());
-                        error.set(None);
-                        if sess.is_unlocked() {
-                            let decrypted = decrypt_vault_car_names(&sess, labeled).await;
-                            cars.set(decrypted);
-                        }
-                    }
-                    Err(e) => error.set(Some(e.to_string())),
+    Effect::new(move |_| {
+        leptos::task::spawn_local(async move {
+            match list_cars().await {
+                Ok(c) => {
+                    cars.set(c);
+                    error.set(None);
                 }
-            });
-        }
+                Err(e) => error.set(Some(e.to_string())),
+            }
+        });
     });
 
     view! {
@@ -182,11 +130,6 @@ pub fn CarsPage() -> impl IntoView {
                                                         <Icon name="star" size=IconSize::Sm />
                                                     </button>
                                                     {c.name.clone()}
-                                                    {if c.vault_sealed {
-                                                        " 🔒".to_string()
-                                                    } else {
-                                                        String::new()
-                                                    }}
                                                     <Show when=move || is_default.get()>
                                                         <span class="badge default-car-badge">{tr!("cars.default_badge")}</span>
                                                     </Show>
@@ -240,44 +183,14 @@ pub fn CarsPage() -> impl IntoView {
                 <button class="btn primary" on:click=move |_| {
                     let n = name.get();
                     let m = make_model.get();
-                    let sess = vault.clone();
                     leptos::task::spawn_local(async move {
                         let body = serde_json::json!({ "name": n, "make_model": m });
                         match create_car(&body).await {
-                            Ok(created) => {
-                                if created.vault_sealed {
-                                    if sess.is_unlocked() {
-                                        let profile = CarProfileV1 {
-                                            name: n.clone(),
-                                            make_model: m.clone(),
-                                            fuel_type: created.fuel_type.clone(),
-                                            fuel_class: created.fuel_class.clone(),
-                                            battery_capacity_kwh: created.battery_capacity_kwh,
-                                            stoich_afr: created.stoich_afr,
-                                            density_gl: created.density_gl,
-                                            displacement_l: created.displacement_l,
-                                            ve: created.ve,
-                                            notes: created.notes.clone(),
-                                        };
-                                        if let Err(e) = put_car_profile(&sess, &created.id, &profile).await {
-                                            error.set(Some(tf("cars.seal_failed", &[("error", &e)])));
-                                        }
-                                    } else {
-                                        error.set(Some(t("cars.created_unsealed").into()));
-                                    }
-                                }
+                            Ok(_) => {
                                 name.set(String::new());
                                 make_model.set(String::new());
                                 match list_cars().await {
-                                    Ok(c) => {
-                                        let labeled = placeholder_vault_names(&sess, c);
-                                        cars.set(labeled.clone());
-                                        if sess.is_unlocked() {
-                                            let decrypted =
-                                                decrypt_vault_car_names(&sess, labeled).await;
-                                            cars.set(decrypted);
-                                        }
-                                    }
+                                    Ok(c) => cars.set(c),
                                     Err(e) => error.set(Some(e.to_string())),
                                 }
                             }
@@ -322,42 +235,16 @@ pub fn CarDetailPage() -> impl IntoView {
         !id.is_empty() && default_car.get().as_deref() == Some(id.as_str())
     });
 
-    let vault = use_vault_session();
-
     Effect::new({
-        let vault = vault.clone();
         move |_| {
             let id = params.with(|p| p.get("id").unwrap_or_default());
             if id.is_empty() {
                 return;
             }
-            // Unlocking through the gate below must load the decrypted profile.
-            vault.unlocked().track();
             let id2 = id.clone();
-            let sess = vault.clone();
             leptos::task::spawn_local(async move {
                 match get_car(&id2).await {
-                    Ok(mut c) => {
-                        if c.vault_sealed && sess.is_unlocked() {
-                            match decrypt_car_profile(&sess, &id2).await {
-                                Ok(Some(p)) => {
-                                    c.name = p.name.clone();
-                                    c.make_model = p.make_model.clone();
-                                    c.fuel_type = p.fuel_type.clone();
-                                    c.fuel_class = p.fuel_class.clone();
-                                    c.battery_capacity_kwh = p.battery_capacity_kwh;
-                                    c.stoich_afr = p.stoich_afr;
-                                    c.density_gl = p.density_gl;
-                                    c.displacement_l = p.displacement_l;
-                                    c.ve = p.ve;
-                                    c.notes = p.notes.clone();
-                                }
-                                Ok(None) => {
-                                    error.set(Some(t("cars.no_sealed_profile").into()));
-                                }
-                                Err(e) => error.set(Some(e)),
-                            }
-                        }
+                    Ok(c) => {
                         name.set(c.name.clone());
                         make_model.set(c.make_model.clone());
                         fuel_type.set(c.fuel_type.clone());
@@ -406,9 +293,6 @@ pub fn CarDetailPage() -> impl IntoView {
 
         <Show when=move || error.get().is_some()>
             <div class="error">{move || error.get().unwrap_or_default()}</div>
-        </Show>
-        <Show when=move || car.get().map(|c| c.vault_sealed).unwrap_or(false) && !use_vault_session().unlocked().get()>
-            <VaultUnlockGate message="cars.unlock_to_view"/>
         </Show>
 
 
@@ -518,78 +402,27 @@ pub fn CarDetailPage() -> impl IntoView {
                     <input prop:value=move || displacement.get() on:input=move |ev| displacement.set(event_target_value(&ev))/></div>
                 <div class="form-row"><label>{tr!("cars.ve")}</label>
                     <input prop:value=move || ve.get() on:input=move |ev| ve.set(event_target_value(&ev))/></div>
-                <button class="btn primary" on:click={
-                    let vault = vault.clone();
-                    move |_| {
+                <button class="btn primary" on:click=move |_| {
                     let id = params.with(|p| p.get("id").unwrap_or_default());
-                    let sealed = car.get().map(|c| c.vault_sealed).unwrap_or(false);
                     let batt = battery_kwh.get().parse::<f64>().ok().filter(|v| *v > 0.0);
-                    let profile = CarProfileV1 {
-                        name: name.get(),
-                        make_model: make_model.get(),
-                        fuel_type: fuel_type.get(),
-                        fuel_class: fuel_class.get(),
-                        battery_capacity_kwh: batt,
-                        stoich_afr: stoich.get().parse::<f64>().unwrap_or(14.08),
-                        density_gl: density.get().parse::<f64>().unwrap_or(745.0),
-                        displacement_l: displacement.get().parse::<f64>().unwrap_or(1.0),
-                        ve: ve.get().parse::<f64>().unwrap_or(0.85),
-                        notes: None,
-                    };
                     let body = serde_json::json!({
-                        "name": profile.name,
-                        "make_model": profile.make_model,
-                        "fuel_type": profile.fuel_type,
-                        "fuel_class": profile.fuel_class,
-                        "battery_capacity_kwh": profile.battery_capacity_kwh,
-                        "stoich_afr": profile.stoich_afr,
-                        "density_gl": profile.density_gl,
-                        "displacement_l": profile.displacement_l,
-                        "ve": profile.ve,
+                        "name": name.get(),
+                        "make_model": make_model.get(),
+                        "fuel_type": fuel_type.get(),
+                        "fuel_class": fuel_class.get(),
+                        "battery_capacity_kwh": batt,
+                        "stoich_afr": stoich.get().parse::<f64>().unwrap_or(14.08),
+                        "density_gl": density.get().parse::<f64>().unwrap_or(745.0),
+                        "displacement_l": displacement.get().parse::<f64>().unwrap_or(1.0),
+                        "ve": ve.get().parse::<f64>().unwrap_or(0.85),
                     });
-                    let sess = vault.clone();
                     leptos::task::spawn_local(async move {
-                        if sealed {
-                            if !sess.is_unlocked() {
-                                error.set(Some(t("cars.unlock_to_save").into()));
-                                return;
-                            }
-                            if let Err(e) = put_car_profile(&sess, &id, &profile).await {
-                                error.set(Some(e));
-                                return;
-                            }
-                            // Keep server skeleton non-sensitive.
-                            let blank = serde_json::json!({
-                                "name": "",
-                                "make_model": "",
-                                "fuel_type": profile.fuel_type,
-                                "fuel_class": profile.fuel_class,
-                                "battery_capacity_kwh": profile.battery_capacity_kwh,
-                                "stoich_afr": profile.stoich_afr,
-                                "density_gl": profile.density_gl,
-                                "displacement_l": profile.displacement_l,
-                                "ve": profile.ve,
-                            });
-                            match update_car(&id, &blank).await {
-                                Ok(mut c) => {
-                                    c.name = profile.name;
-                                    c.make_model = profile.make_model;
-                                    c.fuel_type = profile.fuel_type;
-                                    c.fuel_class = profile.fuel_class;
-                                    c.battery_capacity_kwh = profile.battery_capacity_kwh;
-                                    c.vault_sealed = true;
-                                    car.set(Some(c));
-                                }
-                                Err(e) => error.set(Some(e.to_string())),
-                            }
-                        } else {
-                            match update_car(&id, &body).await {
-                                Ok(c) => car.set(Some(c)),
-                                Err(e) => error.set(Some(e.to_string())),
-                            }
+                        match update_car(&id, &body).await {
+                            Ok(c) => car.set(Some(c)),
+                            Err(e) => error.set(Some(e.to_string())),
                         }
                     });
-                }}>
+                }>
                     <Icon name="floppy-disk" />
                     {tr!("common.save")}
                 </button>

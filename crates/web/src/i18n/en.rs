@@ -282,8 +282,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("common.odometer", "Odometer"),
     ("dash.tracked", "Tracked"),
     // Cars
-    ("cars.vault_car", "🔒 Vault car"),
-    ("cars.locked_vault_car", "🔒 Locked vault car"),
     (
         "cars.lead",
         "Profiles used for fuel math and Android provisioning",
@@ -299,24 +297,8 @@ pub const TABLE: &[(&str, &str)] = &[
     ("cars.make_model", "Make / model"),
     ("cars.create", "Create"),
     (
-        "cars.seal_failed",
-        "Car created but vault seal failed: {error}",
-    ),
-    (
-        "cars.created_unsealed",
-        "Car created under vault — unlock and edit to seal profile.",
-    ),
-    (
-        "cars.no_sealed_profile",
-        "Vault car has no sealed profile yet.",
-    ),
-    (
         "cars.detail_lead",
         "Fuel settings, devices / QR, and sharing",
-    ),
-    (
-        "cars.unlock_to_view",
-        "Unlock the vault to view or edit this sealed car profile.",
     ),
     ("cars.profile_fuel", "Profile & fuel"),
     ("cars.photo_alt", "Car photo"),
@@ -335,10 +317,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("cars.density", "Density g/L"),
     ("cars.displacement", "Displacement L"),
     ("cars.ve", "VE"),
-    (
-        "cars.unlock_to_save",
-        "Unlock vault to save sealed car profile.",
-    ),
     ("cars.default_set", "Default car ✓"),
     ("cars.set_default", "Set as default"),
     ("cars.default_badge", "Default"),
@@ -555,7 +533,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("settings.mcp_title", "MCP access (AI agents)"),
     (
         "settings.mcp_lead",
-        "Generate a personal Bearer token so external AI agents can query your cars and trips over MCP. Access is read-only; vault-encrypted data is never exposed. The full token is shown only once when you generate or rotate it.",
+        "Generate a personal Bearer token so external AI agents can query your cars and trips over MCP. Access is read-only. The full token is shown only once when you generate or rotate it.",
     ),
     ("settings.endpoint", "Endpoint:"),
     ("settings.token_on_file", "Token on file:"),
@@ -591,7 +569,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("settings.your_data", "Your data"),
     (
         "settings.export_lead",
-        "Download everything this account holds — profile, cars, trips with their samples, devices, shares, chats and the security log — as one JSON file. Secrets such as API keys are left out; vault data is included as the ciphertext the server stores.",
+        "Download everything this account holds — profile, cars, trips with their samples, devices, shares, chats and the security log — as one JSON file. Secrets such as API keys are left out.",
     ),
     ("settings.download_data", "Download my data"),
     ("settings.delete_account", "Delete account"),
@@ -636,10 +614,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ),
     ("trips.merge_finished", "Only finished trips can be merged"),
     ("trips.merge_owner", "Only the car owner can merge trips"),
-    (
-        "trips.merge_vault",
-        "Vault trips cannot be merged on the server",
-    ),
     (
         "trips.confirm_merge",
         "Merge {n} trips into one? Their samples join the earliest trip; the others are removed.",
@@ -712,15 +686,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "trips.confirm_delete",
         "Delete this trip permanently? This cannot be undone.",
     ),
-    ("trips.vault_trip", "🔒 Vault trip"),
-    ("trips.locked", "🔒 Locked"),
     ("trips.more_about", "More about this value"),
     // Trip detail
-    ("trip.vault_decrypt_failed", "Vault decrypt failed: {error}"),
-    (
-        "trip.unlock_to_decrypt",
-        "Unlock the vault to decrypt this trip.",
-    ),
     ("trip.title", "Trip"),
     (
         "trip.meta_line",
@@ -762,10 +729,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("trip.while_moving", "While moving"),
     ("trip.context_counters", "Trip context counters"),
     ("trip.engine_run", "Engine run"),
-    (
-        "trip.unlock_points",
-        "Unlock the vault to decrypt trip points and AI reports.",
-    ),
     ("trip.route", "Route"),
     ("trip.speed_colored", "Speed-colored route · Liberty"),
     ("trip.traffic_colored", "Traffic-colored route · Liberty"),
@@ -826,22 +789,10 @@ pub const TABLE: &[(&str, &str)] = &[
     ("status.analyzing", "Analyzing…"),
     ("status.analyzed", "Analyzed"),
     ("trip.analysis_failed", "The analysis failed."),
-    ("trip.not_loaded", "Trip not loaded"),
-    (
-        "trip.unlock_consent",
-        "Unlock vault and consent to send a temporary analysis bundle.",
-    ),
-    ("trip.no_decrypted_points", "No decrypted points to analyze"),
-    ("trip.vault_analysis_failed", "Vault analysis failed"),
-    ("trip.seal_failed", "Analysis ok but seal failed: {error}"),
     ("trip.ai_title", "AI route analysis"),
     (
         "trip.ai_subtitle",
         "Mechanic + efficiency coach · tap to expand",
-    ),
-    (
-        "trip.vault_mode",
-        "Vault mode: analysis sends a temporary decrypted bundle to the server. Results are sealed client-side; nothing durable is stored in plaintext.",
     ),
     ("trip.model", "Model · {model}"),
     ("trip.cancelling", "Cancelling…"),
@@ -1021,11 +972,11 @@ pub const TABLE: &[(&str, &str)] = &[
     ("views.heatmap", "Heatmap"),
     (
         "views.heat_note",
-        "Brighter = driven more often. Vault trips are not included.",
+        "Brighter = driven more often.",
     ),
     (
         "views.lines_note",
-        "One color per car · click a route to open the trip. Vault trips are not included.",
+        "One color per car · click a route to open the trip.",
     ),
     ("views.calendar", "Driving calendar"),
     ("views.loading_year", "Loading the last year…"),
@@ -1045,11 +996,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("export.csv", "CSV (all telemetry)"),
     ("export.export", "Export"),
     ("export.print", "Print / Save as PDF"),
-    (
-        "export.built_here",
-        "Built in this browser from the decrypted trip.",
-    ),
-    ("export.unlock", "Unlock the vault to export this trip."),
     // Trip replay
     ("replay.group", "Trip replay"),
     ("replay.pause_aria", "Pause replay"),
@@ -1060,10 +1006,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("replay.speed", "Replay speed"),
     // Compare trips
     ("compare.pick_two", "Pick exactly two trips to compare."),
-    (
-        "compare.no_vault",
-        "Vault trips can't be compared yet — their samples are decrypted on the trip page only.",
-    ),
     ("compare.trip_a", "Trip A"),
     ("compare.trip_b", "Trip B"),
     ("compare.title", "Compare trips"),
@@ -1446,10 +1388,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("share.email_to_invite", "Email to invite"),
     ("share.invite", "Invite"),
     (
-        "share.hint_vault",
-        "They get access once they accept. For this vault car, share the vault key with them afterwards.",
-    ),
-    (
         "share.hint",
         "They get access once they accept the invitation.",
     ),
@@ -1460,12 +1398,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("share.members", "Members"),
     ("share.not_shared", "Not shared with anyone yet."),
     ("share.user", "User"),
-    ("share.vault_key", "Vault key"),
-    ("share.key_shared", "Vault key shared."),
-    ("share.key_failed", "Could not share the vault key: {error}"),
-    ("share.no_identity", "No vault identity yet"),
-    ("share.unlock_first", "Unlock the vault first"),
-    ("share.share_key", "Share vault key"),
     ("share.from", " · from {name}"),
     ("share.as_role", "as {role}{by} · {date}"),
     ("share.accept", "Accept"),
@@ -1596,65 +1528,6 @@ pub const TABLE: &[(&str, &str)] = &[
         "chat.connection_dropped",
         "The connection dropped. Reload to see the answer.",
     ),
-    // Vault
-    ("vault.invalid_key", "Invalid recovery key"),
-    ("vault.title", "Zero-knowledge vault"),
-    (
-        "vault.lead",
-        "Optional E2E encryption for trips, car profiles, and AI results. Server stores ciphertext only. Lose recovery key + devices ⇒ permanent data loss.",
-    ),
-    (
-        "vault.ui_disabled",
-        "Vault UI disabled on this server (VAULT_UI_ENABLED).",
-    ),
-    ("vault.status", "Status:"),
-    ("vault.enabled_suffix", " · enabled"),
-    ("vault.objects", " · v{version} · {n} objects"),
-    ("vault.state_disabled", "disabled"),
-    ("vault.state_migrating", "migrating"),
-    ("vault.state_active", "active"),
-    ("vault.enable", "Enable vault…"),
-    ("vault.save_key", "Save this recovery key now (shown once):"),
-    (
-        "vault.ack",
-        "I stored the recovery key. I understand the administrator cannot recover my data.",
-    ),
-    (
-        "vault.migrating_msg",
-        "Vault migrating. Encrypt data on this device, then Activate.",
-    ),
-    ("vault.confirm_enable", "Confirm and enable"),
-    (
-        "vault.migrate_lead",
-        "This browser will encrypt owned cars and trips, clear server plaintext, then activate the vault. Stay unlocked.",
-    ),
-    (
-        "vault.unlock_before_migrating",
-        "Unlock the vault before migrating.",
-    ),
-    ("vault.migrating", "Migrating…"),
-    ("vault.activated", "{summary}. Vault activated."),
-    ("vault.migrate", "Migrate & activate vault"),
-    ("vault.unlock_with_key", "Unlock with recovery key"),
-    ("vault.unlocked_msg", "Vault unlocked on this device."),
-    ("vault.unlock", "Unlock"),
-    ("vault.unlocked_here", "Unlocked on this device."),
-    ("vault.locked_msg", "Vault locked on this tab."),
-    ("vault.lock", "Lock"),
-    ("vault.gate_title", "Unlock zero-knowledge vault"),
-    ("vault.recovery_key", "Recovery key"),
-    (
-        "vault.gate_unlocked",
-        "Vault unlocked. Continue browsing cars and trips.",
-    ),
-    ("vault.locked", "Vault is locked"),
-    (
-        "vault.no_wrap",
-        "No DEK wrap for this account — ask the owner to share keys",
-    ),
-    ("vault.owner_only", "only owner can migrate"),
-    ("vault.migrated.one", "Migrated {n} car"),
-    ("vault.migrated.other", "Migrated {n} cars"),
     // Misc components
     ("qr.label", "Device provisioning QR code"),
     ("api.unauthorized", "unauthorized"),

@@ -57,7 +57,6 @@ async fn ping_checks_the_token_without_creating_a_trip() {
     assert_eq!(body["ok"], true);
     assert_eq!(body["car_id"], car_id.as_str());
     assert!(body["car_name"].is_string());
-    assert_eq!(body["vault_required"], false);
     assert_eq!(
         track_count(&pool().await, &car_id).await,
         0,

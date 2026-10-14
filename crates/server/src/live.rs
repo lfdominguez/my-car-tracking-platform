@@ -121,16 +121,15 @@ pub async fn publish_latest(state: &AppState, track_ids: &[Uuid]) {
 }
 
 /// Cars whose position `user_id` may see: owned cars, plus shared cars whose owner
-/// shares live position. Vault cars are excluded (the server has no plaintext).
+/// shares live position.
 async fn visible_cars(pool: &PgPool, user_id: Uuid) -> AppResult<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
         r#"
-        SELECT c.id FROM cars c JOIN users o ON o.id = c.owner_user_id
-        WHERE o.vault_status <> 'active'
-          AND (c.owner_user_id = $1
-               OR (c.share_live_position
-                   AND EXISTS (SELECT 1 FROM car_shares s
-                               WHERE s.car_id = c.id AND s.user_id = $1)))
+        SELECT c.id FROM cars c
+        WHERE c.owner_user_id = $1
+           OR (c.share_live_position
+               AND EXISTS (SELECT 1 FROM car_shares s
+                           WHERE s.car_id = c.id AND s.user_id = $1))
         "#,
     )
     .bind(user_id)

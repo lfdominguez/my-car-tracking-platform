@@ -3,10 +3,10 @@
 //! `GET /api/me/export` streams one JSON document with the user's profile, owned
 //! cars and their trips (points included), devices, shares, chats and audit log.
 //! Secrets are never included: API keys, token hashes and session ids are left
-//! out. Vault objects are exported as the ciphertext the server holds.
+//! out.
 //!
 //! `DELETE /api/me` erases the account. Owned cars (and through them trips,
-//! points, devices, vault objects and derived tables) cascade from the user row;
+//! points, devices and derived tables) cascade from the user row;
 //! photo files on disk are removed explicitly.
 
 use axum::body::{Body, Bytes};
@@ -76,11 +76,6 @@ const SECTIONS: &[(&str, &str)] = &[
                      FROM chat_messages m WHERE m.conversation_id = cc.id))
                   ORDER BY cc.created_at), '[]')
          FROM chat_conversations cc WHERE cc.user_id = $1",
-    ),
-    (
-        "vault_objects",
-        "SELECT COALESCE(jsonb_agg(to_jsonb(v) ORDER BY v.created_at), '[]')
-         FROM vault_objects v JOIN cars c ON c.id = v.car_id WHERE c.owner_user_id = $1",
     ),
     (
         "audit_log",

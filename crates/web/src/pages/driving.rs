@@ -68,7 +68,7 @@ pub fn TripDrivingCard(trip: RwSignal<Option<Trip>>) -> impl IntoView {
         let key = trip
             .with(|t| {
                 t.as_ref()
-                    .filter(|t| t.finished && !t.vault_sealed)
+                    .filter(|t| t.finished)
                     .map(|t| format!("{}:{}", t.id, t.traffic_analyzed))
             })
             .unwrap_or_default();

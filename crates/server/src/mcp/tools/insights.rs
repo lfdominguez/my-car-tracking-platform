@@ -1,6 +1,6 @@
 //! Cross-trip and drill-down tools: comparisons, economy trends, point windows and
 //! battery energy. Same rules as every other loader here: `can_read_car` (via the
-//! trip and car helpers), vault-sealed data reported as not found, `fuel_class` on
+//! trip and car helpers), invisible data reported as not found, `fuel_class` on
 //! every result, figures in the caller's units with a `units` object.
 
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
@@ -16,7 +16,7 @@ use crate::units::{UnitLabels, UnitSystem, convert_fuel_l};
 
 use super::trip_stats::load_analysis;
 use super::trips::{TripDto, get_trip, require_readable_trip};
-use super::{ToolCtx, display_distance, reject_vault};
+use super::{ToolCtx, display_distance};
 
 /// Most trips one comparison may name.
 pub const MAX_COMPARE_TRIPS: usize = 10;
@@ -90,7 +90,7 @@ pub async fn compare_trips(ctx: &ToolCtx<'_>, trip_ids: &[Uuid]) -> AppResult<Tr
     let system = ctx.user.unit_system;
     let mut trips = Vec::with_capacity(trip_ids.len());
     for id in trip_ids {
-        // get_trip enforces can_read_car and the vault for each id; one invisible
+        // get_trip enforces can_read_car for each id; one invisible
         // trip fails the whole comparison rather than silently shrinking it.
         let trip = get_trip(ctx, *id).await?;
         trips.push(ComparedTrip {
@@ -184,18 +184,11 @@ pub async fn get_fuel_economy_trend(
     bucket: TrendBucket,
 ) -> AppResult<EconomyTrend> {
     can_read_car(&ctx.state.pool, ctx.user.id, car_id).await?;
-    let (fuel_class, sealed) = sqlx::query_as::<_, (String, bool)>(
-        r#"
-        SELECT c.fuel_class, (u.vault_status = 'active')
-        FROM cars c JOIN users u ON u.id = c.owner_user_id
-        WHERE c.id = $1
-        "#,
-    )
-    .bind(car_id)
-    .fetch_optional(&ctx.state.pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
-    reject_vault(sealed)?;
+    let fuel_class = sqlx::query_scalar::<_, String>("SELECT fuel_class FROM cars WHERE id = $1")
+        .bind(car_id)
+        .fetch_optional(&ctx.state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let sql = format!(
         r#"

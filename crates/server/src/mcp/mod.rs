@@ -2,7 +2,7 @@
 
 // `auth` and `tools` are shared with `crate::chat`: the read-only tool loaders are
 // transport-agnostic, so the in-app chat reuses them instead of duplicating the
-// queries (and, with them, the ownership and vault checks).
+// queries (and, with them, the ownership checks).
 pub(crate) mod auth;
 mod rate_limit;
 mod scope;

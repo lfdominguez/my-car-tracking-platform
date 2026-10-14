@@ -95,8 +95,6 @@ pub struct Car {
     pub ve: f64,
     pub notes: Option<String>,
     pub role: String,
-    #[serde(default)]
-    pub vault_sealed: bool,
     /// Whether people this car is shared with may see its live position. Absent
     /// when the server does not report it.
     #[serde(default)]
@@ -189,8 +187,6 @@ pub struct Trip {
     pub analyzed: bool,
     #[serde(default)]
     pub traffic_analyzed: bool,
-    #[serde(default)]
-    pub vault_sealed: bool,
     /// Latest sample time (RFC3339); used for stale in-progress UI.
     #[serde(default)]
     pub last_point_at: Option<String>,
@@ -345,10 +341,6 @@ pub struct Share {
     pub name: String,
     pub role: String,
     pub created_at: String,
-    #[serde(default)]
-    pub vault_has_pubkey: bool,
-    #[serde(default)]
-    pub vault_identity_pubkey_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1145,138 +1137,6 @@ pub async fn get_audit(limit: Option<i64>) -> Result<Vec<AuditEvent>, ApiError> 
     send_json(Request::get(&url)).await
 }
 
-// --- Zero-knowledge vault ---------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VaultStatus {
-    pub vault_enabled: bool,
-    pub vault_status: String,
-    pub vault_identity_version: i32,
-    pub vault_identity_pubkey_b64: Option<String>,
-    pub vault_ui_enabled: bool,
-    pub owned_cars: i64,
-    pub cars_with_owner_dek: i64,
-    pub vault_object_count: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VaultObject {
-    pub id: String,
-    pub car_id: String,
-    pub object_type: String,
-    pub logical_id: String,
-    pub chunk_index: Option<i32>,
-    pub schema_version: i32,
-    pub nonce_b64: String,
-    pub ciphertext_b64: String,
-    pub byte_size: i32,
-    pub content_version: i32,
-}
-
-pub async fn vault_status() -> Result<VaultStatus, ApiError> {
-    send_json(Request::get("/api/vault/status")).await
-}
-
-pub async fn vault_enable(
-    identity_pubkey_b64: &str,
-    identity_version: i32,
-) -> Result<VaultStatus, ApiError> {
-    let req = with_creds(Request::post("/api/vault/enable"))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "identity_pubkey": identity_pubkey_b64,
-            "identity_version": identity_version,
-        }))
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    send_body_json(req).await
-}
-
-pub async fn vault_activate() -> Result<VaultStatus, ApiError> {
-    let req = with_creds(Request::post("/api/vault/activate"))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({}))
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    send_body_json(req).await
-}
-
-pub async fn vault_put_object(body: serde_json::Value) -> Result<VaultObject, ApiError> {
-    let req = with_creds(Request::put("/api/vault/objects"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    send_body_json(req).await
-}
-
-pub async fn vault_get_objects(
-    car_id: &str,
-    object_type: Option<&str>,
-    logical_id: Option<&str>,
-) -> Result<Vec<VaultObject>, ApiError> {
-    let mut url = format!("/api/vault/objects?car_id={car_id}");
-    if let Some(t) = object_type {
-        url.push_str(&format!("&object_type={t}"));
-    }
-    if let Some(id) = logical_id {
-        url.push_str(&format!("&logical_id={id}"));
-    }
-    send_json(Request::get(&url)).await
-}
-
-pub async fn vault_put_dek(
-    car_id: &str,
-    recipient_user_id: &str,
-    wrapped_dek_b64: &str,
-    wrap_alg: &str,
-    identity_version: i32,
-) -> Result<serde_json::Value, ApiError> {
-    let req = with_creds(Request::put(&format!("/api/vault/cars/{car_id}/deks")))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "recipient_user_id": recipient_user_id,
-            "wrapped_dek": wrapped_dek_b64,
-            "wrap_alg": wrap_alg,
-            "identity_version": identity_version,
-        }))
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    send_body_json(req).await
-}
-
-pub async fn vault_list_deks(car_id: &str) -> Result<Vec<serde_json::Value>, ApiError> {
-    send_json(Request::get(&format!("/api/vault/cars/{car_id}/deks"))).await
-}
-
-pub async fn vault_migration_clear_car(car_id: &str) -> Result<serde_json::Value, ApiError> {
-    let req = with_creds(Request::post(&format!(
-        "/api/vault/migration/clear-car/{car_id}"
-    )))
-    .header("Content-Type", "application/json")
-    .json(&serde_json::json!({}))
-    .map_err(|e| ApiError::Message(e.to_string()))?;
-    send_body_json(req).await
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VaultJob {
-    pub id: String,
-    pub kind: String,
-    pub status: String,
-    pub error: Option<String>,
-    pub result: Option<serde_json::Value>,
-}
-
-pub async fn vault_create_job(kind: &str, bundle: serde_json::Value) -> Result<VaultJob, ApiError> {
-    let req = with_creds(Request::post("/api/vault/jobs"))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({ "kind": kind, "bundle": bundle }))
-        .map_err(|e| ApiError::Message(e.to_string()))?;
-    send_body_json(req).await
-}
-
-#[allow(dead_code)] // polling helper for async job UX
-pub async fn vault_get_job(id: &str) -> Result<VaultJob, ApiError> {
-    send_json(Request::get(&format!("/api/vault/jobs/{id}"))).await
-}
-
 // --- chat with my car data -------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1679,7 +1539,7 @@ pub struct TripGeometry {
     pub geometry: serde_json::Value,
 }
 
-/// `GET /api/trips/geometries`: newest first, vault cars skipped. Bounds are RFC3339;
+/// `GET /api/trips/geometries`: newest first. Bounds are RFC3339;
 /// purpose and tag filter like the trips list.
 pub async fn trip_geometries(
     car_id: Option<&str>,

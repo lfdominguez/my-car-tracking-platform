@@ -195,11 +195,8 @@ async fn sweep_track_stats(state: &AppState, limit: i64) -> AppResult<usize> {
         r#"
         SELECT t.id
         FROM tracks t
-        JOIN cars c ON c.id = t.car_id
-        JOIN users ou ON ou.id = c.owner_user_id
         LEFT JOIN track_stats s ON s.track_id = t.id
         WHERE t.finished = true
-          AND ou.vault_status <> 'active'
           AND t.points_pruned_at IS NULL
           AND (s.track_id IS NULL OR s.stale OR s.schema_version <> $1)
         ORDER BY t.started_at DESC
@@ -215,8 +212,7 @@ async fn sweep_track_stats(state: &AppState, limit: i64) -> AppResult<usize> {
     for id in ids {
         match stats::recompute(&state.pool, id).await {
             Ok(true) => written += 1,
-            // Vault-active or deleted between the select and the write; either way
-            // there is deliberately nothing to store.
+            // Deleted between the select and the write: nothing to store.
             Ok(false) => {}
             Err(e) => tracing::warn!(%id, error = %e, "track stats recompute failed"),
         }
@@ -271,7 +267,7 @@ pub async fn sweep_stale_open_trips(state: &AppState, stale_secs: u64) -> AppRes
     Ok(finished)
 }
 
-/// Delete vault ciphertext for this track and the track row (cascades points/assignments).
+/// Delete the track row (cascades points/assignments).
 /// Also recounts/prunes route corridors that lost this trip.
 pub async fn purge_track(pool: &PgPool, track_id: Uuid) -> AppResult<()> {
     let corridor_ids: Vec<Uuid> = sqlx::query_scalar(
@@ -291,16 +287,12 @@ pub async fn purge_track(pool: &PgPool, track_id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
-/// Delete vault ciphertext and track rows inside the caller's transaction. Route
+/// Delete track rows inside the caller's transaction. Route
 /// corridors are left to the caller (`route_opt::sync_corridors` after commit).
 pub(crate) async fn delete_tracks(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ids: &[Uuid],
 ) -> AppResult<()> {
-    sqlx::query("DELETE FROM vault_objects WHERE logical_id = ANY($1)")
-        .bind(ids)
-        .execute(&mut **tx)
-        .await?;
     sqlx::query("DELETE FROM tracks WHERE id = ANY($1)")
         .bind(ids)
         .execute(&mut **tx)
@@ -308,25 +300,15 @@ pub(crate) async fn delete_tracks(
     Ok(())
 }
 
-/// True when trip should be discarded after stop: no vault point chunks and ≤1 plaintext point.
+/// True when trip should be discarded after stop: ≤1 point.
 pub async fn is_empty_trip_for_auto_remove(pool: &PgPool, track_id: Uuid) -> AppResult<bool> {
-    let plaintext: i64 =
+    let points: i64 =
         sqlx::query_scalar("SELECT COUNT(*)::bigint FROM track_points WHERE track_id = $1")
             .bind(track_id)
             .fetch_one(pool)
             .await?;
 
-    let vault_chunks: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)::bigint FROM vault_objects
-        WHERE logical_id = $1 AND object_type = 'track_points_chunk'
-        "#,
-    )
-    .bind(track_id)
-    .fetch_one(pool)
-    .await?;
-
-    Ok(vault_chunks == 0 && plaintext <= 1)
+    Ok(points <= 1)
 }
 
 async fn finish_trip(
@@ -444,8 +426,6 @@ pub struct TripSummary {
     pub analyzed: bool,
     /// Congestion estimate successfully ready (see trip_traffic_summaries).
     pub traffic_analyzed: bool,
-    /// Owner vault active — client should load ciphertext objects instead of points.
-    pub vault_sealed: bool,
     /// Latest sample time (for stale / in-progress UI).
     pub last_point_at: Option<DateTime<Utc>>,
     pub purpose: Option<String>,
@@ -483,7 +463,6 @@ struct TripSummaryRow {
     analyzed_at: Option<DateTime<Utc>>,
     analyzed: bool,
     traffic_analyzed: bool,
-    vault_sealed: bool,
     last_point_at: Option<DateTime<Utc>>,
     purpose: Option<String>,
     notes: Option<String>,
@@ -523,7 +502,6 @@ impl TripSummaryRow {
             analyzed_at: self.analyzed_at,
             analyzed: self.analyzed,
             traffic_analyzed: self.traffic_analyzed,
-            vault_sealed: self.vault_sealed,
             last_point_at: self.last_point_at,
             purpose: self.purpose,
             notes: self.notes,
@@ -572,23 +550,6 @@ pub struct TripPoint {
     pub accel_rms_mps2: Option<f64>,
     #[serde(default)]
     pub device_tilt_delta_deg: Option<f64>,
-}
-
-fn seal_trip_if_vault(mut t: TripSummary) -> TripSummary {
-    if t.vault_sealed {
-        t.car_name = String::new();
-        t.point_count = 0;
-        t.distance_m = None;
-        t.economy_distance_m = None;
-        t.duration_s = None;
-        t.avg_speed_kph = None;
-        t.max_speed_kph = None;
-        t.fuel_used_l = None;
-        t.fuel_used_moving_l = None;
-        t.fuel_from_level_l = None;
-        t.last_point_at = None;
-    }
-    t
 }
 
 #[derive(Debug, Serialize)]
@@ -770,7 +731,6 @@ async fn list_trips(
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
             t.traffic_analyzed,
-            (ou.vault_status = 'active') AS vault_sealed,
             COALESCE(s.last_point_at, live.last_at) AS last_point_at,
             t.purpose,
             t.notes,
@@ -780,7 +740,6 @@ async fn list_trips(
         FROM page
         JOIN tracks t ON t.id = page.id
         JOIN cars c ON c.id = t.car_id
-        JOIN users ou ON ou.id = c.owner_user_id
         {stats_join}
         {lateral}
         ORDER BY t.started_at DESC
@@ -804,7 +763,6 @@ async fn list_trips(
     let rows = rows
         .into_iter()
         .map(TripSummaryRow::into_summary)
-        .map(seal_trip_if_vault)
         .map(|trip| apply_trip_summary_units(trip, system))
         .collect();
     Ok(Json(rows))
@@ -849,7 +807,6 @@ async fn get_trip(
             t.analyzed_at,
             (t.analysis_status = 'completed' OR t.analysis_report IS NOT NULL) AS analyzed,
             t.traffic_analyzed,
-            (ou.vault_status = 'active') AS vault_sealed,
             COALESCE(s.last_point_at, live.last_at) AS last_point_at,
             t.purpose,
             t.notes,
@@ -858,7 +815,6 @@ async fn get_trip(
             (SELECT name FROM geofences WHERE id = t.end_geofence_id) AS end_place
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
-        JOIN users ou ON ou.id = c.owner_user_id
         {stats_join}
         {lateral}
         WHERE t.id = $1
@@ -903,7 +859,7 @@ async fn get_trip(
     );
 
     Ok(Json(TripDetailResponse {
-        trip: apply_trip_summary_units(seal_trip_if_vault(row), user.unit_system),
+        trip: apply_trip_summary_units(row, user.unit_system),
         traffic,
     }))
 }
@@ -913,10 +869,9 @@ async fn start_traffic_analyze(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let meta = sqlx::query_as::<_, (Uuid, Uuid, bool, bool, Option<String>)>(
+    let meta = sqlx::query_as::<_, (Uuid, bool, bool, Option<String>)>(
         r#"
         SELECT t.car_id,
-               c.owner_user_id,
                t.finished,
                t.traffic_analyzed,
                s.status
@@ -931,18 +886,12 @@ async fn start_traffic_analyze(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    let (car_id, owner_id, finished, traffic_analyzed, summary_status) = meta;
+    let (car_id, finished, traffic_analyzed, summary_status) = meta;
     require_owner(&state.pool, user.id, car_id).await?;
 
     if !finished {
         return Err(AppError::BadRequest(
             "Trip must be finished before traffic analysis".into(),
-        ));
-    }
-
-    if crate::vault::owner_vault_active(&state.pool, owner_id).await? {
-        return Err(AppError::BadRequest(
-            "Traffic analysis is not available for vault cars (v1)".into(),
         ));
     }
 
@@ -1098,8 +1047,8 @@ struct TripGeometry {
 }
 
 /// Simplified route lines of many trips at once, for overlay and heatmap views.
-/// Only fixes are used (fixless samples have no position) and vault cars are
-/// skipped. Trips whose points were pruned by retention use their kept line.
+/// Only fixes are used (fixless samples have no position). Trips whose points
+/// were pruned by retention use their kept line.
 async fn trip_geometries(
     State(state): State<AppState>,
     user: AuthUser,
@@ -1115,7 +1064,6 @@ async fn trip_geometries(
                END AS geometry
         FROM tracks t
         JOIN cars c ON c.id = t.car_id
-        JOIN users ou ON ou.id = c.owner_user_id
         CROSS JOIN LATERAL (
             SELECT ST_MakeLine(tp.gps::geometry ORDER BY tp.recorded_at) AS geom,
                    COUNT(tp.gps) AS n
@@ -1123,7 +1071,6 @@ async fn trip_geometries(
             WHERE tp.track_id = t.id AND tp.gps IS NOT NULL
         ) line
         WHERE (line.n >= 2 OR t.archived_route IS NOT NULL)
-          AND ou.vault_status <> 'active'
           AND (c.owner_user_id = $1
                OR EXISTS (SELECT 1 FROM car_shares cs WHERE cs.car_id = c.id AND cs.user_id = $1))
           AND ($2::uuid IS NULL OR t.car_id = $2)
@@ -1159,14 +1106,6 @@ async fn trip_points(
         .await?
         .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
-
-    let owner_id = sqlx::query_scalar::<_, Uuid>("SELECT owner_user_id FROM cars WHERE id = $1")
-        .bind(car_id)
-        .fetch_one(&state.pool)
-        .await?;
-    if crate::vault::owner_vault_active(&state.pool, owner_id).await? {
-        return Ok(Json(vec![]));
-    }
 
     // Sanitized before thinning, so a spike cannot be picked as a bucket's maximum.
     let mut rows = load_trip_points(&state.pool, id, q.from, q.to).await?;
@@ -1317,17 +1256,6 @@ async fn trip_map(
         .await?
         .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
-
-    let owner_id = sqlx::query_scalar::<_, Uuid>("SELECT owner_user_id FROM cars WHERE id = $1")
-        .bind(car_id)
-        .fetch_one(&state.pool)
-        .await?;
-    if crate::vault::owner_vault_active(&state.pool, owner_id).await? {
-        return Ok(Json(serde_json::json!({
-            "type": "LineString",
-            "coordinates": []
-        })));
-    }
 
     let coords = sqlx::query_as::<_, (f64, f64)>(
         r#"

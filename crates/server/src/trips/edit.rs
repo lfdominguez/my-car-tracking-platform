@@ -2,8 +2,7 @@
 //!
 //! Merge and split rewrite which trip owns which points, so both recompute stored
 //! statistics and re-queue `finalize`, which re-runs traffic and route analysis on
-//! the new shape. Vault cars are refused: their points are ciphertext the server
-//! cannot move, and notes would be plaintext the operator could read.
+//! the new shape.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -29,17 +28,16 @@ struct TripMeta {
     started_at: DateTime<Utc>,
     finished_at: Option<DateTime<Utc>>,
     finished: bool,
-    vault: bool,
     /// Points dropped by retention; only `archived_route` is left.
     pruned: bool,
 }
 
 async fn load_meta(pool: &PgPool, id: Uuid) -> AppResult<TripMeta> {
-    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Option<DateTime<Utc>>, bool, bool, bool)>(
+    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Option<DateTime<Utc>>, bool, bool)>(
         r#"
-        SELECT t.car_id, t.started_at, t.finished_at, t.finished, u.vault_status = 'active',
+        SELECT t.car_id, t.started_at, t.finished_at, t.finished,
                t.points_pruned_at IS NOT NULL
-        FROM tracks t JOIN cars c ON c.id = t.car_id JOIN users u ON u.id = c.owner_user_id
+        FROM tracks t
         WHERE t.id = $1
         "#,
     )
@@ -52,19 +50,13 @@ async fn load_meta(pool: &PgPool, id: Uuid) -> AppResult<TripMeta> {
         started_at: row.1,
         finished_at: row.2,
         finished: row.3,
-        vault: row.4,
-        pruned: row.5,
+        pruned: row.4,
     })
 }
 
 async fn editable(state: &AppState, user: &AuthUser, id: Uuid) -> AppResult<TripMeta> {
     let meta = load_meta(&state.pool, id).await?;
     can_edit_car(&state.pool, user.id, meta.car_id).await?;
-    if meta.vault {
-        return Err(AppError::Conflict(
-            "vault trips cannot be edited on the server".into(),
-        ));
-    }
     Ok(meta)
 }
 

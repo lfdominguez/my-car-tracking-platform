@@ -7,7 +7,6 @@ mod components;
 mod default_car;
 mod pages;
 mod units;
-mod vault;
 
 use leptos::prelude::*;
 use leptos_router::components::{ParentRoute, Route, Router, Routes};
@@ -28,13 +27,11 @@ use crate::pages::routes::{RouteCorridorPage, RoutesPage};
 use crate::pages::settings::SettingsPage;
 use crate::pages::stats::StatsPage;
 use crate::pages::trips::{TripDetailPage, TripsPage};
-use crate::vault::provide_vault_session;
 
 fn main() {
     console_error_panic_hook::set_once();
     mount_to_body(|| {
         crate::i18n::provide_locale();
-        provide_vault_session();
         provide_theme();
         view! {
             <Router>

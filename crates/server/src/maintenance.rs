@@ -96,9 +96,8 @@ pub async fn run_once(pool: &PgPool) -> AppResult<()> {
 /// Delete the raw points of trips past their car's `raw_retention_days`.
 ///
 /// Statistics are stored first and a simplified route line is kept, so the trip
-/// list, totals and the map keep working without the points. Vault cars are
-/// skipped by `stats::recompute` returning `false`: they hold no plaintext
-/// points to begin with.
+/// list, totals and the map keep working without the points. A trip deleted
+/// meanwhile is skipped by `stats::recompute` returning `false`.
 pub async fn prune_raw_points(pool: &PgPool, batch: i64) -> AppResult<usize> {
     let due: Vec<Uuid> = sqlx::query_scalar(
         "SELECT t.id FROM tracks t

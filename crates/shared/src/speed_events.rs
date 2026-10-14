@@ -1,8 +1,5 @@
 //! Harsh acceleration / braking detection from OBD speed and phone motion.
 //!
-//! Shared by the server analysis context and the client-side vault path so both
-//! report the same events with the same calibration.
-//!
 //! The speed series is the OBD speed PID (`0x0D`) sampled at a fixed 1 Hz. That PID
 //! has 1 km/h integer resolution, so at 1 Hz a rate threshold is effectively rounded
 //! to whole km/h per second. When the phone also contributed motion aggregates the

@@ -297,11 +297,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("common.odometer", "Odómetro"),
     ("dash.tracked", "Registrado"),
     // Cars
-    ("cars.vault_car", "🔒 Vehículo en la bóveda"),
-    (
-        "cars.locked_vault_car",
-        "🔒 Vehículo en la bóveda bloqueada",
-    ),
     (
         "cars.lead",
         "Perfiles usados para el cálculo de combustible y la configuración de Android",
@@ -317,24 +312,8 @@ pub const TABLE: &[(&str, &str)] = &[
     ("cars.make_model", "Marca / modelo"),
     ("cars.create", "Crear"),
     (
-        "cars.seal_failed",
-        "Vehículo creado, pero no se pudo sellar en la bóveda: {error}",
-    ),
-    (
-        "cars.created_unsealed",
-        "Vehículo creado en la bóveda: desbloquéala y edítalo para sellar el perfil.",
-    ),
-    (
-        "cars.no_sealed_profile",
-        "El vehículo de la bóveda aún no tiene un perfil sellado.",
-    ),
-    (
         "cars.detail_lead",
         "Ajustes de combustible, dispositivos / QR y uso compartido",
-    ),
-    (
-        "cars.unlock_to_view",
-        "Desbloquea la bóveda para ver o editar este perfil de vehículo sellado.",
     ),
     ("cars.profile_fuel", "Perfil y combustible"),
     ("cars.photo_alt", "Foto del vehículo"),
@@ -353,10 +332,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("cars.density", "Densidad g/L"),
     ("cars.displacement", "Cilindrada L"),
     ("cars.ve", "EV (eficiencia volumétrica)"),
-    (
-        "cars.unlock_to_save",
-        "Desbloquea la bóveda para guardar el perfil sellado del vehículo.",
-    ),
     ("cars.default_set", "Vehículo predeterminado ✓"),
     ("cars.set_default", "Establecer como predeterminado"),
     ("cars.default_badge", "Predeterminado"),
@@ -594,7 +569,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("settings.mcp_title", "Acceso MCP (agentes de IA)"),
     (
         "settings.mcp_lead",
-        "Genera un token Bearer personal para que agentes de IA externos consulten tus vehículos y viajes por MCP. El acceso es de solo lectura; los datos cifrados en la bóveda nunca se exponen. El token completo solo se muestra una vez, al generarlo o rotarlo.",
+        "Genera un token Bearer personal para que agentes de IA externos consulten tus vehículos y viajes por MCP. El acceso es de solo lectura. El token completo solo se muestra una vez, al generarlo o rotarlo.",
     ),
     ("settings.endpoint", "Endpoint:"),
     ("settings.token_on_file", "Token guardado:"),
@@ -633,7 +608,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("settings.your_data", "Tus datos"),
     (
         "settings.export_lead",
-        "Descarga todo lo que contiene esta cuenta (perfil, vehículos, viajes con sus muestras, dispositivos, accesos compartidos, chats y el registro de seguridad) en un único archivo JSON. Los secretos, como las claves de API, se excluyen; los datos de la bóveda se incluyen como el texto cifrado que guarda el servidor.",
+        "Descarga todo lo que contiene esta cuenta (perfil, vehículos, viajes con sus muestras, dispositivos, accesos compartidos, chats y el registro de seguridad) en un único archivo JSON. Los secretos, como las claves de API, se excluyen.",
     ),
     ("settings.download_data", "Descargar mis datos"),
     ("settings.delete_account", "Eliminar cuenta"),
@@ -689,10 +664,6 @@ pub const TABLE: &[(&str, &str)] = &[
     (
         "trips.merge_owner",
         "Solo el dueño del auto puede unir viajes",
-    ),
-    (
-        "trips.merge_vault",
-        "Los viajes de la bóveda no se pueden unir en el servidor",
     ),
     (
         "trips.confirm_merge",
@@ -766,18 +737,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "trips.confirm_delete",
         "¿Eliminar este viaje de forma permanente? Esta acción no se puede deshacer.",
     ),
-    ("trips.vault_trip", "🔒 Viaje en la bóveda"),
-    ("trips.locked", "🔒 Bloqueado"),
     ("trips.more_about", "Más información sobre este valor"),
     // Trip detail
-    (
-        "trip.vault_decrypt_failed",
-        "No se pudo descifrar con la bóveda: {error}",
-    ),
-    (
-        "trip.unlock_to_decrypt",
-        "Desbloquea la bóveda para descifrar este viaje.",
-    ),
     ("trip.title", "Viaje"),
     (
         "trip.meta_line",
@@ -819,10 +780,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("trip.while_moving", "En marcha"),
     ("trip.context_counters", "Contadores del viaje"),
     ("trip.engine_run", "Motor en marcha"),
-    (
-        "trip.unlock_points",
-        "Desbloquea la bóveda para descifrar los puntos del viaje y los informes de IA.",
-    ),
     ("trip.route", "Ruta"),
     (
         "trip.speed_colored",
@@ -895,31 +852,10 @@ pub const TABLE: &[(&str, &str)] = &[
     ("status.analyzing", "Analizando…"),
     ("status.analyzed", "Analizado"),
     ("trip.analysis_failed", "El análisis falló."),
-    ("trip.not_loaded", "El viaje no está cargado"),
-    (
-        "trip.unlock_consent",
-        "Desbloquea la bóveda y acepta enviar un paquete de análisis temporal.",
-    ),
-    (
-        "trip.no_decrypted_points",
-        "No hay puntos descifrados para analizar",
-    ),
-    (
-        "trip.vault_analysis_failed",
-        "Falló el análisis de la bóveda",
-    ),
-    (
-        "trip.seal_failed",
-        "Análisis correcto, pero no se pudo sellar: {error}",
-    ),
     ("trip.ai_title", "Análisis de ruta con IA"),
     (
         "trip.ai_subtitle",
         "Mecánico + asesor de eficiencia · toca para desplegar",
-    ),
-    (
-        "trip.vault_mode",
-        "Modo bóveda: el análisis envía un paquete descifrado temporal al servidor. Los resultados se sellan en el cliente; no se guarda nada permanente en texto plano.",
     ),
     ("trip.model", "Modelo · {model}"),
     ("trip.cancelling", "Cancelando…"),
@@ -1105,11 +1041,11 @@ pub const TABLE: &[(&str, &str)] = &[
     ("views.heatmap", "Mapa de calor"),
     (
         "views.heat_note",
-        "Más brillante = recorrido con más frecuencia. No se incluyen los viajes de la bóveda.",
+        "Más brillante = recorrido con más frecuencia.",
     ),
     (
         "views.lines_note",
-        "Un color por vehículo · haz clic en una ruta para abrir el viaje. No se incluyen los viajes de la bóveda.",
+        "Un color por vehículo · haz clic en una ruta para abrir el viaje.",
     ),
     ("views.calendar", "Calendario de conducción"),
     ("views.loading_year", "Cargando el último año…"),
@@ -1129,14 +1065,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("export.csv", "CSV (toda la telemetría)"),
     ("export.export", "Exportar"),
     ("export.print", "Imprimir / Guardar como PDF"),
-    (
-        "export.built_here",
-        "Generado en este navegador a partir del viaje descifrado.",
-    ),
-    (
-        "export.unlock",
-        "Desbloquea la bóveda para exportar este viaje.",
-    ),
     // Trip replay
     ("replay.group", "Repetición del viaje"),
     ("replay.pause_aria", "Pausar la repetición"),
@@ -1149,10 +1077,6 @@ pub const TABLE: &[(&str, &str)] = &[
     (
         "compare.pick_two",
         "Elige exactamente dos viajes para comparar.",
-    ),
-    (
-        "compare.no_vault",
-        "Los viajes de la bóveda aún no se pueden comparar: sus muestras solo se descifran en la página del viaje.",
     ),
     ("compare.trip_a", "Viaje A"),
     ("compare.trip_b", "Viaje B"),
@@ -1565,10 +1489,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("share.private", "Privado"),
     ("share.email_to_invite", "Correo a invitar"),
     ("share.invite", "Invitar"),
-    (
-        "share.hint_vault",
-        "Tendrán acceso cuando acepten. Como este vehículo está en la bóveda, comparte después la clave de la bóveda con ellos.",
-    ),
     ("share.hint", "Tendrán acceso cuando acepten la invitación."),
     ("share.pending", "Invitaciones pendientes"),
     ("share.email", "Correo"),
@@ -1577,15 +1497,6 @@ pub const TABLE: &[(&str, &str)] = &[
     ("share.members", "Miembros"),
     ("share.not_shared", "Aún no se ha compartido con nadie."),
     ("share.user", "Usuario"),
-    ("share.vault_key", "Clave de la bóveda"),
-    ("share.key_shared", "Clave de la bóveda compartida."),
-    (
-        "share.key_failed",
-        "No se pudo compartir la clave de la bóveda: {error}",
-    ),
-    ("share.no_identity", "Aún sin identidad de bóveda"),
-    ("share.unlock_first", "Desbloquea primero la bóveda"),
-    ("share.share_key", "Compartir la clave de la bóveda"),
     ("share.from", " · de {name}"),
     ("share.as_role", "como {role}{by} · {date}"),
     ("share.accept", "Aceptar"),
@@ -1731,77 +1642,6 @@ pub const TABLE: &[(&str, &str)] = &[
         "chat.connection_dropped",
         "Se cortó la conexión. Recarga para ver la respuesta.",
     ),
-    // Vault
-    ("vault.invalid_key", "Clave de recuperación no válida"),
-    ("vault.title", "Bóveda de conocimiento cero"),
-    (
-        "vault.lead",
-        "Cifrado de extremo a extremo opcional para viajes, perfiles de vehículos y resultados de IA. El servidor solo guarda texto cifrado. Si pierdes la clave de recuperación y los dispositivos ⇒ pérdida permanente de datos.",
-    ),
-    (
-        "vault.ui_disabled",
-        "La interfaz de la bóveda está desactivada en este servidor (VAULT_UI_ENABLED).",
-    ),
-    ("vault.status", "Estado:"),
-    ("vault.enabled_suffix", " · activada"),
-    ("vault.objects", " · v{version} · {n} objetos"),
-    ("vault.state_disabled", "desactivada"),
-    ("vault.state_migrating", "migrando"),
-    ("vault.state_active", "activa"),
-    ("vault.enable", "Activar la bóveda…"),
-    (
-        "vault.save_key",
-        "Guarda ahora esta clave de recuperación (solo se muestra una vez):",
-    ),
-    (
-        "vault.ack",
-        "Guardé la clave de recuperación. Entiendo que el administrador no puede recuperar mis datos.",
-    ),
-    (
-        "vault.migrating_msg",
-        "La bóveda se está migrando. Cifra los datos en este dispositivo y luego actívala.",
-    ),
-    ("vault.confirm_enable", "Confirmar y activar"),
-    (
-        "vault.migrate_lead",
-        "Este navegador cifrará tus vehículos y viajes, borrará el texto plano del servidor y luego activará la bóveda. Mantenla desbloqueada.",
-    ),
-    (
-        "vault.unlock_before_migrating",
-        "Desbloquea la bóveda antes de migrar.",
-    ),
-    ("vault.migrating", "Migrando…"),
-    ("vault.activated", "{summary}. Bóveda activada."),
-    ("vault.migrate", "Migrar y activar la bóveda"),
-    (
-        "vault.unlock_with_key",
-        "Desbloquear con la clave de recuperación",
-    ),
-    (
-        "vault.unlocked_msg",
-        "Bóveda desbloqueada en este dispositivo.",
-    ),
-    ("vault.unlock", "Desbloquear"),
-    ("vault.unlocked_here", "Desbloqueada en este dispositivo."),
-    ("vault.locked_msg", "Bóveda bloqueada en esta pestaña."),
-    ("vault.lock", "Bloquear"),
-    (
-        "vault.gate_title",
-        "Desbloquear la bóveda de conocimiento cero",
-    ),
-    ("vault.recovery_key", "Clave de recuperación"),
-    (
-        "vault.gate_unlocked",
-        "Bóveda desbloqueada. Sigue navegando por tus vehículos y viajes.",
-    ),
-    ("vault.locked", "La bóveda está bloqueada"),
-    (
-        "vault.no_wrap",
-        "No hay una clave envuelta para esta cuenta: pide al propietario que comparta las claves",
-    ),
-    ("vault.owner_only", "solo el propietario puede migrar"),
-    ("vault.migrated.one", "Se migró {n} vehículo"),
-    ("vault.migrated.other", "Se migraron {n} vehículos"),
     // Misc components
     ("qr.label", "Código QR para configurar el dispositivo"),
     ("api.unauthorized", "no autorizado"),

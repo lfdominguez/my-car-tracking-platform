@@ -33,9 +33,6 @@ fn test_config(database_url: String) -> Config {
         allow_dev_login: true,
         is_local_dev: true,
         trust_forwarded_headers: false,
-        vault_ui_enabled: true,
-        vault_job_ttl_secs: 300,
-        vault_max_object_bytes: 512 * 1024,
         overpass_url: "http://127.0.0.1:9/overpass".into(),
         csp_cloudflare_analytics: false,
         trip_stale_finish_after_secs: 7200,
@@ -178,15 +175,6 @@ async fn expire_grace_and_finalize(pool: &sqlx::PgPool, track_id: Uuid) {
     server::jobs::run_due_for(&job_ctx(pool), &[track_id])
         .await
         .unwrap();
-}
-
-async fn latest_track_id(pool: &sqlx::PgPool, car_id: Uuid) -> Option<Uuid> {
-    sqlx::query_scalar("SELECT id FROM tracks WHERE car_id = $1 ORDER BY started_at DESC LIMIT 1")
-        .bind(car_id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
 }
 
 #[tokio::test]
@@ -749,68 +737,6 @@ async fn stop_with_two_points_keeps_finished_track() {
     let (finished, pts) = row.expect("track must remain");
     assert!(finished);
     assert_eq!(pts, 2);
-}
-
-#[tokio::test]
-async fn stop_with_vault_chunk_keeps_track_even_without_plaintext_points() {
-    let Some((base, client, token, car_id, pool)) = setup().await else {
-        eprintln!("skipping: DATABASE_URL not set or DB unavailable");
-        return;
-    };
-    let start = Utc::now();
-    let tracking_id = start.to_rfc3339();
-
-    assert!(
-        client
-            .post(format!("{base}/api/track/start"))
-            .header("Authorization", format!("Basic {token}"))
-            .json(&json!({ "timestamp_start": start }))
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .is_success()
-    );
-
-    let track_id = latest_track_id(&pool, car_id)
-        .await
-        .expect("track after start");
-
-    sqlx::query(
-        r#"
-        INSERT INTO vault_objects (
-            id, car_id, object_type, logical_id, chunk_index, schema_version,
-            nonce, ciphertext, byte_size, content_version
-        ) VALUES ($1, $2, 'track_points_chunk', $3, 0, 1, $4, $5, 4, 1)
-        "#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(car_id)
-    .bind(track_id)
-    .bind(vec![0u8; 12])
-    .bind(vec![1u8, 2, 3, 4])
-    .execute(&pool)
-    .await
-    .expect("insert vault chunk");
-
-    assert!(
-        client
-            .post(format!("{base}/api/track/stop"))
-            .header("Authorization", format!("Basic {token}"))
-            .json(&json!({ "id": tracking_id }))
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .is_success()
-    );
-
-    expire_grace_and_finalize(&pool, track_id).await;
-    assert_eq!(
-        track_count(&pool, car_id, start).await,
-        1,
-        "vault point chunks must prevent auto-purge"
-    );
 }
 
 // silence unused warnings in skip path
