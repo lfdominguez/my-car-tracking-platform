@@ -189,7 +189,6 @@ async fn owner_can_delete_trip_and_cascades() {
             .await
             .unwrap();
     assert_eq!(points, 0);
-
 }
 
 #[tokio::test]

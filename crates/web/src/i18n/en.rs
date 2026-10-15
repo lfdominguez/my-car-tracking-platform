@@ -970,10 +970,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("views.map_style", "Map style"),
     ("views.lines", "Lines"),
     ("views.heatmap", "Heatmap"),
-    (
-        "views.heat_note",
-        "Brighter = driven more often.",
-    ),
+    ("views.heat_note", "Brighter = driven more often."),
     (
         "views.lines_note",
         "One color per car · click a route to open the trip.",
