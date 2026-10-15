@@ -19,3 +19,6 @@ docs/plans/
 
 # Agent/local noise
 .output.txt
+
+# graphify knowledge-graph output (generated)
+graphify-out/
