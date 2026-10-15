@@ -30,10 +30,10 @@ pub fn router() -> Router<AppState> {
 
 async fn readable_trip(state: &AppState, user: &AuthUser, id: Uuid) -> AppResult<Uuid> {
     let car_id: Uuid = sqlx::query_scalar("SELECT car_id FROM tracks WHERE id = $1")
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
     can_read_car(&state.pool, user.id, car_id).await?;
     Ok(car_id)
 }

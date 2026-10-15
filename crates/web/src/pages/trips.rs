@@ -19,9 +19,7 @@ use crate::pages::driving::TripDrivingCard;
 use crate::pages::trip_export::TripExportMenu;
 use crate::pages::trip_replay::TripReplay;
 use crate::pages::trips_views::{TripsCalendar, TripsOverlayMap};
-use crate::units::{
-    avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, use_unit_prefs,
-};
+use crate::units::{avg_economy, fmt_distance, fmt_economy, fmt_fuel, fmt_speed, use_unit_prefs};
 
 /// Drive three futures concurrently and return all outputs (a dependency-free
 /// `futures::join!` for the one place that needs it).
@@ -1974,10 +1972,7 @@ fn traffic_route_toolbar(
                                     .map(|x| x.status.clone())
                                     .unwrap_or_default();
                                 let done = t.traffic_analyzed
-                                    || matches!(
-                                        st.as_str(),
-                                        "ready" | "failed" | "skipped"
-                                    );
+                                    || matches!(st.as_str(), "ready" | "failed" | "skipped");
                                 trip.set(Some(t));
                                 if done {
                                     if st == "ready"
