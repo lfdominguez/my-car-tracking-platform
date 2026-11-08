@@ -11,4 +11,9 @@ ignore = [
     # Pulled in transitively by `sqlx-postgres` (SCRAM/auth). We do not use
     # the `rsa` crate directly; re-check when sqlx drops or patches it.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0387 — timing variability in `crypto-bigint` 0.5.
+    # Fixed only in 0.7.6+, but 0.5 is pinned by elliptic-curve 0.13 via
+    # `web-push-native` 0.5.0 (latest) -> jwt-simple 0.12 (VAPID signing).
+    # Re-check when web-push-native moves to jwt-simple >= 0.13.
+    "RUSTSEC-2026-0387",
 ]
