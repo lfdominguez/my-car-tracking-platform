@@ -41,6 +41,14 @@ async fn timezone_and_locale_are_validated_and_stored() {
     assert_eq!(me["timezone"], "Europe/Madrid");
     assert_eq!(me["locale"], "es");
 
+    let me: Value = patch(json!({ "locale": "de" }))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["locale"], "de");
+
     let resp = patch(json!({ "timezone": "Mars/Olympus" })).await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
     let resp = patch(json!({ "locale": "fr" })).await.unwrap();

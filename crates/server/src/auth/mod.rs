@@ -269,8 +269,12 @@ async fn update_me(
     if let Some(locale) = body.locale.as_deref() {
         let locale = match locale.trim() {
             "" => None,
-            l @ ("en" | "es") => Some(l),
-            _ => return Err(AppError::BadRequest("locale must be 'en' or 'es'".into())),
+            l @ ("en" | "es" | "de") => Some(l),
+            _ => {
+                return Err(AppError::BadRequest(
+                    "locale must be 'en', 'es' or 'de'".into(),
+                ));
+            }
         };
         sqlx::query("UPDATE users SET locale = $2 WHERE id = $1")
             .bind(user.id)

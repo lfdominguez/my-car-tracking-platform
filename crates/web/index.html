@@ -27,8 +27,9 @@
       // browser's. The app keeps <html lang> in step once it starts.
       try {
         var loc = localStorage.getItem("locale");
-        if (loc !== "en" && loc !== "es") {
-          loc = /^es/i.test(navigator.language || "") ? "es" : "en";
+        if (loc !== "en" && loc !== "es" && loc !== "de") {
+          var nav = navigator.language || "";
+          loc = /^es/i.test(nav) ? "es" : /^de/i.test(nav) ? "de" : "en";
         }
         document.documentElement.setAttribute("lang", loc);
       } catch (e) {}
