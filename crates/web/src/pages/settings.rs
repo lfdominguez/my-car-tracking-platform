@@ -362,6 +362,7 @@ pub fn SettingsPage() -> impl IntoView {
                     <option value="">{tr!("settings.language_auto")}</option>
                     <option value="en">"English"</option>
                     <option value="es">"Español"</option>
+                    <option value="de">"Deutsch"</option>
                 </select>
             </label>
             <p class="field-hint">{tr!("settings.language_hint")}</p>

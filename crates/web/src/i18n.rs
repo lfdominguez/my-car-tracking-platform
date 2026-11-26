@@ -1,8 +1,8 @@
-//! Localisation: UI strings, numbers and dates for English and Spanish.
+//! Localisation: UI strings, numbers and dates for English, Spanish and German.
 //!
 //! Dependency-free on purpose. Each locale is a plain `(key, text)` table in
-//! Rust ([`en::TABLE`], [`es::TABLE`]); the unit tests at the bottom fail when
-//! a key is missing from either table, when placeholders disagree, or when the
+//! Rust ([`en::TABLE`], [`es::TABLE`], [`de::TABLE`]); the unit tests at the
+//! bottom fail when a key is missing from any table, when placeholders disagree, or when the
 //! source calls `t("…")` with a key that has no entry — so a gap is a red test,
 //! never a blank label.
 //!
@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Weekday};
 use leptos::prelude::*;
 
+mod de;
 mod en;
 mod es;
 
@@ -45,16 +46,18 @@ pub enum Locale {
     #[default]
     En,
     Es,
+    De,
 }
 
 impl Locale {
-    pub const ALL: [Locale; 2] = [Locale::En, Locale::Es];
+    pub const ALL: [Locale; 3] = [Locale::En, Locale::Es, Locale::De];
 
     /// BCP 47 tag, also the value stored in `users.locale`.
     pub fn as_str(self) -> &'static str {
         match self {
             Locale::En => "en",
             Locale::Es => "es",
+            Locale::De => "de",
         }
     }
 
@@ -69,6 +72,7 @@ impl Locale {
         match lang.as_str() {
             "es" => Some(Locale::Es),
             "en" => Some(Locale::En),
+            "de" => Some(Locale::De),
             _ => None,
         }
     }
@@ -77,13 +81,14 @@ impl Locale {
         match self {
             Locale::En => en::TABLE,
             Locale::Es => es::TABLE,
+            Locale::De => de::TABLE,
         }
     }
 
     fn decimal_sep(self) -> char {
         match self {
             Locale::En => '.',
-            Locale::Es => ',',
+            Locale::Es | Locale::De => ',',
         }
     }
 
@@ -92,7 +97,7 @@ impl Locale {
     fn group_sep(self) -> Option<char> {
         match self {
             Locale::En => None,
-            Locale::Es => Some('.'),
+            Locale::Es | Locale::De => Some('.'),
         }
     }
 }
@@ -106,7 +111,7 @@ thread_local! {
     static SIGNAL: Cell<Option<LocaleSignal>> = const { Cell::new(None) };
     /// Locale used when no signal exists (unit tests).
     static FALLBACK: Cell<Locale> = const { Cell::new(Locale::En) };
-    static MAPS: [HashMap<&'static str, &'static str>; 2] = Locale::ALL.map(|l| {
+    static MAPS: [HashMap<&'static str, &'static str>; 3] = Locale::ALL.map(|l| {
         l.table().iter().copied().collect()
     });
 }
@@ -115,8 +120,7 @@ thread_local! {
 pub fn browser_locale() -> Locale {
     web_sys::window()
         .and_then(|w| w.navigator().language())
-        .filter(|lang| lang.to_ascii_lowercase().starts_with("es"))
-        .map(|_| Locale::Es)
+        .and_then(|lang| Locale::parse(&lang))
         .unwrap_or(Locale::En)
 }
 
@@ -371,12 +375,41 @@ const WEEKDAYS_LONG_ES: [&str; 7] = [
     "domingo",
 ];
 
+const MONTHS_SHORT_DE: [&str; 12] = [
+    "Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
+];
+const MONTHS_LONG_DE: [&str; 12] = [
+    "Januar",
+    "Februar",
+    "März",
+    "April",
+    "Mai",
+    "Juni",
+    "Juli",
+    "August",
+    "September",
+    "Oktober",
+    "November",
+    "Dezember",
+];
+const WEEKDAYS_SHORT_DE: [&str; 7] = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+const WEEKDAYS_LONG_DE: [&str; 7] = [
+    "Montag",
+    "Dienstag",
+    "Mittwoch",
+    "Donnerstag",
+    "Freitag",
+    "Samstag",
+    "Sonntag",
+];
+
 /// Abbreviated month name, `month` 1-12.
 pub fn month_short(month: u32) -> &'static str {
     let i = (month.clamp(1, 12) - 1) as usize;
     match locale() {
         Locale::En => MONTHS_SHORT_EN[i],
         Locale::Es => MONTHS_SHORT_ES[i],
+        Locale::De => MONTHS_SHORT_DE[i],
     }
 }
 
@@ -386,6 +419,7 @@ pub fn weekday_short(day: Weekday) -> &'static str {
     match locale() {
         Locale::En => WEEKDAYS_SHORT_EN[i],
         Locale::Es => WEEKDAYS_SHORT_ES[i],
+        Locale::De => WEEKDAYS_SHORT_DE[i],
     }
 }
 
@@ -409,12 +443,16 @@ fn localize_pattern(d: &impl Datelike, pattern: &str) -> String {
         let name = match (spec, loc) {
             ('b', Locale::En) => MONTHS_SHORT_EN[m],
             ('b', Locale::Es) => MONTHS_SHORT_ES[m],
+            ('b', Locale::De) => MONTHS_SHORT_DE[m],
             ('B', Locale::En) => MONTHS_LONG_EN[m],
             ('B', Locale::Es) => MONTHS_LONG_ES[m],
+            ('B', Locale::De) => MONTHS_LONG_DE[m],
             ('a', Locale::En) => WEEKDAYS_SHORT_EN[w],
             ('a', Locale::Es) => WEEKDAYS_SHORT_ES[w],
+            ('a', Locale::De) => WEEKDAYS_SHORT_DE[w],
             ('A', Locale::En) => WEEKDAYS_LONG_EN[w],
             ('A', Locale::Es) => WEEKDAYS_LONG_ES[w],
+            ('A', Locale::De) => WEEKDAYS_LONG_DE[w],
             _ => {
                 out.push('%');
                 out.push(spec);
@@ -442,6 +480,7 @@ pub fn date_pattern() -> &'static str {
     match locale() {
         Locale::En => "%Y-%m-%d",
         Locale::Es => "%d/%m/%Y",
+        Locale::De => "%d.%m.%Y",
     }
 }
 
@@ -450,6 +489,7 @@ pub fn datetime_pattern() -> &'static str {
     match locale() {
         Locale::En => "%Y-%m-%d %H:%M",
         Locale::Es => "%d/%m/%Y %H:%M",
+        Locale::De => "%d.%m.%Y %H:%M",
     }
 }
 
@@ -458,6 +498,7 @@ pub fn datetime_seconds_pattern() -> &'static str {
     match locale() {
         Locale::En => "%Y-%m-%d %H:%M:%S",
         Locale::Es => "%d/%m/%Y %H:%M:%S",
+        Locale::De => "%d.%m.%Y %H:%M:%S",
     }
 }
 
@@ -542,24 +583,28 @@ mod tests {
     }
 
     #[test]
-    fn every_english_key_has_a_spanish_entry_and_vice_versa() {
+    fn every_english_key_has_a_translation_and_vice_versa() {
         let en: BTreeSet<_> = keys(en::TABLE).into_iter().collect();
-        let es: BTreeSet<_> = keys(es::TABLE).into_iter().collect();
-        let missing: Vec<_> = en.difference(&es).collect();
-        assert!(missing.is_empty(), "missing from es: {missing:?}");
-        let extra: Vec<_> = es.difference(&en).collect();
-        assert!(extra.is_empty(), "in es but not en: {extra:?}");
+        for loc in [Locale::Es, Locale::De] {
+            let other: BTreeSet<_> = keys(loc.table()).into_iter().collect();
+            let missing: Vec<_> = en.difference(&other).collect();
+            assert!(missing.is_empty(), "missing from {loc:?}: {missing:?}");
+            let extra: Vec<_> = other.difference(&en).collect();
+            assert!(extra.is_empty(), "in {loc:?} but not en: {extra:?}");
+        }
     }
 
     #[test]
     fn placeholder_names_match_across_locales() {
         for (key, en_text) in en::TABLE {
-            let es_text = lookup(Locale::Es, key).unwrap_or_default();
-            assert_eq!(
-                placeholders(en_text),
-                placeholders(es_text),
-                "placeholders differ for {key:?}"
-            );
+            for loc in [Locale::Es, Locale::De] {
+                let es_text = lookup(loc, key).unwrap_or_default();
+                assert_eq!(
+                    placeholders(en_text),
+                    placeholders(es_text),
+                    "placeholders differ for {key:?} ({loc:?})"
+                );
+            }
         }
     }
 
@@ -577,12 +622,14 @@ mod tests {
     #[test]
     fn edge_whitespace_matches_across_locales() {
         for (key, en_text) in en::TABLE {
-            let es_text = lookup(Locale::Es, key).unwrap_or_default();
-            assert_eq!(
-                (en_text.starts_with(' '), en_text.ends_with(' ')),
-                (es_text.starts_with(' '), es_text.ends_with(' ')),
-                "edge whitespace differs for {key:?}"
-            );
+            for loc in [Locale::Es, Locale::De] {
+                let es_text = lookup(loc, key).unwrap_or_default();
+                assert_eq!(
+                    (en_text.starts_with(' '), en_text.ends_with(' ')),
+                    (es_text.starts_with(' '), es_text.ends_with(' ')),
+                    "edge whitespace differs for {key:?} ({loc:?})"
+                );
+            }
         }
     }
 
@@ -763,6 +810,18 @@ mod tests {
         assert_eq!(Locale::parse("fr"), None);
         assert_eq!(Locale::parse(""), None);
         assert_eq!(resolve(Some("es")), Locale::Es);
+        assert_eq!(Locale::parse("de-AT"), Some(Locale::De));
+        assert_eq!(resolve(Some("de")), Locale::De);
+    }
+
+    #[test]
+    fn german_dates_and_numbers() {
+        let d = NaiveDate::from_ymd_opt(2026, 3, 5).unwrap();
+        with_locale(Locale::De, || {
+            assert_eq!(date(&d, "%A %d. %B"), "Donnerstag 05. März");
+            assert_eq!(date(&d, date_pattern()), "05.03.2026");
+        });
+        assert_eq!(num_in(Locale::De, 1234.5, 1), "1.234,5");
     }
 
     #[test]
